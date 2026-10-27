@@ -4,7 +4,8 @@
 //! - `sal hook`   — adaptateur hook Claude Code (niveau d'assurance 1), fail-closed ;
 //! - `sal keygen` — paire de clés ed25519 pour signer les mandats ;
 //! - `sal sign`   — calcule les empreintes des règles et signe un mandat ;
-//! - `sal verify` — vérifie les chaînes du journal.
+//! - `sal verify` — vérifie les chaînes du journal ;
+//! - `sal mermaid` — exporte les sessions en diagrammes de séquence Mermaid.
 #![forbid(unsafe_code)]
 
 mod hook;
@@ -44,6 +45,20 @@ enum Commande {
         #[arg(long, default_value = "journal")]
         journal: PathBuf,
     },
+    /// Exporte des sessions vérifiées en diagrammes de séquence Mermaid (.mmd).
+    Mermaid {
+        #[arg(long, default_value = "journal")]
+        journal: PathBuf,
+        /// Une seule session, écrite sur la sortie standard.
+        #[arg(long)]
+        session: Option<String>,
+        /// Sans --session : dossier où écrire un fichier .mmd par session.
+        #[arg(long, default_value = "diagrammes")]
+        sortie: PathBuf,
+        /// Nombre maximal d'entrées par diagramme (les plus récentes sont gardées).
+        #[arg(long, default_value_t = 200)]
+        max: usize,
+    },
 }
 
 fn main() -> ExitCode {
@@ -54,6 +69,7 @@ fn main() -> ExitCode {
         Commande::Keygen { dossier } => keygen(&dossier),
         Commande::Sign { mandat, cle } => signer(&mandat, &cle),
         Commande::Verify { journal } => verifier(&journal),
+        Commande::Mermaid { journal, session, sortie, max } => mermaid(&journal, session.as_deref(), &sortie, max),
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,
@@ -108,4 +124,33 @@ fn verifier(journal: &std::path::Path) -> Result<(), String> {
         }
         Err((f, e)) => Err(format!("ÉCHEC {f} : {e}")),
     }
+}
+
+fn mermaid(journal: &std::path::Path, session: Option<&str>, sortie: &std::path::Path, max: usize) -> Result<(), String> {
+    use sal_core::mermaid::{lire_session, sequence};
+    if let Some(s) = session {
+        let j = sal_core::journal::Journal::ouvrir(journal).map_err(|e| e.to_string())?;
+        let chemin = j.chemin(s);
+        if !chemin.exists() {
+            return Err(format!("session {s} absente du journal"));
+        }
+        let entrees = lire_session(&chemin).map_err(|e| format!("{} : {e}", chemin.display()))?;
+        print!("{}", sequence(&entrees, max));
+        return Ok(());
+    }
+    std::fs::create_dir_all(sortie).map_err(|e| e.to_string())?;
+    let mut fichiers: Vec<PathBuf> = std::fs::read_dir(journal)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .collect();
+    fichiers.sort();
+    for f in &fichiers {
+        // Une chaîne altérée arrête l'export : aucun diagramme d'un journal douteux.
+        let entrees = lire_session(f).map_err(|e| format!("ÉCHEC {} : {e}", f.display()))?;
+        let cible = sortie.join(f.with_extension("mmd").file_name().unwrap_or_default());
+        std::fs::write(&cible, sequence(&entrees, max)).map_err(|e| e.to_string())?;
+    }
+    println!("{} diagramme(s) écrits dans {}", fichiers.len(), sortie.display());
+    Ok(())
 }

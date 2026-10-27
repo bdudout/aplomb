@@ -12,6 +12,7 @@ pub mod action;
 pub mod decision;
 pub mod journal;
 pub mod mandat;
+pub mod mermaid;
 pub mod politique;
 pub mod profils;
 pub mod superviseur;

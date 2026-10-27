@@ -24,6 +24,11 @@ cargo build
 - Dépôt de test supervisé : `../bac-a-sable` (hook dans `.claude/settings.json`)
 - Rejouer des scénarios sans Claude Code : `scripts/scenarios.sh`
 - Vérifier le journal : `./target/debug/sal verify --journal journal`
+- Suivre les requêtes d'un agent en diagramme de séquence Mermaid (rendu par Pele ou tout outil Mermaid) :
+  `./target/debug/sal mermaid --session <id>` (sortie standard), ou
+  `./target/debug/sal mermaid --sortie diagrammes` pour un fichier `.mmd` par session.
+  Seule une chaîne vérifiée est exportée. Les diagrammes reprennent les commandes et
+  les chemins du journal : à traiter comme le journal lui-même.
 
 Toute modification des règles `profils/code/*.cedar` ou du mandat impose de le
 re-signer ; sinon `sal serve` refuse de démarrer.
@@ -35,7 +40,7 @@ construite ni testée sur ce poste).
 
 | | |
 |---|---|
-| Tests | 40 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal) |
+| Tests | 44 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |

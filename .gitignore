@@ -1,5 +1,6 @@
 /target
-# Journaux et clés : jamais versionnés.
+# Journaux, diagrammes tirés du journal et clés : jamais versionnés.
 journal/
+diagrammes/
 *.cle
 bac-a-sable/.sal/journal/
