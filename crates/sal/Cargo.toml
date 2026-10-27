@@ -1,0 +1,22 @@
+[package]
+name = "sal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Binaire SAL : service réseau (API décision / administration), hook Claude Code, outils de signature et de vérification."
+
+[dependencies]
+sal-core = { path = "../sal-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { workspace = true }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = "0.3"
+clap = { version = "4", features = ["derive"] }
+ureq = { version = "2", default-features = false, features = ["json"] }
+getrandom = "0.2"

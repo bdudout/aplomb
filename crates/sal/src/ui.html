@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAL — vue technique</title>
+<style>
+  :root { --fond:#f7f7f5; --carte:#fff; --texte:#1d1d1b; --doux:#6b6b66; --ligne:#e4e4df;
+          --allow:#1f7a4d; --review:#a46a00; --deny:#b3261e; --gel:#6b1d7a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fond:#151514; --carte:#1f1f1d; --texte:#ececE8; --doux:#9a9a93; --ligne:#33332f;
+            --allow:#5cc28f; --review:#e0a53a; --deny:#f07167; --gel:#c38bd1; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--fond); color:var(--texte); }
+  header { padding:16px 20px; border-bottom:1px solid var(--ligne); display:flex; flex-wrap:wrap; gap:16px; align-items:center; }
+  h1 { font-size:16px; margin:0; }
+  .doux { color:var(--doux); }
+  .compteurs { display:flex; gap:12px; margin-left:auto; }
+  .compteur { background:var(--carte); border:1px solid var(--ligne); border-radius:8px; padding:6px 12px; text-align:center; min-width:70px; }
+  .compteur b { display:block; font-size:18px; }
+  main { padding:16px 20px; }
+  .barre { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; align-items:center; }
+  input, button { font:inherit; padding:6px 10px; border-radius:6px; border:1px solid var(--ligne); background:var(--carte); color:var(--texte); }
+  button { cursor:pointer; }
+  button.danger { border-color:var(--deny); color:var(--deny); }
+  table { width:100%; border-collapse:collapse; background:var(--carte); border:1px solid var(--ligne); border-radius:8px; overflow:hidden; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--ligne); vertical-align:top; }
+  th { font-weight:600; color:var(--doux); font-size:12px; }
+  td.res { font-family:ui-monospace, monospace; font-size:12px; word-break:break-all; max-width:420px; }
+  .v { font-weight:600; text-transform:uppercase; font-size:12px; }
+  .allow { color:var(--allow); } .review { color:var(--review); } .deny { color:var(--deny); } .gel { color:var(--gel); }
+  .bandeau { display:none; padding:8px 20px; background:var(--gel); color:#fff; font-weight:600; }
+  @media (max-width:700px) { .compteurs { margin-left:0; } td.res { max-width:160px; } }
+</style>
+</head>
+<body>
+<div class="bandeau" id="bandeau">GEL GLOBAL ACTIF — toutes les actions sont refusées</div>
+<header>
+  <div>
+    <h1>SAL — vue technique</h1>
+    <div class="doux" id="mandat">chargement…</div>
+  </div>
+  <div class="compteurs">
+    <div class="compteur"><b class="allow" id="c-allow">0</b>allow</div>
+    <div class="compteur"><b class="review" id="c-review">0</b>review</div>
+    <div class="compteur"><b class="deny" id="c-deny">0</b>deny</div>
+    <div class="compteur"><b class="gel" id="c-gel">0</b>gel</div>
+  </div>
+</header>
+<main>
+  <div class="barre">
+    <input id="jeton" type="password" placeholder="jeton d'administration" autocomplete="off">
+    <button class="danger" id="geler">Geler tout</button>
+    <button id="degeler">Dégeler</button>
+    <button id="verifier">Vérifier le journal</button>
+    <span class="doux" id="info"></span>
+  </div>
+  <table>
+    <thead><tr><th>Heure</th><th>Session</th><th>Outil</th><th>Verdict</th><th>Ressource</th><th>Règle / motif</th></tr></thead>
+    <tbody id="lignes"></tbody>
+  </table>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const lignes = $("lignes");
+
+function texte(t) { const s = document.createElement("span"); s.textContent = t; return s; }
+
+function ajouter(evt) {
+  const d = evt.detail || {};
+  const tr = document.createElement("tr");
+  const heure = new Date(evt.horodatage).toLocaleTimeString("fr-FR");
+  const verdict = evt.type === "decision" ? d.verdict : evt.type;
+  const cellules = [
+    heure,
+    (evt.session || "—").slice(0, 8),
+    d.outil || d.action || "—",
+    null,
+    d.ressource || "",
+    evt.type === "decision" ? `${d.regle} — ${d.motif}` : (d.session ? `session ${d.session}` : ""),
+  ];
+  cellules.forEach((c, i) => {
+    const td = document.createElement("td");
+    if (i === 3) { td.className = "v " + verdict; td.textContent = verdict; }
+    else { td.appendChild(texte(c)); }
+    if (i === 4) td.className = "res";
+    tr.appendChild(td);
+  });
+  lignes.prepend(tr);
+  while (lignes.children.length > 500) lignes.lastChild.remove();
+}
+
+async function rafraichir() {
+  const e = await (await fetch("/admin/etat")).json();
+  $("mandat").textContent = `Mandat ${e.mandat.id} v${e.mandat.version} · profil ${e.mandat.profil} · ${e.mandat.racine}`;
+  for (const k of ["allow", "review", "deny", "gel"]) $("c-" + k).textContent = e.compteurs[k];
+  $("bandeau").style.display = e.gel_global ? "block" : "none";
+  $("info").textContent = e.sessions_gelees.length ? `${e.sessions_gelees.length} session(s) gelée(s)` : "";
+}
+
+async function admin(chemin) {
+  const r = await fetch(chemin, { method: "POST", headers: { "Authorization": "Bearer " + $("jeton").value } });
+  $("info").textContent = r.ok ? "ok" : "refusé (jeton ?)";
+  rafraichir();
+}
+
+$("geler").onclick = () => admin("/admin/gel");
+$("degeler").onclick = () => admin("/admin/degel");
+$("verifier").onclick = async () => {
+  const v = await (await fetch("/admin/verify")).json();
+  $("info").textContent = v.intact ? `journal intact : ${v.sessions} session(s), ${v.entrees} entrées` : `JOURNAL ROMPU : ${v.fichier} — ${v.erreur}`;
+};
+
+(async () => {
+  for (const evt of await (await fetch("/admin/historique")).json()) ajouter(evt);
+  rafraichir();
+  const flux = new EventSource("/admin/events");
+  flux.onmessage = (m) => { ajouter(JSON.parse(m.data)); rafraichir(); };
+})();
+</script>
+</body>
+</html>

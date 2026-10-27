@@ -1,0 +1,5 @@
+/target
+# Journaux et clés : jamais versionnés.
+journal/
+*.cle
+bac-a-sable/.sal/journal/

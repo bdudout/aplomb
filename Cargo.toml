@@ -1,0 +1,23 @@
+# Workspace SAL — Superviseur d'Alignement Local (nom de code provisoire).
+# Cœur de confiance pur (`sal-core`) + binaire réseau/hook (`sal`).
+# Projet local : aucun remote, aucune publication.
+[workspace]
+resolver = "2"
+members = ["crates/sal-core", "crates/sal"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+rust-version = "1.80"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+sha2 = "0.10"
+hex = "0.4"
+ed25519-dalek = "2"
+cedar-policy = "4.14"

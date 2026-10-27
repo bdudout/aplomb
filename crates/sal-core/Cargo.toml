@@ -1,0 +1,20 @@
+[package]
+name = "sal-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Cœur de confiance de SAL : normalisation, politique, combinaison, journal. Aucune I/O réseau."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { workspace = true }
+cedar-policy = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
