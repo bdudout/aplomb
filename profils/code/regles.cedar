@@ -54,6 +54,11 @@ when { context.suppression_hors_depot };
 forbid (principal, action, resource)
 when { context.contourne_controles };
 
+// Même effet, autre chemin (EF-B7) : une commande qui écrit hors du dépôt.
+@id("ecriture-shell-hors-depot")
+forbid (principal, action, resource)
+when { context.shell_ecrit_hors_depot };
+
 @id("reseau-non-autorise")
 forbid (principal, action, resource)
 when { context.reseau && !context.domaine_autorise };
@@ -63,3 +68,10 @@ when { context.reseau && !context.domaine_autorise };
 @verdict("gel")
 forbid (principal, action, resource)
 when { context.touche_supervision };
+
+// Points protégés (EF-C5) : config de l'agent et de son hook, démarrage du shell,
+// crontab, hooks git, CI. S'y écrire, c'est s'octroyer des capacités : gel.
+@id("point-protege")
+@verdict("gel")
+forbid (principal, action, resource)
+when { context.ecrit_point_protege };

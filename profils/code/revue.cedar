@@ -22,6 +22,11 @@ when { context.installe_dependance };
 permit (principal, action == Action::"ecrire", resource)
 when { context.desactive_tests };
 
+// Sens des flux (EF-C4) : un domaine autorisé en lecture ne l'est pas en écriture.
+@id("revue-envoi-externe")
+permit (principal, action, resource)
+when { context.envoi_externe };
+
 @id("revue-delegation")
 permit (principal, action == Action::"deleguer", resource);
 

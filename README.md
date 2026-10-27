@@ -35,8 +35,8 @@ construite ni testée sur ce poste).
 
 | | |
 |---|---|
-| Tests | 33 (algèbre par tests de propriété, mandat, Cedar, profil C, journal) |
-| Scénarios hook | 15 joués : 4 laissés à Claude Code, 3 en revue, 8 refus dont gel |
+| Tests | 40 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal) |
+| Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |

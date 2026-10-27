@@ -35,6 +35,10 @@ pub struct EvenementOutil {
     /// Chemin réel (liens symboliques résolus) calculé par l'adaptateur, s'il existe.
     #[serde(default)]
     pub chemin_reel: Option<String>,
+    /// Contenu des scripts locaux que la commande exécute, lu par l'adaptateur (ressource
+    /// réelle, EF-B4) : la décision porte sur ce que fait le script, pas sur son nom.
+    #[serde(default)]
+    pub contenu_execute: Option<String>,
 }
 
 /// Action normalisée, indépendante du mode de branchement.

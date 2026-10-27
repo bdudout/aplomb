@@ -30,6 +30,23 @@ fn chemin_reel(cwd: &str, chemin: &str) -> Option<String> {
     Some(parent.join(p.file_name()?).to_string_lossy().into())
 }
 
+/// Taille maximale lue par script exécuté.
+const MAX_SCRIPT: u64 = 64 * 1024;
+
+/// Contenu des scripts locaux que la commande exécute (ressource réelle, EF-B4).
+fn contenu_execute(cwd: &str, commande: &str) -> Option<String> {
+    let mut contenu = String::new();
+    for script in sal_core::profils::code::scripts_executes(commande) {
+        let p = Path::new(cwd).join(&script);
+        let lisible = std::fs::metadata(&p).is_ok_and(|m| m.is_file() && m.len() <= MAX_SCRIPT);
+        if let Some(texte) = lisible.then(|| std::fs::read_to_string(&p).ok()).flatten() {
+            contenu.push_str(&texte);
+            contenu.push('\n');
+        }
+    }
+    (!contenu.is_empty()).then_some(contenu)
+}
+
 fn sortie_pre(decision: &str, motif: &str) -> ExitCode {
     let mut sortie = json!({
         "hookSpecificOutput": {
@@ -63,6 +80,7 @@ pub fn executer() -> ExitCode {
         .iter()
         .find_map(|k| entree.get(*k).and_then(Value::as_str))
         .unwrap_or("");
+    let commande = entree.get("command").and_then(Value::as_str).unwrap_or("");
     let corps = json!({
         "session": s("session_id"),
         "agent": std::env::var("SAL_AGENT").unwrap_or_else(|_| "claude-code".into()),
@@ -72,6 +90,7 @@ pub fn executer() -> ExitCode {
         "entree": entree,
         "phase": phase,
         "chemin_reel": chemin_reel(&cwd, chemin),
+        "contenu_execute": contenu_execute(&cwd, commande),
     });
     let base = std::env::var("SAL_URL").unwrap_or_else(|_| URL_DEFAUT.into());
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(3)).build();
