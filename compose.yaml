@@ -1,0 +1,31 @@
+# SAL en conteneur, pour le mode hook (niveau 1) : l'agent tourne sur l'hôte et
+# joint l'API de décision sur 127.0.0.1:7700. L'API d'administration (7701) n'est
+# publiée que sur la boucle locale ; aux niveaux 2-3 (J3), l'agent sera dans un
+# réseau Docker interne d'où 7701 est injoignable.
+services:
+  sal:
+    build: .
+    command:
+      - serve
+      - --mandat=/etc/sal/mandats/bac-a-sable.yaml
+      - --cle-publique=/etc/sal/cles/sal.pub
+      - --journal=/var/lib/sal/journal
+      - --ecoute-decision=0.0.0.0:7700
+      - --ecoute-admin=0.0.0.0:7701
+    environment:
+      SAL_JETON_ADMIN: ${SAL_JETON_ADMIN:?définir SAL_JETON_ADMIN}
+    ports:
+      - "127.0.0.1:7700:7700"
+      - "127.0.0.1:7701:7701"
+    volumes:
+      - ./mandats:/etc/sal/mandats:ro
+      - ./profils:/etc/sal/profils:ro
+      - ./cles/sal.pub:/etc/sal/cles/sal.pub:ro
+      - journal:/var/lib/sal/journal
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+volumes:
+  journal:

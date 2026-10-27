@@ -12,6 +12,11 @@ license = "AGPL-3.0-or-later"
 rust-version = "1.80"
 publish = false
 
+# Builds de développement sans informations de débogage : `target/` beaucoup plus léger.
+[profile.dev]
+debug = 0
+incremental = false
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

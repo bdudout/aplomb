@@ -23,7 +23,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use sal_core::action::{EvenementOutil, Phase};
-use sal_core::decision::Verdict;
 use sal_core::journal::Journal;
 use sal_core::superviseur::Superviseur;
 use serde::Deserialize;

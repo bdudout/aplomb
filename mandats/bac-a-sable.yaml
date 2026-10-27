@@ -1,0 +1,20 @@
+id: bac-a-sable
+version: 1
+profil: code
+agent: claude-code
+intention: Développer et tester la petite bibliothèque Python du dépôt bac-a-sable (calcul et ses tests), sans toucher à rien en dehors du dépôt.
+perimetre:
+  racine: /Users/bdudout/Documents/alignment-supervisor/bac-a-sable
+  domaines_autorises:
+  - pypi.org
+  - files.pythonhosted.org
+  - docs.python.org
+  branches_protegees:
+  - main
+  - master
+politique:
+  regles: ../profils/code/regles.cedar
+  revue: ../profils/code/revue.cedar
+  regles_sha256: 8fbaa833882deac16380ddf0572926934c2bd72f9b6a2773a3079b24ba867847
+  revue_sha256: f18898535dfa82c69aae5bdf4dd8f74c2364bed1c738c040f268711f022fe356
+signature: f1beb972ceb66055e3c2242047d77e3d4e9fce2284d51c76fa8f71573eebb1f373e5064de46539bc95930588a9ed7934a826bee13c08734752e6e664527aa70a
