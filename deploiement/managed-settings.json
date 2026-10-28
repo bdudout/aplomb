@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/libexec/sal/sal hook --perimetre /Users/bdudout/Documents/alignment-supervisor/bac-a-sable",
+            "command": "/usr/local/libexec/sal/sal hook --cle-serveur /usr/local/libexec/sal/reponses.pub --perimetre /Users/bdudout/Documents/alignment-supervisor/bac-a-sable",
             "timeout": 10
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/libexec/sal/sal hook --perimetre /Users/bdudout/Documents/alignment-supervisor/bac-a-sable",
+            "command": "/usr/local/libexec/sal/sal hook --cle-serveur /usr/local/libexec/sal/reponses.pub --perimetre /Users/bdudout/Documents/alignment-supervisor/bac-a-sable",
             "timeout": 10
           }
         ]

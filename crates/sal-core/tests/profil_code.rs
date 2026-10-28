@@ -44,6 +44,7 @@ fn evt(session: &str, outil: &str, entree: Value) -> EvenementOutil {
         phase: Phase::Avant,
         chemin_reel: None,
         contenu_execute: None,
+        nonce: None,
     }
 }
 

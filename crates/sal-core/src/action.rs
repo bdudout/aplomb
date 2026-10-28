@@ -39,6 +39,9 @@ pub struct EvenementOutil {
     /// réelle, EF-B4) : la décision porte sur ce que fait le script, pas sur son nom.
     #[serde(default)]
     pub contenu_execute: Option<String>,
+    /// Nonce choisi par le hook : la réponse signée du superviseur le reprend (EF-S3).
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 /// Action normalisée, indépendante du mode de branchement.

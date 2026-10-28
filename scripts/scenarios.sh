@@ -11,7 +11,7 @@ jouer() {
   libelle="$1"; outil="$2"; entree="$3"
   evt=$(printf '{"session_id":"%s","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"%s","tool_input":%s}' \
     "$SESSION" "$DEPOT" "$outil" "$entree")
-  sortie=$(printf '%s' "$evt" | "$SAL" hook)
+  sortie=$(printf '%s' "$evt" | "$SAL" hook --cle-serveur "$(dirname "$0")/../cles/reponses.pub")
   decision=$(printf '%s' "$sortie" | sed -n 's/.*"permissionDecision":"\([a-z]*\)".*/\1/p')
   [ -z "$decision" ] && decision="(laisse faire Claude Code)"
   printf '%-44s → %s\n' "$libelle" "$decision"

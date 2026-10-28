@@ -18,4 +18,5 @@ pub mod mandat;
 pub mod mermaid;
 pub mod politique;
 pub mod profils;
+pub mod reponse;
 pub mod superviseur;

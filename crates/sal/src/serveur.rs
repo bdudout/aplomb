@@ -61,6 +61,10 @@ pub struct Options {
     /// contenus de la session).
     #[arg(long, default_value = "journal-cles")]
     coffre: PathBuf,
+    /// Clé de signature des réponses (enveloppée), créée au premier démarrage ; sa clé
+    /// publique (`.pub` à côté) est donnée au hook par `--cle-serveur` (EF-S3).
+    #[arg(long, default_value = "cles/reponses.cle")]
+    cle_reponses: PathBuf,
     /// Comptes d'administration (YAML) : identifiants, rôles, clés publiques.
     #[arg(long, default_value = "comptes.yaml")]
     comptes: PathBuf,
@@ -83,6 +87,7 @@ struct Interne {
 struct Etat {
     interne: Arc<Mutex<Interne>>,
     diffusion: broadcast::Sender<String>,
+    signataire: Arc<ed25519_dalek::SigningKey>,
 }
 
 /// Session globale du journal pour les actions d'administration sans session visée.
@@ -171,7 +176,12 @@ async fn decider(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> i
     interne.compteurs[d.verdict as usize] += 1;
     let evenement = json!({"type": "decision", "horodatage": t, "session": evt.session, "seq": entree.seq, "detail": contenu});
     etat.publier(&mut interne, evenement);
-    (StatusCode::OK, Json(json!({"verdict": d.verdict, "regle": d.politique.regle, "motif": d.motif, "seq": entree.seq})))
+    let mut reponse = json!({"verdict": d.verdict, "regle": d.politique.regle, "motif": d.motif, "seq": entree.seq});
+    if let Some(nonce) = &evt.nonce {
+        let verdict = serde_json::to_value(d.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+        reponse["signature"] = json!(sal_core::reponse::signer(&etat.signataire, nonce, &evt.session, &verdict, &d.politique.regle));
+    }
+    (StatusCode::OK, Json(reponse))
 }
 
 async fn observer(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> impl IntoResponse {
@@ -352,6 +362,24 @@ async fn deconnexion(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
     ([("set-cookie", format!("{COOKIE}=; Path=/; Max-Age=0"))], StatusCode::NO_CONTENT).into_response()
 }
 
+/// Clé de signature des réponses : lue, ou créée (enveloppée) avec sa clé publique.
+fn cle_reponses(chemin: &std::path::Path) -> Result<ed25519_dalek::SigningKey, String> {
+    if chemin.exists() {
+        return crate::trousseau::lire_cle_privee(chemin, "reponses");
+    }
+    let mut graine = [0u8; 32];
+    getrandom::getrandom(&mut graine).map_err(|e| e.to_string())?;
+    let cle = ed25519_dalek::SigningKey::from_bytes(&graine);
+    if let Some(d) = chemin.parent() {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    crate::trousseau::ecrire_cle_privee(chemin, "reponses", &cle)?;
+    let publique = chemin.with_extension("pub");
+    std::fs::write(&publique, hex::encode(cle.verifying_key().to_bytes())).map_err(|e| e.to_string())?;
+    eprintln!("  clé de signature des réponses créée ; clé publique pour le hook : {}", publique.display());
+    Ok(cle)
+}
+
 pub fn lancer(opts: Options) -> Result<(), String> {
     let cle_hex = std::fs::read_to_string(&opts.cle_publique).map_err(|e| format!("clé publique : {e}"))?;
     let cle = sal_core::mandat::cle_publique(&cle_hex).map_err(|e| e.to_string())?;
@@ -362,7 +390,9 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let id = format!("{} v{}", mandat.mandat.id, mandat.mandat.version);
     let superviseur = Superviseur::nouveau(mandat).map_err(|e| e.to_string())?;
     let journal = Journal::ouvrir(&opts.journal).map_err(|e| e.to_string())?;
-    let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?;
+    let maitre = crate::trousseau::cle_maitresse(true)?;
+    let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?.avec_maitre(maitre);
+    let signataire = cle_reponses(&opts.cle_reponses)?;
     let texte_comptes = std::fs::read_to_string(&opts.comptes)
         .map_err(|e| format!("comptes {} : {e} (créer un compte : sal compte nouveau)", opts.comptes.display()))?;
     let autorite = Autorite::depuis_yaml(&texte_comptes).map_err(|e| format!("comptes : {e}"))?;
@@ -377,6 +407,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             autorite,
         })),
         diffusion,
+        signataire: Arc::new(signataire),
     };
 
     let api_decision = Router::new()
@@ -407,6 +438,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         eprintln!("  API décision       : http://{}", opts.ecoute_decision);
         eprintln!("  API administration : http://{}  (vue technique)", opts.ecoute_admin);
         eprintln!("  comptes            : {}", opts.comptes.display());
+        eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());
         eprintln!("  connexion à la vue : sal admin connexion --compte <id>");
         let arret = async {
             let _ = tokio::signal::ctrl_c().await;

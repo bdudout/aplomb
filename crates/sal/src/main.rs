@@ -12,6 +12,7 @@
 
 mod admin;
 mod hook;
+mod trousseau;
 mod serveur;
 
 use std::path::PathBuf;
@@ -37,6 +38,10 @@ enum Commande {
         /// machine : hors de ces dossiers, le hook laisse décider Claude Code.
         #[arg(long)]
         perimetre: Vec<PathBuf>,
+        /// Clé publique du superviseur : toute réponse non signée par elle est refusée
+        /// (protège contre un faux superviseur sur le port de décision).
+        #[arg(long)]
+        cle_serveur: Option<PathBuf>,
     },
     /// Génère une paire de clés (sal.cle privée, sal.pub publique).
     Keygen {
@@ -72,6 +77,11 @@ enum Commande {
         dechiffrer: bool,
         #[arg(long, default_value = "journal-cles")]
         coffre: PathBuf,
+    },
+    /// Trousseau : enveloppe par la clé maîtresse les fichiers de clés encore en clair.
+    Trousseau {
+        #[command(subcommand)]
+        commande: CommandeTrousseau,
     },
     /// Gère les comptes d'administration.
     Compte {
@@ -116,6 +126,19 @@ enum CommandeCompte {
 }
 
 #[derive(Subcommand)]
+enum CommandeTrousseau {
+    /// Enveloppe les clés en clair : sessions, comptes, signature du mandat et des réponses.
+    Migrer {
+        #[arg(long, default_value = "journal-cles")]
+        coffre: PathBuf,
+        #[arg(long)]
+        comptes: Option<PathBuf>,
+        #[arg(long, default_value = "cles")]
+        cles: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum OperationAdmin {
     /// Ouvre la vue technique : affiche un lien de connexion à usage unique.
     Connexion,
@@ -140,7 +163,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let res = match cli.commande {
         Commande::Serve(opts) => serveur::lancer(opts),
-        Commande::Hook { perimetre } => return hook::executer(&perimetre),
+        Commande::Hook { perimetre, cle_serveur } => return hook::executer(&perimetre, cle_serveur.as_deref()),
         Commande::Keygen { dossier } => keygen(&dossier),
         Commande::Sign { mandat, cle } => signer(&mandat, &cle),
         Commande::Verify { journal } => verifier(&journal),
@@ -149,6 +172,9 @@ fn main() -> ExitCode {
             mermaid(&journal, session.as_deref(), &sortie, max, coffre.as_deref())
         }
         Commande::Effacer { session, coffre } => effacer(&session, &coffre),
+        Commande::Trousseau { commande: CommandeTrousseau::Migrer { coffre, comptes, cles } } => {
+            migrer(&coffre, &comptes.unwrap_or_else(admin::dossier_cles), &cles)
+        }
         Commande::Compte { commande: CommandeCompte::Nouveau { id, roles, fichier, dossier } } => {
             admin::nouveau_compte(&id, &roles, &dossier.unwrap_or_else(admin::dossier_cles), &fichier)
         }
@@ -177,25 +203,16 @@ fn keygen(dossier: &std::path::Path) -> Result<(), String> {
     let cle = ed25519_dalek::SigningKey::from_bytes(&graine);
     std::fs::create_dir_all(dossier).map_err(|e| e.to_string())?;
     let privee = dossier.join("sal.cle");
-    if privee.exists() {
-        return Err(format!("{} existe déjà, refus de l'écraser", privee.display()));
-    }
-    std::fs::write(&privee, hex::encode(cle.to_bytes())).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&privee, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-    }
+    trousseau::ecrire_cle_privee(&privee, "mandat", &cle)?;
     std::fs::write(dossier.join("sal.pub"), hex::encode(cle.verifying_key().to_bytes())).map_err(|e| e.to_string())?;
-    println!("clés écrites : {} (privée, 0600) et sal.pub", privee.display());
+    println!("clés écrites : {} (privée, enveloppée, 0600) et sal.pub", privee.display());
     Ok(())
 }
 
 fn signer(chemin: &std::path::Path, cle: &std::path::Path) -> Result<(), String> {
     let texte = std::fs::read_to_string(chemin).map_err(|e| e.to_string())?;
     let mut mandat: sal_core::mandat::Mandat = serde_yaml::from_str(&texte).map_err(|e| e.to_string())?;
-    let privee = sal_core::mandat::cle_privee(&std::fs::read_to_string(cle).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let privee = trousseau::lire_cle_privee(cle, "mandat")?;
     let dossier = chemin.parent().unwrap_or(std::path::Path::new("."));
     mandat.signer(dossier, &privee).map_err(|e| e.to_string())?;
     std::fs::write(chemin, serde_yaml::to_string(&mandat).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -217,6 +234,53 @@ fn verifier(journal: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Enveloppe chaque fichier de clé encore en clair, en place (écriture atomique, 0600).
+fn migrer(coffre: &std::path::Path, comptes: &std::path::Path, cles: &std::path::Path) -> Result<(), String> {
+    use sal_core::confidentiel::{envelopper, est_enveloppe, Coffre};
+    let maitre = trousseau::cle_maitresse(true)?;
+    let mut a_traiter: Vec<(PathBuf, String)> = Vec::new();
+    let mut lister = |dossier: &std::path::Path, etiquette: &dyn Fn(&str) -> String| {
+        for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
+            let nom = e.file_name().to_string_lossy().to_string();
+            if nom.ends_with(".cle") {
+                a_traiter.push((e.path(), etiquette(&nom)));
+            }
+        }
+    };
+    lister(coffre, &|n| Coffre::etiquette_fichier(n));
+    lister(comptes, &|n| format!("compte:{}", n.trim_end_matches(".cle")));
+    a_traiter.push((cles.join("sal.cle"), "mandat".into()));
+    a_traiter.push((cles.join("reponses.cle"), "reponses".into()));
+    let (mut faits, mut deja) = (0, 0);
+    for (chemin, etiquette) in a_traiter {
+        let Ok(texte) = std::fs::read_to_string(&chemin) else { continue };
+        if est_enveloppe(&texte) {
+            deja += 1;
+            continue;
+        }
+        let secret = hex::decode(texte.trim()).map_err(|e| format!("{} : {e}", chemin.display()))?;
+        let temporaire = chemin.with_extension("cle.tmp");
+        {
+            use std::io::Write;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut f = options.open(&temporaire).map_err(|e| format!("{} : {e}", temporaire.display()))?;
+            f.write_all(envelopper(&maitre, &etiquette, &secret).as_bytes()).map_err(|e| e.to_string())?;
+            f.sync_all().map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(&temporaire, &chemin).map_err(|e| e.to_string())?;
+        faits += 1;
+    }
+    println!("{faits} clé(s) enveloppée(s), {deja} déjà enveloppée(s)");
+    println!("l'ancien contenu en clair a été remplacé ; sur SSD, des traces peuvent subsister");
+    Ok(())
+}
+
 fn effacer(session: &str, coffre: &std::path::Path) -> Result<(), String> {
     let c = sal_core::confidentiel::Coffre::ouvrir(coffre).map_err(|e| e.to_string())?;
     if c.effacer(session).map_err(|e| e.to_string())? {
@@ -236,7 +300,11 @@ fn mermaid(
 ) -> Result<(), String> {
     use sal_core::mermaid::{lire_session, ouvrir_contenus, sequence};
     let coffre = match coffre {
-        Some(d) => Some(sal_core::confidentiel::Coffre::ouvrir(d).map_err(|e| e.to_string())?),
+        Some(d) => Some(
+            sal_core::confidentiel::Coffre::ouvrir(d)
+                .map_err(|e| e.to_string())?
+                .avec_maitre(trousseau::cle_maitresse(false)?),
+        ),
         None => None,
     };
     let lire = |chemin: &std::path::Path| {

@@ -8,6 +8,10 @@
 //! - `Deny` / `Gel` → `deny`.
 //!
 //! **Fail-closed** : superviseur injoignable ou réponse invalide ⇒ `deny`.
+//!
+//! **Réponses signées** (EF-S3) : avec `--cle-serveur`, le hook envoie un nonce et
+//! n'accepte qu'une réponse signée sur ce nonce par la clé du superviseur. Un faux
+//! superviseur sur le port de décision ne peut donc rien autoriser.
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -72,7 +76,21 @@ fn supervise(cwd: &str, perimetre: &[PathBuf]) -> bool {
     perimetre.iter().any(|p| std::fs::canonicalize(p).map_or(true, |p| cwd.starts_with(p)))
 }
 
-pub fn executer(perimetre: &[PathBuf]) -> ExitCode {
+fn nonce() -> String {
+    let mut o = [0u8; 16];
+    getrandom::getrandom(&mut o).expect("source d'aléa");
+    hex::encode(o)
+}
+
+pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>) -> ExitCode {
+    let cle_serveur = match cle_serveur.map(|p| std::fs::read_to_string(p).map_err(|e| e.to_string())) {
+        None => None,
+        Some(Ok(t)) => match sal_core::mandat::cle_publique(&t) {
+            Ok(c) => Some(c),
+            Err(_) => return sortie_pre("deny", "clé publique du superviseur illisible (fail-closed)"),
+        },
+        Some(Err(_)) => return sortie_pre("deny", "clé publique du superviseur introuvable (fail-closed)"),
+    };
     let mut brut = String::new();
     if std::io::stdin().read_to_string(&mut brut).is_err() {
         return sortie_pre("deny", "événement illisible (fail-closed)");
@@ -96,6 +114,8 @@ pub fn executer(perimetre: &[PathBuf]) -> ExitCode {
         .find_map(|k| entree.get(*k).and_then(Value::as_str))
         .unwrap_or("");
     let commande = entree.get("command").and_then(Value::as_str).unwrap_or("");
+    let nonce = nonce();
+    let session = s("session_id");
     let corps = json!({
         "session": s("session_id"),
         "agent": std::env::var("SAL_AGENT").unwrap_or_else(|_| "claude-code".into()),
@@ -106,6 +126,7 @@ pub fn executer(perimetre: &[PathBuf]) -> ExitCode {
         "phase": phase,
         "chemin_reel": chemin_reel(&cwd, chemin),
         "contenu_execute": contenu_execute(&cwd, commande),
+        "nonce": nonce,
     });
     let base = std::env::var("SAL_URL").unwrap_or_else(|_| URL_DEFAUT.into());
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(3)).build();
@@ -124,6 +145,12 @@ pub fn executer(perimetre: &[PathBuf]) -> ExitCode {
         Err(e) => return sortie_pre("deny", &format!("superviseur injoignable ({e}) — fail-closed")),
     };
     let motif = reponse.get("motif").and_then(Value::as_str).unwrap_or("");
+    if let Some(cle) = &cle_serveur {
+        let champ = |k: &str| reponse.get(k).and_then(Value::as_str).unwrap_or("");
+        if !sal_core::reponse::verifier(cle, champ("signature"), &nonce, &session, champ("verdict"), champ("regle")) {
+            return sortie_pre("deny", "réponse non signée par le superviseur attendu (usurpation possible) — fail-closed");
+        }
+    }
     match reponse.get("verdict").and_then(Value::as_str) {
         Some("allow") => sortie_pre("allow", motif),
         Some("review") => sortie_pre("ask", motif),

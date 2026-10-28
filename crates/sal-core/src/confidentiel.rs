@@ -13,8 +13,13 @@
 //! **Effacer** une session, c'est détruire sa clé : les contenus deviennent illisibles,
 //! mais la chaîne de hachage, calculée sur le texte chiffré, reste vérifiable.
 //!
-//! Limite (lot 4 de J2) : les clés sont des fichiers 0600 dans un dossier distinct du
-//! journal, pas encore dans le trousseau du système ni un TPM (EF-S4).
+//! **Clé maîtresse** (EF-S4, lot 4 de J2) : les fichiers de clés (sessions, comptes,
+//! signature) sont eux-mêmes **enveloppés**, chiffrés par une clé maîtresse tenue dans le
+//! trousseau du système. Lire un fichier de clé ne donne que du chiffré. Une seule entrée
+//! de trousseau : une seule autorisation à donner, pas une par session.
+//!
+//! Un fichier encore en clair (format antérieur) reste lisible ; `sal trousseau migrer`
+//! l'enveloppe.
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -32,9 +37,47 @@ const CHAMPS_SENSIBLES: &[&str] = &["ressource"];
 /// Clés de session, une par fichier.
 pub struct Coffre {
     dossier: PathBuf,
+    maitre: Option<Cle>,
 }
 
 pub type Cle = [u8; 32];
+
+const PREFIXE_ENVELOPPE: &str = "enveloppe:v1:";
+
+/// Chiffre un secret par la clé maîtresse ; l'étiquette (usage du secret) est liée au
+/// chiffré : un secret enveloppé pour un usage ne s'ouvre pas pour un autre.
+pub fn envelopper(maitre: &Cle, etiquette: &str, secret: &[u8]) -> String {
+    let mut nonce = [0u8; 12];
+    getrandom::getrandom(&mut nonce).expect("source d'aléa");
+    let chiffre = ChaCha20Poly1305::new(Key::from_slice(maitre))
+        .encrypt(Nonce::from_slice(&nonce), Payload { msg: secret, aad: etiquette.as_bytes() })
+        .expect("chiffrement");
+    format!("{PREFIXE_ENVELOPPE}{}:{}", hex::encode(nonce), hex::encode(chiffre))
+}
+
+/// Vrai si le texte est un secret enveloppé (et non une clé en clair).
+pub fn est_enveloppe(texte: &str) -> bool {
+    texte.trim().starts_with(PREFIXE_ENVELOPPE)
+}
+
+/// Lit un secret de fichier : enveloppé (clé maîtresse requise) ou, format antérieur, en
+/// hexadécimal clair.
+pub fn lire_secret(texte: &str, maitre: Option<&Cle>, etiquette: &str) -> Result<Vec<u8>, String> {
+    let texte = texte.trim();
+    let Some(reste) = texte.strip_prefix(PREFIXE_ENVELOPPE) else {
+        return hex::decode(texte).map_err(|e| format!("clé illisible : {e}"));
+    };
+    let maitre = maitre.ok_or("clé enveloppée : clé maîtresse du trousseau requise")?;
+    let (n, c) = reste.split_once(':').ok_or("enveloppe mal formée")?;
+    let nonce = hex::decode(n).map_err(|_| "enveloppe mal formée")?;
+    let chiffre = hex::decode(c).map_err(|_| "enveloppe mal formée")?;
+    if nonce.len() != 12 {
+        return Err("enveloppe mal formée".into());
+    }
+    ChaCha20Poly1305::new(Key::from_slice(maitre))
+        .decrypt(Nonce::from_slice(&nonce), Payload { msg: &chiffre, aad: etiquette.as_bytes() })
+        .map_err(|_| "enveloppe : mauvaise clé maîtresse ou mauvais usage".to_string())
+}
 
 impl Coffre {
     pub fn ouvrir(dossier: impl Into<PathBuf>) -> std::io::Result<Self> {
@@ -45,7 +88,24 @@ impl Coffre {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o700))?;
         }
-        Ok(Self { dossier })
+        Ok(Self { dossier, maitre: None })
+    }
+
+    /// Enveloppe les clés créées désormais, et ouvre les clés enveloppées.
+    pub fn avec_maitre(mut self, maitre: Cle) -> Self {
+        self.maitre = Some(maitre);
+        self
+    }
+
+    /// Étiquette d'enveloppe : dérivée du nom de fichier, pour que `sal trousseau migrer`
+    /// puisse la retrouver sans connaître l'identifiant de session.
+    fn etiquette(session: &str) -> String {
+        format!("session:{}", nom_fichier(session).trim_end_matches(".jsonl"))
+    }
+
+    /// Étiquette d'enveloppe d'un fichier de clé de session existant.
+    pub fn etiquette_fichier(nom: &str) -> String {
+        format!("session:{}", nom.trim_end_matches(".cle"))
     }
 
     fn chemin(&self, session: &str) -> PathBuf {
@@ -54,8 +114,8 @@ impl Coffre {
 
     /// Clé de la session, si elle existe (absente : jamais créée, ou effacée).
     pub fn cle(&self, session: &str) -> Option<Cle> {
-        let hexa = std::fs::read_to_string(self.chemin(session)).ok()?;
-        hex::decode(hexa.trim()).ok()?.try_into().ok()
+        let texte = std::fs::read_to_string(self.chemin(session)).ok()?;
+        lire_secret(&texte, self.maitre.as_ref(), &Self::etiquette(session)).ok()?.try_into().ok()
     }
 
     /// Clé de la session, créée au premier besoin.
@@ -73,7 +133,11 @@ impl Coffre {
             options.mode(0o600);
         }
         let mut f = options.open(self.chemin(session))?;
-        f.write_all(hex::encode(cle).as_bytes())?;
+        let texte = match &self.maitre {
+            Some(m) => envelopper(m, &Self::etiquette(session), &cle),
+            None => hex::encode(cle),
+        };
+        f.write_all(texte.as_bytes())?;
         f.sync_all()?;
         Ok(cle)
     }
@@ -252,6 +316,32 @@ mod tests {
         assert_eq!(reference(&cle, "a"), reference(&cle, "a"));
         assert_ne!(reference(&cle, "a"), reference(&cle, "b"));
         assert_ne!(reference(&cle, "a"), reference(&[8u8; 32], "a"));
+    }
+
+    #[test]
+    fn enveloppe_liee_a_l_usage_et_a_la_cle() {
+        let m = [5u8; 32];
+        let e = envelopper(&m, "compte:alice", b"secret");
+        assert!(est_enveloppe(&e) && !e.contains(&hex::encode(b"secret")));
+        assert_eq!(lire_secret(&e, Some(&m), "compte:alice").unwrap(), b"secret");
+        assert!(lire_secret(&e, Some(&m), "compte:bob").is_err());
+        assert!(lire_secret(&e, Some(&[6u8; 32]), "compte:alice").is_err());
+        assert!(lire_secret(&e, None, "compte:alice").is_err());
+        // Format antérieur, en clair : toujours lisible.
+        assert_eq!(lire_secret("0a0b", None, "x").unwrap(), vec![10, 11]);
+    }
+
+    #[test]
+    fn coffre_avec_maitre() {
+        let d = std::env::temp_dir().join(format!("sal-coffre-maitre-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let c = Coffre::ouvrir(&d).unwrap().avec_maitre([5u8; 32]);
+        let k = c.cle_ou_creer("s").unwrap();
+        let fichier = std::fs::read_to_string(c.chemin("s")).unwrap();
+        assert!(est_enveloppe(&fichier) && !fichier.contains(&hex::encode(k)));
+        assert_eq!(c.cle("s"), Some(k));
+        // Sans la clé maîtresse, le fichier ne donne rien.
+        assert_eq!(Coffre::ouvrir(&d).unwrap().cle("s"), None);
     }
 
     #[test]

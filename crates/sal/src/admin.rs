@@ -3,8 +3,8 @@
 //! - `sal admin <operation>` — envoie une requête signée par la clé du compte.
 //!
 //! Les clés privées des comptes vivent par défaut dans `~/.config/sal/comptes/`, hors de
-//! tout dépôt. Au niveau 1, l'agent tourne sous le même utilisateur : le profil C refuse
-//! de lire ces fichiers, mais seul le trousseau (lot 4) les mettra hors de sa portée.
+//! tout dépôt, **enveloppées** par la clé maîtresse du trousseau : les lire ne donne que
+//! du chiffré (le profil C refuse en outre à l'agent de les lire).
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,19 +14,6 @@ use serde_json::Value;
 /// Dossier par défaut des clés privées des comptes.
 pub fn dossier_cles() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config/sal/comptes")
-}
-
-fn ecrire_privee(chemin: &Path, contenu: &str) -> Result<(), String> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut f = options.open(chemin).map_err(|e| format!("{} : {e}", chemin.display()))?;
-    f.write_all(contenu.as_bytes()).map_err(|e| e.to_string())
 }
 
 pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) -> Result<(), String> {
@@ -53,24 +40,21 @@ pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) 
     getrandom::getrandom(&mut graine).map_err(|e| e.to_string())?;
     let cle = ed25519_dalek::SigningKey::from_bytes(&graine);
     let chemin = dossier.join(format!("{id}.cle"));
-    ecrire_privee(&chemin, &hex::encode(cle.to_bytes()))?;
+    crate::trousseau::ecrire_cle_privee(&chemin, &format!("compte:{id}"), &cle)?;
     comptes.comptes.push(Compte {
         id: id.into(),
         roles: roles.to_vec(),
         cle_publique: hex::encode(cle.verifying_key().to_bytes()),
     });
     std::fs::write(fichier, serde_yaml::to_string(&comptes).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    println!("compte {id} ajouté à {} ; clé privée : {} (0600)", fichier.display(), chemin.display());
+    println!("compte {id} ajouté à {} ; clé privée : {} (enveloppée, 0600)", fichier.display(), chemin.display());
     println!("redémarrer `sal serve` pour le prendre en compte");
     Ok(())
 }
 
 pub fn envoyer(compte: &str, cle: Option<&Path>, url: &str, operation: Operation, session: Option<String>) -> Result<(), String> {
     let chemin = cle.map(Path::to_path_buf).unwrap_or_else(|| dossier_cles().join(format!("{compte}.cle")));
-    let privee = sal_core::mandat::cle_privee(
-        &std::fs::read_to_string(&chemin).map_err(|e| format!("clé {} : {e}", chemin.display()))?,
-    )
-    .map_err(|e| e.to_string())?;
+    let privee = crate::trousseau::lire_cle_privee(&chemin, &format!("compte:{compte}"))?;
     let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
     let r = requete(compte, &privee, operation, session, t);
     let reponse: Value = match ureq::post(&format!("{url}/admin/requete")).send_json(&r) {

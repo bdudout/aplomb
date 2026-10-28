@@ -15,6 +15,7 @@ corrigent cela (EF-C5, principe 9 de l'expression de besoin) :
 ```sh
 sudo install -d -o root -g wheel -m 755 /usr/local/libexec/sal
 sudo install -o root -g wheel -m 755 target/debug/sal /usr/local/libexec/sal/sal
+sudo install -o root -g wheel -m 644 cles/reponses.pub /usr/local/libexec/sal/reponses.pub
 sudo install -d -o root -g wheel -m 755 "/Library/Application Support/ClaudeCode"
 sudo install -o root -g wheel -m 644 deploiement/managed-settings.json "/Library/Application Support/ClaudeCode/managed-settings.json"
 ```

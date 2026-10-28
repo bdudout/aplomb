@@ -508,6 +508,7 @@ mod tests {
             phase: Phase::Avant,
             chemin_reel: None,
             contenu_execute: None,
+            nonce: None,
         }
     }
 
