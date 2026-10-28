@@ -11,11 +11,47 @@
 //! Une observation (après exécution) est une flèche retour des outils vers l'agent.
 //! On n'exporte qu'une chaîne vérifiée : un diagramme ne doit jamais montrer un journal
 //! altéré comme s'il était intact.
+//!
+//! Contenus scellés (EF-P1) : sans la clé de session, le diagramme montre les outils,
+//! verdicts et règles, et désigne chaque ressource par sa référence (`réf 3f2a…`). Avec
+//! la clé (option explicite), les ressources apparaissent en clair. Une session dont la
+//! clé a été détruite est marquée « contenus effacés ».
 use std::path::Path;
 
 use serde_json::Value;
 
+use crate::confidentiel::{restaurer, Coffre, Etat};
 use crate::journal::{self, Entree, ErreurJournal};
+
+/// Déchiffre les entrées si un coffre est fourni ; marque `efface` celles dont la clé
+/// n'existe plus. Sans coffre, les entrées restent scellées.
+pub fn ouvrir_contenus(entrees: Vec<Entree>, coffre: Option<&Coffre>) -> Vec<Entree> {
+    let Some(coffre) = coffre else { return entrees };
+    let Some(session) = entrees.first().map(|e| e.session.clone()) else { return entrees };
+    let cle = coffre.cle(&session);
+    entrees
+        .into_iter()
+        .map(|mut e| {
+            let (contenu, etat) = restaurer(cle.as_ref(), &session, &e.contenu);
+            e.contenu = contenu;
+            if etat == Etat::Scelle && cle.is_none() {
+                if let Some(o) = e.contenu.as_object_mut() {
+                    o.insert("efface".into(), Value::Bool(true));
+                }
+            }
+            e
+        })
+        .collect()
+}
+
+/// Ressource en clair si elle est disponible, sinon sa référence.
+fn designation(c: &Value) -> String {
+    match (champ(c, "ressource"), champ(c, "ref")) {
+        ("", "") => String::new(),
+        ("", r) => format!("réf {r}"),
+        (clair, _) => ressource(clair, 50),
+    }
+}
 
 /// Lit une session après vérification de sa chaîne.
 pub fn lire_session(chemin: &Path) -> Result<Vec<Entree>, ErreurJournal> {
@@ -94,6 +130,16 @@ pub fn sequence(entrees: &[Entree], max: usize) -> String {
         )),
         None => l.push(format!("    Note over A,H: session {} · chaîne vérifiée", texte(session, 40))),
     }
+    let mention = if entrees.iter().any(|e| e.contenu.get("efface").is_some()) {
+        Some("contenus effacés (clé de session détruite) : références seulement")
+    } else if entrees.iter().any(|e| e.contenu.get("scelle").is_some()) {
+        Some("contenus scellés : références seulement")
+    } else {
+        None
+    };
+    if let Some(m) = mention {
+        l.push(format!("    Note over A,H: {m}"));
+    }
 
     let actions: Vec<&Entree> = entrees.iter().filter(|e| e.type_ != "session").collect();
     let omises = actions.len().saturating_sub(max);
@@ -108,7 +154,7 @@ pub fn sequence(entrees: &[Entree], max: usize) -> String {
         match e.type_.as_str() {
             "decision" => {
                 let outil = format!("{} {}", texte(champ(c, "outil"), 30), texte(champ(c, "verbe"), 20));
-                l.push(format!("    A->>S: {n}. {outil} {}", ressource(champ(c, "ressource"), 50)));
+                l.push(format!("    A->>S: {n}. {outil} {}", designation(c)));
                 // Un avis qui a durci la décision (borne, moniteur) en est la vraie cause.
                 let durci_par = c
                     .get("avis")
@@ -131,7 +177,7 @@ pub fn sequence(entrees: &[Entree], max: usize) -> String {
             }
             "observation" => {
                 let outil = texte(champ(c, "outil"), 30);
-                l.push(format!("    O-->>A: {n}. exécuté : {outil} {}", ressource(champ(c, "ressource"), 50)));
+                l.push(format!("    O-->>A: {n}. exécuté : {outil} {}", designation(c)));
             }
             "administration" => {
                 let action = champ(c, "action");
@@ -219,6 +265,32 @@ mod tests {
         j.ajouter("s", "decision", c, 1).unwrap();
         let m = sequence(&lire_session(&j.chemin("s")).unwrap(), 200);
         assert!(m.contains("S--xA: GEL (borne-refus)"), "{m}");
+    }
+
+    #[test]
+    fn contenus_scelles_puis_effaces() {
+        use crate::confidentiel::minimiser;
+        let base = std::env::temp_dir().join(format!("sal-mermaid-scelle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mut j = Journal::ouvrir(base.join("journal")).unwrap();
+        let coffre = Coffre::ouvrir(base.join("cles")).unwrap();
+        let cle = coffre.cle_ou_creer("s").unwrap();
+        let d = json!({"outil": "Read", "verbe": "lire", "ressource": "/depot/secret.py", "verdict": "allow",
+            "regle": "lire", "contexte": {"chemin": "/depot/secret.py", "dans_depot": true}});
+        j.ajouter("s", "decision", minimiser(&cle, "s", &d), 1).unwrap();
+        let entrees = lire_session(&j.chemin("s")).unwrap();
+
+        // Sans clé : aucune ressource en clair, une référence à la place.
+        let m = sequence(&ouvrir_contenus(entrees.clone(), None), 200);
+        assert!(!m.contains("secret.py") && m.contains("réf ") && m.contains("contenus scellés"), "{m}");
+        // Avec la clé : en clair.
+        let m = sequence(&ouvrir_contenus(entrees.clone(), Some(&coffre)), 200);
+        assert!(m.contains("/depot/secret.py") && !m.contains("contenus scellés"), "{m}");
+        // Clé détruite : la chaîne reste vérifiable, le contenu est perdu.
+        assert!(coffre.effacer("s").unwrap());
+        let entrees = lire_session(&j.chemin("s")).unwrap();
+        let m = sequence(&ouvrir_contenus(entrees, Some(&coffre)), 200);
+        assert!(!m.contains("secret.py") && m.contains("contenus effacés"), "{m}");
     }
 
     #[test]

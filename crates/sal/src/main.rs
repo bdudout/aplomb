@@ -5,7 +5,8 @@
 //! - `sal keygen` — paire de clés ed25519 pour signer les mandats ;
 //! - `sal sign`   — calcule les empreintes des règles et signe un mandat ;
 //! - `sal verify` — vérifie les chaînes du journal ;
-//! - `sal mermaid` — exporte les sessions en diagrammes de séquence Mermaid.
+//! - `sal mermaid` — exporte les sessions en diagrammes de séquence Mermaid ;
+//! - `sal effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2).
 #![forbid(unsafe_code)]
 
 mod hook;
@@ -64,6 +65,18 @@ enum Commande {
         /// Nombre maximal d'entrées par diagramme (les plus récentes sont gardées).
         #[arg(long, default_value_t = 200)]
         max: usize,
+        /// Montre les ressources en clair à l'aide des clés de session (sinon : références).
+        #[arg(long)]
+        dechiffrer: bool,
+        #[arg(long, default_value = "journal-cles")]
+        coffre: PathBuf,
+    },
+    /// Efface les contenus d'une session : sa clé est détruite, la chaîne reste vérifiable.
+    Effacer {
+        #[arg(long)]
+        session: String,
+        #[arg(long, default_value = "journal-cles")]
+        coffre: PathBuf,
     },
 }
 
@@ -75,7 +88,11 @@ fn main() -> ExitCode {
         Commande::Keygen { dossier } => keygen(&dossier),
         Commande::Sign { mandat, cle } => signer(&mandat, &cle),
         Commande::Verify { journal } => verifier(&journal),
-        Commande::Mermaid { journal, session, sortie, max } => mermaid(&journal, session.as_deref(), &sortie, max),
+        Commande::Mermaid { journal, session, sortie, max, dechiffrer, coffre } => {
+            let coffre = if dechiffrer { Some(coffre) } else { None };
+            mermaid(&journal, session.as_deref(), &sortie, max, coffre.as_deref())
+        }
+        Commande::Effacer { session, coffre } => effacer(&session, &coffre),
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,
@@ -132,15 +149,40 @@ fn verifier(journal: &std::path::Path) -> Result<(), String> {
     }
 }
 
-fn mermaid(journal: &std::path::Path, session: Option<&str>, sortie: &std::path::Path, max: usize) -> Result<(), String> {
-    use sal_core::mermaid::{lire_session, sequence};
+fn effacer(session: &str, coffre: &std::path::Path) -> Result<(), String> {
+    let c = sal_core::confidentiel::Coffre::ouvrir(coffre).map_err(|e| e.to_string())?;
+    if c.effacer(session).map_err(|e| e.to_string())? {
+        println!("session {session} : clé détruite, contenus effacés (la chaîne reste vérifiable)");
+        Ok(())
+    } else {
+        Err(format!("aucune clé pour la session {session} (déjà effacée, ou journal en clair)"))
+    }
+}
+
+fn mermaid(
+    journal: &std::path::Path,
+    session: Option<&str>,
+    sortie: &std::path::Path,
+    max: usize,
+    coffre: Option<&std::path::Path>,
+) -> Result<(), String> {
+    use sal_core::mermaid::{lire_session, ouvrir_contenus, sequence};
+    let coffre = match coffre {
+        Some(d) => Some(sal_core::confidentiel::Coffre::ouvrir(d).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let lire = |chemin: &std::path::Path| {
+        lire_session(chemin)
+            .map(|e| ouvrir_contenus(e, coffre.as_ref()))
+            .map_err(|e| format!("ÉCHEC {} : {e}", chemin.display()))
+    };
     if let Some(s) = session {
         let j = sal_core::journal::Journal::ouvrir(journal).map_err(|e| e.to_string())?;
         let chemin = j.chemin(s);
         if !chemin.exists() {
             return Err(format!("session {s} absente du journal"));
         }
-        let entrees = lire_session(&chemin).map_err(|e| format!("{} : {e}", chemin.display()))?;
+        let entrees = lire(&chemin)?;
         print!("{}", sequence(&entrees, max));
         return Ok(());
     }
@@ -153,7 +195,7 @@ fn mermaid(journal: &std::path::Path, session: Option<&str>, sortie: &std::path:
     fichiers.sort();
     for f in &fichiers {
         // Une chaîne altérée arrête l'export : aucun diagramme d'un journal douteux.
-        let entrees = lire_session(f).map_err(|e| format!("ÉCHEC {} : {e}", f.display()))?;
+        let entrees = lire(f)?;
         let cible = sortie.join(f.with_extension("mmd").file_name().unwrap_or_default());
         std::fs::write(&cible, sequence(&entrees, max)).map_err(|e| e.to_string())?;
     }

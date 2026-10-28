@@ -24,11 +24,12 @@ cargo build
 - Dépôt de test supervisé : `../bac-a-sable` (hook dans `.claude/settings.json`)
 - Rejouer des scénarios sans Claude Code : `scripts/scenarios.sh`
 - Vérifier le journal : `./target/debug/sal verify --journal journal`
+- Effacer les contenus d'une session (la chaîne reste vérifiable) : `./target/debug/sal effacer --session <id>`
 - Suivre les requêtes d'un agent en diagramme de séquence Mermaid (rendu par Pele ou tout outil Mermaid) :
   `./target/debug/sal mermaid --session <id>` (sortie standard), ou
   `./target/debug/sal mermaid --sortie diagrammes` pour un fichier `.mmd` par session.
-  Seule une chaîne vérifiée est exportée. Les diagrammes reprennent les commandes et
-  les chemins du journal : à traiter comme le journal lui-même.
+  Seule une chaîne vérifiée est exportée. Par défaut, les ressources n'apparaissent que
+  par leur référence ; `--dechiffrer` les montre en clair à l'aide des clés de session.
 
 Toute modification des règles `profils/code/*.cedar` ou du mandat impose de le
 re-signer ; sinon `sal serve` refuse de démarrer.
@@ -40,10 +41,11 @@ construite ni testée sur ce poste).
 
 | | |
 |---|---|
-| Tests | 51 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes) |
+| Tests | 57 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Hook hors de portée | Paramètres gérés prêts (`deploiement/`), non installés : droits administrateur requis |
+| Journal minimisé | Métadonnées en clair ; ressource, commande, chemin et domaine chiffrés par session (EF-P1) ; `sal effacer` détruit la clé (EF-P2) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |

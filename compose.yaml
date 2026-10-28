@@ -10,6 +10,7 @@ services:
       - --mandat=/etc/sal/mandats/bac-a-sable.yaml
       - --cle-publique=/etc/sal/cles/sal.pub
       - --journal=/var/lib/sal/journal
+      - --coffre=/var/lib/sal-cles
       - --ecoute-decision=0.0.0.0:7700
       - --ecoute-admin=0.0.0.0:7701
     environment:
@@ -22,6 +23,7 @@ services:
       - ./profils:/etc/sal/profils:ro
       - ./cles/sal.pub:/etc/sal/cles/sal.pub:ro
       - journal:/var/lib/sal/journal
+      - cles:/var/lib/sal-cles
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -29,3 +31,4 @@ services:
 
 volumes:
   journal:
+  cles:

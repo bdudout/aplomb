@@ -7,8 +7,13 @@
 //!   `GET /admin/events` (SSE), `GET /admin/verify`,
 //!   `POST /admin/gel`, `POST /admin/degel` (jeton requis).
 //!
-//! Limites J1 : pas de mTLS ni de comptes ; le jeton d'administration protège seulement
-//! les actions de gel/dégel (J2).
+//! **Minimisation** (EF-P1, EF-P2) : le journal sur disque ne garde en clair que des
+//! métadonnées ; les contenus venant de l'agent sont chiffrés par une clé de session
+//! tenue dans un coffre distinct (`--coffre`). La vue technique, en mémoire, montre les
+//! actions en clair à l'opérateur pendant la session.
+//!
+//! Limites : pas de mTLS ni de comptes ; le jeton d'administration protège seulement
+//! les actions de gel/dégel (lots 3 et 4 de J2).
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -23,6 +28,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use sal_core::action::{EvenementOutil, Phase};
+use sal_core::confidentiel::{minimiser, Coffre};
 use sal_core::journal::Journal;
 use sal_core::superviseur::Superviseur;
 use serde::Deserialize;
@@ -45,6 +51,10 @@ pub struct Options {
     /// Dossier du journal.
     #[arg(long, default_value = "journal")]
     journal: PathBuf,
+    /// Dossier des clés de session (distinct du journal ; effacer une clé efface les
+    /// contenus de la session).
+    #[arg(long, default_value = "journal-cles")]
+    coffre: PathBuf,
     #[arg(long, default_value = "127.0.0.1:7700")]
     ecoute_decision: SocketAddr,
     #[arg(long, default_value = "127.0.0.1:7701")]
@@ -54,6 +64,7 @@ pub struct Options {
 struct Interne {
     superviseur: Superviseur,
     journal: Journal,
+    coffre: Coffre,
     historique: VecDeque<Value>,
     compteurs: [u64; 4],
 }
@@ -124,7 +135,12 @@ async fn decider(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> i
         "motif": d.motif, "durci": d.durci, "avis": d.avis,
     });
     // Journal d'abord : une décision non journalisée n'est pas rendue (fail-closed).
-    let entree = match interne.journal.ajouter(&evt.session, "decision", contenu.clone(), t) {
+    let cle = match interne.coffre.cle_ou_creer(&evt.session) {
+        Ok(c) => c,
+        Err(e) => return erreur(StatusCode::INTERNAL_SERVER_ERROR, format!("coffre indisponible : {e}")),
+    };
+    let minimise = minimiser(&cle, &evt.session, &contenu);
+    let entree = match interne.journal.ajouter(&evt.session, "decision", minimise, t) {
         Ok(e) => e,
         Err(e) => return erreur(StatusCode::INTERNAL_SERVER_ERROR, format!("journal indisponible : {e}")),
     };
@@ -143,7 +159,10 @@ async fn observer(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> 
     let action = interne.superviseur.normaliser(&evt);
     // Minimisation : ni le contenu écrit ni la sortie de l'outil ne sont journalisés.
     let contenu = json!({"outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource});
-    match interne.journal.ajouter(&evt.session, "observation", contenu.clone(), t) {
+    let Ok(cle) = interne.coffre.cle_ou_creer(&evt.session) else {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    };
+    match interne.journal.ajouter(&evt.session, "observation", minimiser(&cle, &evt.session, &contenu), t) {
         Ok(e) => {
             let evenement = json!({"type": "observation", "horodatage": t, "session": evt.session, "seq": e.seq, "detail": contenu});
             etat.publier(&mut interne, evenement);
@@ -251,10 +270,11 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let id = format!("{} v{}", mandat.mandat.id, mandat.mandat.version);
     let superviseur = Superviseur::nouveau(mandat).map_err(|e| e.to_string())?;
     let journal = Journal::ouvrir(&opts.journal).map_err(|e| e.to_string())?;
+    let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?;
     let jeton = std::env::var("SAL_JETON_ADMIN").unwrap_or_else(|_| jeton_aleatoire());
     let (diffusion, _) = broadcast::channel(1024);
     let etat = Etat {
-        interne: Arc::new(Mutex::new(Interne { superviseur, journal, historique: VecDeque::new(), compteurs: [0; 4] })),
+        interne: Arc::new(Mutex::new(Interne { superviseur, journal, coffre, historique: VecDeque::new(), compteurs: [0; 4] })),
         diffusion,
         jeton_admin: Arc::new(jeton.clone()),
     };

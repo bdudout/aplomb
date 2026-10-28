@@ -10,6 +10,7 @@
 
 pub mod action;
 pub mod bornes;
+pub mod confidentiel;
 pub mod decision;
 pub mod journal;
 pub mod mandat;
