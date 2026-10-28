@@ -1,5 +1,5 @@
 id: bac-a-sable
-version: 2
+version: 3
 profil: code
 agent: claude-code
 intention: Développer et tester la petite bibliothèque Python du dépôt bac-a-sable (calcul et ses tests), sans toucher à rien en dehors du dépôt.
@@ -17,4 +17,10 @@ politique:
   revue: ../profils/code/revue.cedar
   regles_sha256: 5fbf66fdf11322bcd8d32ad97757a74ee81f436629a75b4254f6f4bcab629ac1
   revue_sha256: 83362da38c7502f980547a8e80c8fb361679c59b12bfbed8a9a64f9f17dae8c3
-signature: 5b964248bb8ce9cd2fbb6f82223d6d189bcfd7767b9f99748816aebeee0e3699db75b992862c4f28f9f7f08f42072b39e48c475cac8cbabd1403f070d19c050d
+bornes:
+  refus: 5
+  revues: 20
+  domaines: 10
+  envois: 3
+  actions: 2000
+signature: 9c3277a7bac9ce55e57e3b45facb9f86df00479f3f273bd6b6d658690c1c8234734ada7765f66e6fe415aadc6d35243ee7ae00c99582e22eab826d708ff5bd07

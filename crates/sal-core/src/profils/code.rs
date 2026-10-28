@@ -489,6 +489,7 @@ mod tests {
                 regles_sha256: String::new(),
                 revue_sha256: String::new(),
             },
+            bornes: None,
             signature: None,
         }
     }

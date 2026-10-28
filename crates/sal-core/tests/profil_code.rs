@@ -26,6 +26,7 @@ fn superviseur() -> Superviseur {
             regles_sha256: String::new(),
             revue_sha256: String::new(),
         },
+        bornes: None,
         signature: None,
     };
     Superviseur::nouveau(MandatCharge { mandat, regles: REGLES.into(), revue: REVUE.into(), empreinte: "e".into() })
@@ -165,6 +166,37 @@ fn travail_courant_non_bloque() {
     let mut e = evt("s", "Bash", json!({"command": "python3 outil.py"}));
     e.contenu_execute = Some("print(sum([1, 2]))".into());
     assert_eq!(s.decider(&e).1.verdict, Verdict::Allow);
+}
+
+/// EF-A6 : des refus chacun justifiés, mais répétés, finissent par geler la session ; le
+/// dégel par l'opérateur repart de zéro.
+#[test]
+fn agent_qui_insiste_est_gele() {
+    let mut s = superviseur();
+    let refus = || evt("s", "WebFetch", json!({"url": "https://example.com"}));
+    for i in 1..=5 {
+        assert_eq!(s.decider(&refus()).1.verdict, Verdict::Deny, "refus {i}");
+    }
+    let (_, d) = s.decider(&refus());
+    assert_eq!(d.verdict, Verdict::Gel);
+    assert!(d.durci && d.avis[0].moniteur == "borne-refus", "{d:?}");
+    s.degeler(Some("s"));
+    assert_eq!(s.decider(&refus()).1.verdict, Verdict::Deny);
+}
+
+/// EF-A6 : élargissement progressif — chaque domaine est autorisé, leur nombre ne l'est pas.
+#[test]
+fn elargissement_progressif_gele() {
+    let mut mandat = superviseur().mandat;
+    mandat.mandat.perimetre.domaines_autorises = vec!["example.org".into()];
+    mandat.mandat.bornes = Some(sal_core::bornes::Bornes { domaines: 3, ..Default::default() });
+    let mut s = Superviseur::nouveau(mandat).unwrap();
+    for i in 1..=3 {
+        let e = evt("s", "WebFetch", json!({"url": format!("https://h{i}.example.org/")}));
+        assert_eq!(s.decider(&e).1.verdict, Verdict::Allow);
+    }
+    let e = evt("s", "WebFetch", json!({"url": "https://h4.example.org/"}));
+    assert_eq!(s.decider(&e).1.verdict, Verdict::Gel);
 }
 
 #[test]

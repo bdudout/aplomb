@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use crate::action::{Action, EvenementOutil};
+use crate::bornes::Suivi;
 use crate::decision::{combiner, DecisionFinale, Verdict};
 use crate::mandat::MandatCharge;
 use crate::politique::{ErreurPolitique, Politique};
@@ -14,12 +15,14 @@ pub struct Superviseur {
     politique: Politique,
     gel_global: bool,
     sessions_gelees: HashSet<String>,
+    suivi: Suivi,
 }
 
 impl Superviseur {
     pub fn nouveau(mandat: MandatCharge) -> Result<Self, ErreurPolitique> {
         let politique = Politique::nouvelle(&mandat.regles, &mandat.revue)?;
-        Ok(Self { mandat, politique, gel_global: false, sessions_gelees: HashSet::new() })
+        let suivi = Suivi::nouveau(mandat.mandat.bornes.clone().unwrap_or_default());
+        Ok(Self { mandat, politique, gel_global: false, sessions_gelees: HashSet::new(), suivi })
     }
 
     pub fn normaliser(&self, evt: &EvenementOutil) -> Action {
@@ -40,7 +43,9 @@ impl Superviseur {
             self.politique.evaluer(&action)
         };
         let gele = self.gel_global || self.sessions_gelees.contains(&evt.session);
-        let finale = combiner(politique, Vec::new(), gele);
+        // Bornes cumulées : moniteur déterministe, qui ne peut que durcir (EF-A6, EF-K1).
+        let avis = self.suivi.observer(&action, politique.verdict);
+        let finale = combiner(politique, avis, gele);
         if finale.verdict == Verdict::Gel {
             self.sessions_gelees.insert(evt.session.clone());
         }
@@ -57,6 +62,7 @@ impl Superviseur {
     }
 
     pub fn degeler(&mut self, session: Option<&str>) {
+        self.suivi.reinitialiser(session);
         match session {
             Some(s) => {
                 self.sessions_gelees.remove(s);

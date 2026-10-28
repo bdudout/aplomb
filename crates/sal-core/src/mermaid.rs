@@ -109,7 +109,14 @@ pub fn sequence(entrees: &[Entree], max: usize) -> String {
             "decision" => {
                 let outil = format!("{} {}", texte(champ(c, "outil"), 30), texte(champ(c, "verbe"), 20));
                 l.push(format!("    A->>S: {n}. {outil} {}", ressource(champ(c, "ressource"), 50)));
-                let regle = texte(champ(c, "regle"), 40);
+                // Un avis qui a durci la décision (borne, moniteur) en est la vraie cause.
+                let durci_par = c
+                    .get("avis")
+                    .and_then(Value::as_array)
+                    .and_then(|a| a.last())
+                    .filter(|_| c.get("durci").and_then(Value::as_bool).unwrap_or(false))
+                    .map(|a| champ(a, "moniteur"));
+                let regle = texte(durci_par.unwrap_or(champ(c, "regle")), 40);
                 match champ(c, "verdict") {
                     "allow" => l.push("    S->>O: autorisé".into()),
                     "review" => l.push(format!("    S->>H: revue demandée ({regle})")),
@@ -200,6 +207,18 @@ mod tests {
         let m = sequence(&session_type("tronque"), 2);
         assert!(m.contains("6 entrées plus anciennes omises"));
         assert!(!m.contains("/depot/a.py"));
+    }
+
+    #[test]
+    fn cause_du_durcissement_affichee() {
+        let d = std::env::temp_dir().join(format!("sal-mermaid-durci-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mut j = Journal::ouvrir(&d).unwrap();
+        let c = json!({"outil": "WebFetch", "verbe": "reseau", "ressource": "x.org", "verdict": "gel",
+            "regle": "reseau-non-autorise", "durci": true, "avis": [{"moniteur": "borne-refus"}]});
+        j.ajouter("s", "decision", c, 1).unwrap();
+        let m = sequence(&lire_session(&j.chemin("s")).unwrap(), 200);
+        assert!(m.contains("S--xA: GEL (borne-refus)"), "{m}");
     }
 
     #[test]

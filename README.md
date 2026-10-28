@@ -40,8 +40,10 @@ construite ni testée sur ce poste).
 
 | | |
 |---|---|
-| Tests | 44 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid) |
+| Tests | 51 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
+| Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
+| Hook hors de portée | Paramètres gérés prêts (`deploiement/`), non installés : droits administrateur requis |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |

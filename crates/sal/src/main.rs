@@ -28,7 +28,13 @@ enum Commande {
     /// Lance le service (API décision + API administration).
     Serve(serveur::Options),
     /// Hook Claude Code : lit l'événement sur stdin, répond sur stdout.
-    Hook,
+    Hook {
+        /// Dossiers supervisés (répétable). Sans cette option, tout est supervisé. Utile
+        /// quand le hook est installé en paramètres gérés, qui s'appliquent à toute la
+        /// machine : hors de ces dossiers, le hook laisse décider Claude Code.
+        #[arg(long)]
+        perimetre: Vec<PathBuf>,
+    },
     /// Génère une paire de clés (sal.cle privée, sal.pub publique).
     Keygen {
         #[arg(long, default_value = ".")]
@@ -65,7 +71,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let res = match cli.commande {
         Commande::Serve(opts) => serveur::lancer(opts),
-        Commande::Hook => return hook::executer(),
+        Commande::Hook { perimetre } => return hook::executer(&perimetre),
         Commande::Keygen { dossier } => keygen(&dossier),
         Commande::Sign { mandat, cle } => signer(&mandat, &cle),
         Commande::Verify { journal } => verifier(&journal),

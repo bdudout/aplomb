@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod action;
+pub mod bornes;
 pub mod decision;
 pub mod journal;
 pub mod mandat;

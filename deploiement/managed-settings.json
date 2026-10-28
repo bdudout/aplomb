@@ -1,0 +1,29 @@
+{
+  "allowManagedHooksOnly": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/libexec/sal/sal hook --perimetre /Users/bdudout/Documents/alignment-supervisor/bac-a-sable",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/libexec/sal/sal hook --perimetre /Users/bdudout/Documents/alignment-supervisor/bac-a-sable",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -121,7 +121,7 @@ async fn decider(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> i
     let contenu = json!({
         "outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource,
         "contexte": action.contexte, "verdict": d.verdict, "regle": d.politique.regle,
-        "motif": d.motif, "durci": d.durci,
+        "motif": d.motif, "durci": d.durci, "avis": d.avis,
     });
     // Journal d'abord : une décision non journalisée n'est pas rendue (fail-closed).
     let entree = match interne.journal.ajouter(&evt.session, "decision", contenu.clone(), t) {

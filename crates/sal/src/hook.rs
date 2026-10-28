@@ -9,7 +9,7 @@
 //!
 //! **Fail-closed** : superviseur injoignable ou réponse invalide ⇒ `deny`.
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -62,7 +62,17 @@ fn sortie_pre(decision: &str, motif: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-pub fn executer() -> ExitCode {
+/// Vrai si la session doit être supervisée. Sans périmètre déclaré : toujours. Un
+/// répertoire de travail introuvable est supervisé (fail-closed).
+fn supervise(cwd: &str, perimetre: &[PathBuf]) -> bool {
+    if perimetre.is_empty() {
+        return true;
+    }
+    let Ok(cwd) = std::fs::canonicalize(cwd) else { return true };
+    perimetre.iter().any(|p| std::fs::canonicalize(p).map_or(true, |p| cwd.starts_with(p)))
+}
+
+pub fn executer(perimetre: &[PathBuf]) -> ExitCode {
     let mut brut = String::new();
     if std::io::stdin().read_to_string(&mut brut).is_err() {
         return sortie_pre("deny", "événement illisible (fail-closed)");
@@ -76,6 +86,11 @@ pub fn executer() -> ExitCode {
     let phase = if nom_evt == "PostToolUse" { "apres" } else { "avant" };
     let entree = evt.get("tool_input").cloned().unwrap_or(json!({}));
     let cwd = s("cwd");
+    if !supervise(&cwd, perimetre) {
+        // Hors des dossiers supervisés : aucune décision, Claude Code décide seul.
+        println!("{{}}");
+        return ExitCode::SUCCESS;
+    }
     let chemin = ["file_path", "notebook_path", "path"]
         .iter()
         .find_map(|k| entree.get(*k).and_then(Value::as_str))
