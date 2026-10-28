@@ -65,7 +65,7 @@ sal hook ──HTTP──▶ sal serve ── API décision :7700 ─┐
 ## Ce que J1 ne fait pas (jalons suivants)
 
 - Niveau 1 seulement : une action faite hors hook n'est pas vue (niveau 3 au jalon J3).
-- Pas de mTLS, pas d'authentification sur l'API d'administration (liée à 127.0.0.1) : J2.
+- ~~Pas d'authentification sur l'API d'administration~~ : fait (J2, lot 3). Comptes nominatifs à clé ed25519, rôles, requêtes signées sans rejeu, dégel à quatre yeux, sessions de navigateur par ticket à usage unique. Restent : mTLS et clés dans le trousseau (lot 4), quatre yeux pour modifier un mandat ou le fichier de comptes, HTTP en clair sur la boucle locale.
 - Entrées du journal chaînées mais pas encore signées ni ancrées hors machine : J2.
 - ~~Minimisation du journal~~ : fait (J2, lot 2). Contenus venant de l'agent chiffrés par session (ChaCha20-Poly1305), effacement par destruction de la clé. Les clés sont encore des fichiers 0600, pas dans le trousseau (lot 4).
 - Pas de moniteur probabiliste (juge, guard model) : J5.

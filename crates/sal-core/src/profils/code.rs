@@ -72,7 +72,7 @@ fn sous(chemin: &Path, racine: &Path) -> bool {
 
 const MOTIFS_SENSIBLES: &[&str] = &[
     ".env", "id_rsa", "id_ed25519", ".ssh/", ".aws/", ".gnupg", "credentials", ".pem", ".p12",
-    ".key", ".netrc", ".npmrc", ".pypirc", "secrets",
+    ".key", ".netrc", ".npmrc", ".pypirc", "secrets", "sal.cle", "journal-cles", ".config/sal/",
 ];
 
 fn est_sensible(texte: &str) -> bool {
@@ -325,6 +325,9 @@ fn touche_supervision(texte: &str) -> bool {
         || t.contains("killall sal")
         || t.contains("sal serve")
         || t.contains("disableallhooks")
+        || ["sal admin", "sal compte"].iter().any(|c| {
+            t.starts_with(c) || t.contains(&format!(" {c}")) || t.contains(&format!("/{c}"))
+        })
 }
 
 fn texte_ecrit(entree: &Value) -> String {
@@ -568,6 +571,16 @@ mod tests {
     fn supervision() {
         assert!(b(&ctx("Bash", json!({"command": "curl -X POST http://127.0.0.1:7701/admin/degel"})), "touche_supervision"));
         assert!(!b(&ctx("Read", json!({"file_path": "src/a.rs"})), "touche_supervision"));
+    }
+
+    #[test]
+    fn cles_et_administration_hors_de_portee() {
+        assert!(b(&ctx("Read", json!({"file_path": "~/.config/sal/comptes/alice.cle"})), "chemin_sensible"));
+        assert!(b(&ctx("Bash", json!({"command": "cat journal-cles/x.cle"})), "commande_lit_secret"));
+        assert!(b(&ctx("Bash", json!({"command": "../sal/target/debug/sal admin --compte a degel"})), "touche_supervision"));
+        // Pas de faux positifs.
+        assert!(!b(&ctx("Bash", json!({"command": "python3 -c 'x=[1]; x.clear()'"})), "commande_lit_secret"));
+        assert!(!b(&ctx("Bash", json!({"command": "grep -r 'universal admin' ."})), "touche_supervision"));
     }
 
     #[test]

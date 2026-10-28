@@ -2,32 +2,38 @@
 //!
 //! - **Décision** (`--ecoute-decision`, joignable par l'agent) :
 //!   `POST /v1/decide`, `POST /v1/observe`, `GET /v1/health`.
-//! - **Administration** (`--ecoute-admin`, jamais exposée à l'agent) :
-//!   `GET /` (vue technique), `GET /admin/etat`, `GET /admin/historique`,
-//!   `GET /admin/events` (SSE), `GET /admin/verify`,
-//!   `POST /admin/gel`, `POST /admin/degel` (jeton requis).
+//! - **Administration** (`--ecoute-admin`, jamais exposée à l'agent), réservée aux
+//!   comptes déclarés dans `--comptes` (EF-S2, module `sal_core::autorite`) :
+//!   - `POST /admin/requete` : requête signée par la clé d'un compte (`sal admin`) ;
+//!   - `GET /connexion?ticket=…` : ouvre une session de navigateur (cookie) ;
+//!   - `GET /admin/etat`, `/admin/historique`, `/admin/events` (SSE), `/admin/verify`,
+//!     `POST /admin/gel`, `/admin/degel`, `/admin/deconnexion` : session requise ;
+//!   - `GET /` : la page de la vue technique (sans données).
+//!
+//! Geler se fait seul ; dégeler exige deux comptes distincts (quatre yeux).
 //!
 //! **Minimisation** (EF-P1, EF-P2) : le journal sur disque ne garde en clair que des
 //! métadonnées ; les contenus venant de l'agent sont chiffrés par une clé de session
 //! tenue dans un coffre distinct (`--coffre`). La vue technique, en mémoire, montre les
 //! actions en clair à l'opérateur pendant la session.
 //!
-//! Limites : pas de mTLS ni de comptes ; le jeton d'administration protège seulement
-//! les actions de gel/dégel (lots 3 et 4 de J2).
+//! Limites : pas de mTLS ni de trousseau (lot 4 de J2) ; HTTP en clair sur la boucle
+//! locale ; le fichier de comptes n'est pas encore signé.
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use sal_core::action::{EvenementOutil, Phase};
+use sal_core::autorite::{Autorite, Issue, Operation, RequeteSignee};
 use sal_core::confidentiel::{minimiser, Coffre};
 use sal_core::journal::Journal;
 use sal_core::superviseur::Superviseur;
@@ -55,6 +61,9 @@ pub struct Options {
     /// contenus de la session).
     #[arg(long, default_value = "journal-cles")]
     coffre: PathBuf,
+    /// Comptes d'administration (YAML) : identifiants, rôles, clés publiques.
+    #[arg(long, default_value = "comptes.yaml")]
+    comptes: PathBuf,
     #[arg(long, default_value = "127.0.0.1:7700")]
     ecoute_decision: SocketAddr,
     #[arg(long, default_value = "127.0.0.1:7701")]
@@ -67,13 +76,28 @@ struct Interne {
     coffre: Coffre,
     historique: VecDeque<Value>,
     compteurs: [u64; 4],
+    autorite: Autorite,
 }
 
 #[derive(Clone)]
 struct Etat {
     interne: Arc<Mutex<Interne>>,
     diffusion: broadcast::Sender<String>,
-    jeton_admin: Arc<String>,
+}
+
+/// Session globale du journal pour les actions d'administration sans session visée.
+const SESSION_ADMIN: &str = "_administration";
+const COOKIE: &str = "sal_session";
+
+/// Compte de la session de navigateur, depuis le cookie.
+fn compte_web(interne: &mut Interne, entetes: &HeaderMap) -> Option<String> {
+    let cookies = entetes.get("cookie")?.to_str().ok()?;
+    let jeton = cookies.split(';').find_map(|c| c.trim().strip_prefix(&format!("{COOKIE}=")))?;
+    interne.autorite.session_web(jeton, maintenant()).ok()
+}
+
+fn non_connecte() -> Response {
+    (StatusCode::UNAUTHORIZED, Json(json!({"erreur": "non connecté : sal admin connexion --compte <id>"}))).into_response()
 }
 
 fn maintenant() -> u64 {
@@ -180,8 +204,16 @@ async fn page() -> Html<&'static str> {
     Html(include_str!("ui.html"))
 }
 
-async fn etat_admin(State(etat): State<Etat>) -> Json<Value> {
-    let interne = etat.interne.lock().expect("verrou");
+async fn etat_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    let mut interne = etat.interne.lock().expect("verrou");
+    let Some(compte) = compte_web(&mut interne, &entetes) else { return non_connecte() };
+    let roles = interne.autorite.roles(&compte);
+    let demandes: Vec<Value> = interne
+        .autorite
+        .demandes_en_attente()
+        .into_iter()
+        .map(|(s, c)| json!({"session": s, "demandeur": c}))
+        .collect();
     let m = &interne.superviseur.mandat;
     let (gel_global, sessions_gelees) = interne.superviseur.etat_gel();
     let c = interne.compteurs;
@@ -190,26 +222,37 @@ async fn etat_admin(State(etat): State<Etat>) -> Json<Value> {
                    "intention": m.mandat.intention, "racine": m.mandat.perimetre.racine, "empreinte": m.empreinte},
         "gel_global": gel_global, "sessions_gelees": sessions_gelees,
         "compteurs": {"allow": c[0], "review": c[1], "deny": c[2], "gel": c[3]},
+        "compte": compte, "roles": roles, "degels_en_attente": demandes,
     }))
+    .into_response()
 }
 
-async fn historique(State(etat): State<Etat>) -> Json<Value> {
-    let interne = etat.interne.lock().expect("verrou");
-    Json(Value::Array(interne.historique.iter().cloned().collect()))
+async fn historique(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    let mut interne = etat.interne.lock().expect("verrou");
+    if compte_web(&mut interne, &entetes).is_none() {
+        return non_connecte();
+    }
+    Json(Value::Array(interne.historique.iter().cloned().collect())).into_response()
 }
 
-async fn flux(State(etat): State<Etat>) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
+async fn flux(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    if compte_web(&mut etat.interne.lock().expect("verrou"), &entetes).is_none() {
+        return non_connecte();
+    }
     let flux = BroadcastStream::new(etat.diffusion.subscribe())
-        .filter_map(|m| async move { m.ok().map(|s| Ok(Event::default().data(s))) });
-    Sse::new(flux).keep_alive(KeepAlive::default())
+        .filter_map(|m| async move { m.ok().map(|s| Ok::<_, std::convert::Infallible>(Event::default().data(s))) });
+    Sse::new(flux).keep_alive(KeepAlive::default()).into_response()
 }
 
-async fn verifier_journal(State(etat): State<Etat>) -> impl IntoResponse {
-    let interne = etat.interne.lock().expect("verrou");
+async fn verifier_journal(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    let mut interne = etat.interne.lock().expect("verrou");
+    if compte_web(&mut interne, &entetes).is_none() {
+        return non_connecte();
+    }
     match interne.journal.verifier_tout() {
-        Ok(s) => (StatusCode::OK, Json(json!({"intact": true, "sessions": s.len(),
-            "entrees": s.iter().map(|(_, n)| n).sum::<u64>()}))),
-        Err((f, e)) => (StatusCode::OK, Json(json!({"intact": false, "fichier": f, "erreur": e.to_string()}))),
+        Ok(s) => Json(json!({"intact": true, "sessions": s.len(),
+            "entrees": s.iter().map(|(_, n)| n).sum::<u64>()})).into_response(),
+        Err((f, e)) => Json(json!({"intact": false, "fichier": f, "erreur": e.to_string()})).into_response(),
     }
 }
 
@@ -218,46 +261,95 @@ struct DemandeGel {
     session: Option<String>,
 }
 
-fn jeton_valide(etat: &Etat, entetes: &HeaderMap) -> bool {
-    entetes
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .is_some_and(|j| j == etat.jeton_admin.as_str())
-}
-
-async fn changer_gel(etat: Etat, entetes: HeaderMap, demande: DemandeGel, geler: bool) -> impl IntoResponse {
-    if !jeton_valide(&etat, &entetes) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"erreur": "jeton d'administration requis"})));
-    }
+/// Applique l'issue d'une opération autorisée et la journalise avec le ou les comptes.
+fn appliquer(etat: &Etat, interne: &mut Interne, issue: &Issue, compte: &str, session: Option<&str>) -> Value {
     let t = maintenant();
+    let detail = match issue {
+        Issue::Ticket(_) => return json!({"issue": "ticket"}),
+        Issue::Gel => {
+            interne.superviseur.geler(session);
+            json!({"action": "gel", "session": session, "compte": compte})
+        }
+        Issue::DegelEnAttente => {
+            json!({"action": "demande-degel", "session": session, "compte": compte})
+        }
+        Issue::Degel { demandeur, approbateur } => {
+            interne.superviseur.degeler(session);
+            json!({"action": "degel", "session": session, "demandeur": demandeur, "approbateur": approbateur})
+        }
+    };
+    let _ = interne.journal.ajouter(session.unwrap_or(SESSION_ADMIN), "administration", detail.clone(), t);
+    etat.publier(interne, json!({"type": "administration", "horodatage": t, "session": session, "detail": detail}));
+    let issue = match issue {
+        Issue::Gel => "gel",
+        Issue::DegelEnAttente => "degel-en-attente",
+        Issue::Degel { .. } => "degel",
+        Issue::Ticket(_) => "ticket",
+    };
+    json!({"issue": issue, "detail": detail})
+}
+
+/// Requête signée par la clé d'un compte (`sal admin`).
+async fn requete_signee(State(etat): State<Etat>, Json(r): Json<RequeteSignee>) -> Response {
     let mut interne = etat.interne.lock().expect("verrou");
-    let session = demande.session.as_deref();
-    if geler {
-        interne.superviseur.geler(session);
-    } else {
-        interne.superviseur.degeler(session);
+    match interne.autorite.traiter(&r, maintenant()) {
+        Ok(Issue::Ticket(ticket)) => Json(json!({"issue": "ticket", "ticket": ticket})).into_response(),
+        Ok(issue) => {
+            let s = r.corps.session.clone();
+            Json(appliquer(&etat, &mut interne, &issue, &r.corps.compte, s.as_deref())).into_response()
+        }
+        Err(e) => (StatusCode::FORBIDDEN, Json(json!({"erreur": e.to_string()}))).into_response(),
     }
-    let detail = json!({"action": if geler { "gel" } else { "degel" }, "session": session});
-    if let Some(s) = session {
-        let _ = interne.journal.ajouter(s, "administration", detail.clone(), t);
+}
+
+/// Action depuis la vue technique : session de navigateur et en-tête anti-CSRF exigés.
+async fn action_web(etat: Etat, entetes: HeaderMap, demande: DemandeGel, operation: Operation) -> Response {
+    if entetes.get("x-sal").and_then(|v| v.to_str().ok()) != Some("1") {
+        return (StatusCode::FORBIDDEN, Json(json!({"erreur": "en-tête X-SAL manquant"}))).into_response();
     }
-    etat.publier(&mut interne, json!({"type": "administration", "horodatage": t, "detail": detail}));
-    (StatusCode::OK, Json(json!({"ok": true})))
+    let mut interne = etat.interne.lock().expect("verrou");
+    let Some(compte) = compte_web(&mut interne, &entetes) else { return non_connecte() };
+    let session = demande.session;
+    match interne.autorite.agir(&compte, operation, session.clone(), maintenant()) {
+        Ok(issue) => Json(appliquer(&etat, &mut interne, &issue, &compte, session.as_deref())).into_response(),
+        Err(e) => (StatusCode::FORBIDDEN, Json(json!({"erreur": e.to_string()}))).into_response(),
+    }
 }
 
-async fn gel(State(etat): State<Etat>, entetes: HeaderMap, corps: Option<Json<DemandeGel>>) -> impl IntoResponse {
-    changer_gel(etat, entetes, corps.map(|j| j.0).unwrap_or_default(), true).await
+async fn gel(State(etat): State<Etat>, entetes: HeaderMap, corps: Option<Json<DemandeGel>>) -> Response {
+    action_web(etat, entetes, corps.map(|j| j.0).unwrap_or_default(), Operation::Gel).await
 }
 
-async fn degel(State(etat): State<Etat>, entetes: HeaderMap, corps: Option<Json<DemandeGel>>) -> impl IntoResponse {
-    changer_gel(etat, entetes, corps.map(|j| j.0).unwrap_or_default(), false).await
+async fn degel(State(etat): State<Etat>, entetes: HeaderMap, corps: Option<Json<DemandeGel>>) -> Response {
+    action_web(etat, entetes, corps.map(|j| j.0).unwrap_or_default(), Operation::Degel).await
 }
 
-fn jeton_aleatoire() -> String {
-    let mut o = [0u8; 24];
-    getrandom::getrandom(&mut o).expect("source d'aléa");
-    hex::encode(o)
+#[derive(Deserialize)]
+struct Ticket {
+    ticket: String,
+}
+
+/// Échange un ticket de connexion contre un cookie de session, puis renvoie vers la vue.
+async fn connexion(State(etat): State<Etat>, Query(q): Query<Ticket>) -> Response {
+    let mut interne = etat.interne.lock().expect("verrou");
+    match interne.autorite.ouvrir_session_web(&q.ticket, maintenant()) {
+        Ok((jeton, _)) => {
+            let cookie = format!(
+                "{COOKIE}={jeton}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
+                sal_core::autorite::SESSION_WEB_MS / 1000
+            );
+            ([("set-cookie", cookie)], Redirect::to("/")).into_response()
+        }
+        Err(e) => (StatusCode::FORBIDDEN, e.to_string()).into_response(),
+    }
+}
+
+async fn deconnexion(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    let cookies = entetes.get("cookie").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if let Some(j) = cookies.split(';').find_map(|c| c.trim().strip_prefix(&format!("{COOKIE}="))) {
+        etat.interne.lock().expect("verrou").autorite.fermer_session_web(j);
+    }
+    ([("set-cookie", format!("{COOKIE}=; Path=/; Max-Age=0"))], StatusCode::NO_CONTENT).into_response()
 }
 
 pub fn lancer(opts: Options) -> Result<(), String> {
@@ -271,12 +363,20 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let superviseur = Superviseur::nouveau(mandat).map_err(|e| e.to_string())?;
     let journal = Journal::ouvrir(&opts.journal).map_err(|e| e.to_string())?;
     let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?;
-    let jeton = std::env::var("SAL_JETON_ADMIN").unwrap_or_else(|_| jeton_aleatoire());
+    let texte_comptes = std::fs::read_to_string(&opts.comptes)
+        .map_err(|e| format!("comptes {} : {e} (créer un compte : sal compte nouveau)", opts.comptes.display()))?;
+    let autorite = Autorite::depuis_yaml(&texte_comptes).map_err(|e| format!("comptes : {e}"))?;
     let (diffusion, _) = broadcast::channel(1024);
     let etat = Etat {
-        interne: Arc::new(Mutex::new(Interne { superviseur, journal, coffre, historique: VecDeque::new(), compteurs: [0; 4] })),
+        interne: Arc::new(Mutex::new(Interne {
+            superviseur,
+            journal,
+            coffre,
+            historique: VecDeque::new(),
+            compteurs: [0; 4],
+            autorite,
+        })),
         diffusion,
-        jeton_admin: Arc::new(jeton.clone()),
     };
 
     let api_decision = Router::new()
@@ -291,6 +391,9 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/historique", get(historique))
         .route("/admin/events", get(flux))
         .route("/admin/verify", get(verifier_journal))
+        .route("/connexion", get(connexion))
+        .route("/admin/requete", post(requete_signee))
+        .route("/admin/deconnexion", post(deconnexion))
         .route("/admin/gel", post(gel))
         .route("/admin/degel", post(degel))
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -303,9 +406,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         eprintln!("SAL — mandat {id}");
         eprintln!("  API décision       : http://{}", opts.ecoute_decision);
         eprintln!("  API administration : http://{}  (vue technique)", opts.ecoute_admin);
-        if std::env::var("SAL_JETON_ADMIN").is_err() {
-            eprintln!("  jeton d'administration (session) : {jeton}");
-        }
+        eprintln!("  comptes            : {}", opts.comptes.display());
+        eprintln!("  connexion à la vue : sal admin connexion --compte <id>");
         let arret = async {
             let _ = tokio::signal::ctrl_c().await;
         };

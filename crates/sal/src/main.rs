@@ -6,9 +6,11 @@
 //! - `sal sign`   — calcule les empreintes des règles et signe un mandat ;
 //! - `sal verify` — vérifie les chaînes du journal ;
 //! - `sal mermaid` — exporte les sessions en diagrammes de séquence Mermaid ;
-//! - `sal effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2).
+//! - `sal effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2) ;
+//! - `sal compte` / `sal admin` — comptes d'administration et requêtes signées (EF-S2).
 #![forbid(unsafe_code)]
 
+mod admin;
 mod hook;
 mod serveur;
 
@@ -71,6 +73,23 @@ enum Commande {
         #[arg(long, default_value = "journal-cles")]
         coffre: PathBuf,
     },
+    /// Gère les comptes d'administration.
+    Compte {
+        #[command(subcommand)]
+        commande: CommandeCompte,
+    },
+    /// Requête d'administration signée par la clé d'un compte.
+    Admin {
+        #[arg(long)]
+        compte: String,
+        /// Clé privée du compte (défaut : ~/.config/sal/comptes/<compte>.cle).
+        #[arg(long)]
+        cle: Option<PathBuf>,
+        #[arg(long, default_value = "http://127.0.0.1:7701")]
+        url: String,
+        #[command(subcommand)]
+        operation: OperationAdmin,
+    },
     /// Efface les contenus d'une session : sa clé est détruite, la chaîne reste vérifiable.
     Effacer {
         #[arg(long)]
@@ -78,6 +97,43 @@ enum Commande {
         #[arg(long, default_value = "journal-cles")]
         coffre: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum CommandeCompte {
+    /// Crée un compte : clé privée dans ~/.config/sal/comptes, clé publique dans le fichier.
+    Nouveau {
+        #[arg(long)]
+        id: String,
+        /// Rôle (répétable) : lecteur, operateur, approbateur.
+        #[arg(long = "role", value_parser = role)]
+        roles: Vec<sal_core::autorite::Role>,
+        #[arg(long, default_value = "comptes.yaml")]
+        fichier: PathBuf,
+        #[arg(long)]
+        dossier: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum OperationAdmin {
+    /// Ouvre la vue technique : affiche un lien de connexion à usage unique.
+    Connexion,
+    /// Gèle une session, ou toutes (effet immédiat).
+    Gel {
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Demande ou approuve un dégel (deux comptes distincts requis).
+    Degel {
+        #[arg(long)]
+        session: Option<String>,
+    },
+}
+
+fn role(s: &str) -> Result<sal_core::autorite::Role, String> {
+    serde_json::from_value(serde_json::Value::String(s.into()))
+        .map_err(|_| format!("rôle inconnu « {s} » (lecteur, operateur, approbateur)"))
 }
 
 fn main() -> ExitCode {
@@ -93,6 +149,18 @@ fn main() -> ExitCode {
             mermaid(&journal, session.as_deref(), &sortie, max, coffre.as_deref())
         }
         Commande::Effacer { session, coffre } => effacer(&session, &coffre),
+        Commande::Compte { commande: CommandeCompte::Nouveau { id, roles, fichier, dossier } } => {
+            admin::nouveau_compte(&id, &roles, &dossier.unwrap_or_else(admin::dossier_cles), &fichier)
+        }
+        Commande::Admin { compte, cle, url, operation } => {
+            use sal_core::autorite::Operation;
+            let (op, session) = match operation {
+                OperationAdmin::Connexion => (Operation::Connexion, None),
+                OperationAdmin::Gel { session } => (Operation::Gel, session),
+                OperationAdmin::Degel { session } => (Operation::Degel, session),
+            };
+            admin::envoyer(&compte, cle.as_deref(), &url, op, session)
+        }
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,

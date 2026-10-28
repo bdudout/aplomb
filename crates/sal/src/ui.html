@@ -50,10 +50,11 @@
 </header>
 <main>
   <div class="barre">
-    <input id="jeton" type="password" placeholder="jeton d'administration" autocomplete="off">
+    <span class="doux" id="compte">non connecté</span>
     <button class="danger" id="geler">Geler tout</button>
-    <button id="degeler">Dégeler</button>
+    <button id="degeler" title="Deux comptes distincts sont nécessaires">Dégeler (4 yeux)</button>
     <button id="verifier">Vérifier le journal</button>
+    <button id="quitter">Se déconnecter</button>
     <span class="doux" id="info"></span>
   </div>
   <table>
@@ -78,7 +79,8 @@ function ajouter(evt) {
     d.outil || d.action || "—",
     null,
     d.ressource || "",
-    evt.type === "decision" ? `${d.regle} — ${d.motif}` : (d.session ? `session ${d.session}` : ""),
+    evt.type === "decision" ? `${d.regle} — ${d.motif}`
+      : [d.compte || (d.demandeur ? `${d.demandeur} + ${d.approbateur}` : ""), d.session ? `session ${d.session}` : "global"].filter(Boolean).join(" · "),
   ];
   cellules.forEach((c, i) => {
     const td = document.createElement("td");
@@ -92,29 +94,48 @@ function ajouter(evt) {
 }
 
 async function rafraichir() {
-  const e = await (await fetch("/admin/etat")).json();
+  const r = await fetch("/admin/etat");
+  if (r.status === 401) { nonConnecte(); return false; }
+  const e = await r.json();
+  $("compte").textContent = `connecté : ${e.compte} (${e.roles.join(", ")})`;
   $("mandat").textContent = `Mandat ${e.mandat.id} v${e.mandat.version} · profil ${e.mandat.profil} · ${e.mandat.racine}`;
   for (const k of ["allow", "review", "deny", "gel"]) $("c-" + k).textContent = e.compteurs[k];
   $("bandeau").style.display = e.gel_global ? "block" : "none";
-  $("info").textContent = e.sessions_gelees.length ? `${e.sessions_gelees.length} session(s) gelée(s)` : "";
+  const gelees = e.sessions_gelees.length ? `${e.sessions_gelees.length} session(s) gelée(s)` : "";
+  const attente = e.degels_en_attente.map(d => `dégel ${d.session ? "de " + d.session.slice(0, 8) : "global"} demandé par ${d.demandeur}`);
+  $("info").textContent = [gelees, ...attente].filter(Boolean).join(" · ");
+  return true;
 }
 
+function nonConnecte() {
+  $("compte").textContent = "non connecté";
+  $("mandat").textContent = "Connexion : sal admin connexion --compte <id>, puis ouvrir le lien affiché.";
+  for (const id of ["geler", "degeler", "verifier", "quitter"]) $(id).disabled = true;
+}
+
+const ISSUES = { "gel": "gel appliqué", "degel-en-attente": "dégel demandé : un second compte doit approuver", "degel": "dégel appliqué (quatre yeux)" };
+
 async function admin(chemin) {
-  const r = await fetch(chemin, { method: "POST", headers: { "Authorization": "Bearer " + $("jeton").value } });
-  $("info").textContent = r.ok ? "ok" : "refusé (jeton ?)";
-  rafraichir();
+  const r = await fetch(chemin, { method: "POST", headers: { "X-SAL": "1", "Content-Type": "application/json" }, body: "{}" });
+  const v = await r.json().catch(() => ({}));
+  await rafraichir();
+  $("info").textContent = r.ok ? (ISSUES[v.issue] || "ok") : `refusé : ${v.erreur || r.status}`;
 }
 
 $("geler").onclick = () => admin("/admin/gel");
 $("degeler").onclick = () => admin("/admin/degel");
+$("quitter").onclick = async () => {
+  await fetch("/admin/deconnexion", { method: "POST" });
+  location.reload();
+};
 $("verifier").onclick = async () => {
   const v = await (await fetch("/admin/verify")).json();
   $("info").textContent = v.intact ? `journal intact : ${v.sessions} session(s), ${v.entrees} entrées` : `JOURNAL ROMPU : ${v.fichier} — ${v.erreur}`;
 };
 
 (async () => {
+  if (!(await rafraichir())) return;
   for (const evt of await (await fetch("/admin/historique")).json()) ajouter(evt);
-  rafraichir();
   const flux = new EventSource("/admin/events");
   flux.onmessage = (m) => { ajouter(JSON.parse(m.data)); rafraichir(); };
 })();

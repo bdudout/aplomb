@@ -184,7 +184,13 @@ pub fn sequence(entrees: &[Entree], max: usize) -> String {
                 if action == "degel" {
                     gelee = false;
                 }
-                l.push(format!("    H->>S: {n}. administration : {}", texte(action, 20)));
+                // Qui a agi : un compte, ou les deux comptes d'un dégel à quatre yeux.
+                let qui = match (champ(c, "compte"), champ(c, "demandeur"), champ(c, "approbateur")) {
+                    ("", "", _) => String::new(),
+                    ("", d, a) => format!(" par {} et {}", texte(d, 30), texte(a, 30)),
+                    (compte, _, _) => format!(" par {}", texte(compte, 30)),
+                };
+                l.push(format!("    H->>S: {n}. administration : {}{qui}", texte(action, 20)));
             }
             autre => l.push(format!("    Note over S: {n}. {}", texte(autre, 30))),
         }

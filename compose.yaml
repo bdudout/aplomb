@@ -11,10 +11,9 @@ services:
       - --cle-publique=/etc/sal/cles/sal.pub
       - --journal=/var/lib/sal/journal
       - --coffre=/var/lib/sal-cles
+      - --comptes=/etc/sal/comptes.yaml
       - --ecoute-decision=0.0.0.0:7700
       - --ecoute-admin=0.0.0.0:7701
-    environment:
-      SAL_JETON_ADMIN: ${SAL_JETON_ADMIN:?définir SAL_JETON_ADMIN}
     ports:
       - "127.0.0.1:7700:7700"
       - "127.0.0.1:7701:7701"
@@ -22,6 +21,7 @@ services:
       - ./mandats:/etc/sal/mandats:ro
       - ./profils:/etc/sal/profils:ro
       - ./cles/sal.pub:/etc/sal/cles/sal.pub:ro
+      - ./comptes.yaml:/etc/sal/comptes.yaml:ro
       - journal:/var/lib/sal/journal
       - cles:/var/lib/sal-cles
     read_only: true
