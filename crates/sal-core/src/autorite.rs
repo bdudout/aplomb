@@ -49,6 +49,16 @@ pub struct Compte {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FichierComptes {
     pub comptes: Vec<Compte>,
+    /// Signatures de la gouvernance sur la liste des comptes (quatre yeux, EF-S2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signatures: Vec<crate::gouvernance::SignatureNommee>,
+}
+
+impl FichierComptes {
+    /// Octets couverts par les signatures : la liste des comptes, sans les signatures.
+    pub fn octets_signes(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.comptes).expect("sérialisation JSON")
+    }
 }
 
 /// Action d'administration demandée.
@@ -176,6 +186,14 @@ impl Autorite {
     pub fn depuis_yaml(texte: &str) -> Result<Self, Refus> {
         let f: FichierComptes = serde_yaml::from_str(texte).map_err(|e| Refus::Fichier(e.to_string()))?;
         Self::nouvelle(f)
+    }
+
+    /// Comme `depuis_yaml`, mais exige que la liste des comptes soit cosignée (EF-S2) :
+    /// personne ne peut s'ajouter un compte seul.
+    pub fn depuis_yaml_cosigne(texte: &str, confiance: &crate::gouvernance::Confiance) -> Result<(Self, Vec<String>), Refus> {
+        let f: FichierComptes = serde_yaml::from_str(texte).map_err(|e| Refus::Fichier(e.to_string()))?;
+        let signataires = confiance.verifier(&f.octets_signes(), &f.signatures).map_err(Refus::Fichier)?;
+        Ok((Self::nouvelle(f)?, signataires))
     }
 
     pub fn roles(&self, compte: &str) -> Vec<Role> {
@@ -311,6 +329,7 @@ mod tests {
             cle_publique: hex::encode(cle(n).verifying_key().to_bytes()),
         };
         Autorite::nouvelle(FichierComptes {
+            signatures: Vec::new(),
             comptes: vec![
                 compte("alice", 1, vec![Role::Operateur]),
                 compte("bob", 2, vec![Role::Approbateur]),

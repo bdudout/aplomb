@@ -8,7 +8,7 @@ services:
     command:
       - serve
       - --mandat=/etc/sal/mandats/bac-a-sable.yaml
-      - --cle-publique=/etc/sal/cles/sal.pub
+      - --confiance=/etc/sal/cles/confiance.yaml
       - --journal=/var/lib/sal/journal
       - --coffre=/var/lib/sal-cles
       - --comptes=/etc/sal/comptes.yaml
@@ -20,7 +20,7 @@ services:
     volumes:
       - ./mandats:/etc/sal/mandats:ro
       - ./profils:/etc/sal/profils:ro
-      - ./cles/sal.pub:/etc/sal/cles/sal.pub:ro
+      - ./cles/confiance.yaml:/etc/sal/cles/confiance.yaml:ro
       - ./comptes.yaml:/etc/sal/comptes.yaml:ro
       - journal:/var/lib/sal/journal
       - cles:/var/lib/sal-cles

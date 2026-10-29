@@ -25,7 +25,7 @@ pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) 
     }
     let mut comptes = match std::fs::read_to_string(fichier) {
         Ok(t) => serde_yaml::from_str::<FichierComptes>(&t).map_err(|e| e.to_string())?,
-        Err(_) => FichierComptes { comptes: Vec::new() },
+        Err(_) => FichierComptes { comptes: Vec::new(), signatures: Vec::new() },
     };
     if comptes.comptes.iter().any(|c| c.id == id) {
         return Err(format!("le compte {id} existe déjà"));
@@ -41,6 +41,9 @@ pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) 
     let cle = ed25519_dalek::SigningKey::from_bytes(&graine);
     let chemin = dossier.join(format!("{id}.cle"));
     crate::trousseau::ecrire_cle_privee(&chemin, &format!("compte:{id}"), &cle)?;
+    // La liste change : les signatures de la gouvernance ne la couvrent plus.
+    let etaient_signes = !comptes.signatures.is_empty();
+    comptes.signatures.clear();
     comptes.comptes.push(Compte {
         id: id.into(),
         roles: roles.to_vec(),
@@ -48,6 +51,9 @@ pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) 
     });
     std::fs::write(fichier, serde_yaml::to_string(&comptes).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     println!("compte {id} ajouté à {} ; clé privée : {} (enveloppée, 0600)", fichier.display(), chemin.display());
+    if etaient_signes {
+        println!("la liste des comptes a changé : la faire recosigner par deux membres (sal cosigner {})", fichier.display());
+    }
     println!("redémarrer `sal serve` pour le prendre en compte");
     Ok(())
 }

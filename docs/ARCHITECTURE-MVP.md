@@ -56,7 +56,7 @@ sal hook ──HTTP──▶ sal serve ── API décision :7700 ─┐
 | `crates/sal-core/src/politique.rs` | Évaluation Cedar (règles + revue), fail-closed |
 | `crates/sal-core/src/profils/code.rs` | Profil C : normalisation des outils Claude Code |
 | `crates/sal-core/src/journal.rs` | Journal chaîné par session, vérification |
-| `crates/sal/src/main.rs` | Binaire `sal` : `serve`, `hook`, `keygen`, `sign`, `verify` |
+| `crates/sal/src/main.rs` | Binaire `sal` : `serve`, `hook`, `init`, `cosigner`, `verify`, `ancrer`, `admin`, `compte`, `mermaid`, `effacer`, `trousseau` |
 | `crates/sal/src/serveur.rs` | API décision (7700) et API administration (7701) séparées |
 | `crates/sal/src/ui.html` | Vue technique minimale (flux temps réel) |
 | `profils/code/` | Règles Cedar et mandat type du profil C |
@@ -65,8 +65,8 @@ sal hook ──HTTP──▶ sal serve ── API décision :7700 ─┐
 ## Ce que J1 ne fait pas (jalons suivants)
 
 - Niveau 1 seulement : une action faite hors hook n'est pas vue (niveau 3 au jalon J3).
-- ~~Pas d'authentification sur l'API d'administration~~ : fait (J2, lot 3). Comptes nominatifs à clé ed25519, rôles, requêtes signées sans rejeu, dégel à quatre yeux, sessions de navigateur par ticket à usage unique. Restent : quatre yeux pour modifier un mandat ou le fichier de comptes.
+- ~~Pas d'authentification sur l'API d'administration~~ : fait (J2, lot 3). Comptes nominatifs à clé ed25519, rôles, requêtes signées sans rejeu, dégel à quatre yeux, sessions de navigateur par ticket à usage unique. Quatre yeux pour modifier un mandat ou le fichier de comptes : fait (J2, lot 5).
 - ~~Clés hors trousseau, composants non authentifiés~~ : fait (J2, lot 4). Clé maîtresse dans le trousseau macOS, tous les fichiers de clés enveloppés ; réponses du superviseur signées sur un nonce du hook (anti-usurpation, anti-rejeu). Le chiffrement du trafic (mTLS) est reporté au jalon J3 : sur la boucle locale, au niveau 1, l'agent partage l'utilisateur du hook et un certificat client ne prouverait rien.
-- Entrées du journal chaînées mais pas encore signées ni ancrées hors machine : J2.
+- ~~Journal ni signé ni ancré~~ : fait (J2, lot 5). Scellés périodiques signés (racine de Merkle des sessions), ancrage hors ligne par `sal ancrer`. Les entrées sont signées à travers le scellé, donc avec un décalage d'au plus une période (60 s par défaut).
 - ~~Minimisation du journal~~ : fait (J2, lot 2). Contenus venant de l'agent chiffrés par session (ChaCha20-Poly1305), effacement par destruction de la clé. Les clés sont encore des fichiers 0600, pas dans le trousseau (lot 4).
 - Pas de moniteur probabiliste (juge, guard model) : J5.

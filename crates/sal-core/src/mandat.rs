@@ -62,9 +62,12 @@ pub struct Mandat {
     /// Bornes cumulées par session (EF-A6) ; absentes : valeurs par défaut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bornes: Option<crate::bornes::Bornes>,
-    /// Signature ed25519 (hex) du mandat sans ce champ.
+    /// Signature ed25519 (hex) du mandat sans ce champ (ancien format, un seul signataire).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// Signatures nominatives des membres de gouvernance (quatre yeux, EF-S2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signatures: Vec<crate::gouvernance::SignatureNommee>,
 }
 
 /// Mandat vérifié, avec le texte des règles chargé.
@@ -87,9 +90,10 @@ fn lire(chemin: &Path) -> Result<String, ErreurMandat> {
 
 impl Mandat {
     /// Octets couverts par la signature : le mandat sans signature, en JSON.
-    fn octets_signes(&self) -> Vec<u8> {
+    pub fn octets_signes(&self) -> Vec<u8> {
         let mut m = self.clone();
         m.signature = None;
+        m.signatures.clear();
         serde_json::to_vec(&m).expect("sérialisation d'un mandat")
     }
 
@@ -134,6 +138,41 @@ pub fn charger(chemin: &Path, cle: &VerifyingKey) -> Result<MandatCharge, Erreur
     }
     let empreinte = sha256_hex(&mandat.octets_signes());
     Ok(MandatCharge { mandat, regles, revue, empreinte })
+}
+
+/// Charge un mandat cosigné : au moins `seuil` membres distincts de la gouvernance ont
+/// signé ce contenu exact (EF-S2), et les règles correspondent aux empreintes signées.
+pub fn charger_cosigne(
+    chemin: &Path,
+    confiance: &crate::gouvernance::Confiance,
+) -> Result<(MandatCharge, Vec<String>), String> {
+    let texte = lire(chemin).map_err(|e| e.to_string())?;
+    let mandat: Mandat = serde_yaml::from_str(&texte).map_err(|e| e.to_string())?;
+    let signataires = confiance.verifier(&mandat.octets_signes(), &mandat.signatures)?;
+    let dossier = chemin.parent().unwrap_or(Path::new("."));
+    let regles = lire(&dossier.join(&mandat.politique.regles)).map_err(|e| e.to_string())?;
+    let revue = lire(&dossier.join(&mandat.politique.revue)).map_err(|e| e.to_string())?;
+    if sha256_hex(regles.as_bytes()) != mandat.politique.regles_sha256
+        || sha256_hex(revue.as_bytes()) != mandat.politique.revue_sha256
+    {
+        return Err("les règles Cedar ont changé depuis la signature : faire recosigner le mandat".into());
+    }
+    let empreinte = sha256_hex(&mandat.octets_signes());
+    Ok((MandatCharge { mandat, regles, revue, empreinte }, signataires))
+}
+
+/// Met à jour les empreintes des règles ; vrai si elles ont changé (les signatures déjà
+/// posées portent alors sur un autre contenu et sont retirées).
+pub fn actualiser_empreintes(mandat: &mut Mandat, dossier: &Path) -> Result<bool, String> {
+    let r = sha256_hex(lire(&dossier.join(&mandat.politique.regles)).map_err(|e| e.to_string())?.as_bytes());
+    let v = sha256_hex(lire(&dossier.join(&mandat.politique.revue)).map_err(|e| e.to_string())?.as_bytes());
+    let change = r != mandat.politique.regles_sha256 || v != mandat.politique.revue_sha256;
+    mandat.politique.regles_sha256 = r;
+    mandat.politique.revue_sha256 = v;
+    if change {
+        mandat.signatures.clear();
+    }
+    Ok(change)
 }
 
 /// Clé publique depuis sa forme hexadécimale.
@@ -182,6 +221,7 @@ mod tests {
             },
             bornes: None,
             signature: None,
+            signatures: Vec::new(),
         }
     }
 

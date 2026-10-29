@@ -14,13 +14,15 @@ par hook (niveau d'assurance 1, coopératif).
 ## Démarrage
 
 ```sh
-cargo build
-./target/debug/sal keygen --dossier cles                        # une fois
-./target/debug/sal sign mandats/bac-a-sable.yaml --cle cles/sal.cle
-./target/debug/sal compte nouveau --id alice --role operateur        # une fois par personne
-./target/debug/sal compte nouveau --id bob --role approbateur
-./target/debug/sal serve --mandat mandats/bac-a-sable.yaml --cle-publique cles/sal.pub
+scripts/certificat-dev.sh                               # une fois par poste (mot de passe macOS)
+scripts/construire.sh                                   # compile et signe sal
+./target/debug/sal init --membre alice --membre bob     # une fois : comptes, confiance, cosignatures
+./target/debug/sal serve --mandat mandats/bac-a-sable.yaml
 ```
+
+Au premier lancement, macOS demande l'accès de `sal` à sa clé maîtresse dans le trousseau :
+répondre « Toujours autoriser ». Comme `sal` est signé par le certificat local, cette
+autorisation survit aux recompilations (toujours compiler avec `scripts/construire.sh`).
 
 - Vue technique : `./target/debug/sal admin --compte alice connexion` affiche un lien de
   connexion à usage unique (2 minutes), qui ouvre une session de navigateur de 8 heures.
@@ -37,8 +39,13 @@ cargo build
   Seule une chaîne vérifiée est exportée. Par défaut, les ressources n'apparaissent que
   par leur référence ; `--dechiffrer` les montre en clair à l'aide des clés de session.
 
-Toute modification des règles `profils/code/*.cedar` ou du mandat impose de le
-re-signer ; sinon `sal serve` refuse de démarrer.
+Toute modification d'un mandat, de ses règles `profils/code/*.cedar` ou de `comptes.yaml`
+impose deux signatures : `sal cosigner <fichier> --compte alice`, puis `--compte bob`.
+Sinon `sal serve` refuse de démarrer et dit qui doit signer.
+
+- Ancrer le journal hors de la machine : `./target/debug/sal ancrer --vers /Volumes/<clé USB>`
+  (copie des scellés, et témoin à noter ailleurs). `sal verify` confronte ensuite le
+  journal à cette copie.
 
 En conteneur : `docker compose up --build` (image non encore construite ni testée sur ce
 poste).
@@ -47,7 +54,7 @@ poste).
 
 | | |
 |---|---|
-| Tests | 67 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées) |
+| Tests | 74 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Hook hors de portée | Paramètres gérés prêts (`deploiement/`), non installés : droits administrateur requis |
@@ -55,6 +62,9 @@ poste).
 | Administration | Comptes nominatifs à clé ed25519, rôles lecteur / opérateur / approbateur ; requêtes signées, horodatées, sans rejeu ; geler seul, dégeler à quatre yeux ; toutes les API d'administration authentifiées (EF-S1, EF-S2) |
 | Clés | Clé maîtresse dans le trousseau macOS ; clés de session, de comptes et de signature enveloppées (`sal trousseau migrer` pour l'existant) (EF-S4) |
 | Réponses signées | Le hook n'accepte que les réponses signées sur son nonce par la clé du superviseur (`--cle-serveur cles/reponses.pub`) : faux superviseur et rejeu refusés (EF-S3) |
+| Gouvernance | Mandat et comptes cosignés par deux membres distincts au moins (fichier de confiance, seuil 2) ; `sal init` prépare tout en une commande (EF-S2) |
+| Scellement | Toutes les 60 s (`--scellement`) et à l'arrêt : racine de Merkle des sessions, signée et chaînée ; troncature, suppression et réécriture détectées ; ancrage hors ligne (EF-I1, EF-I2) |
+| Signature de `sal` | Certificat local « SAL dev local » : l'accès au trousseau survit aux recompilations ; l'agent ne peut lancer ni `codesign` ni `security` (gel) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |

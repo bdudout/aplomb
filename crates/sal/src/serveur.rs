@@ -48,12 +48,15 @@ const TAILLE_MAX: usize = 4 * 1024 * 1024;
 
 #[derive(clap::Args)]
 pub struct Options {
-    /// Mandat signé (YAML).
+    /// Mandat cosigné (YAML).
     #[arg(long)]
     mandat: PathBuf,
-    /// Fichier contenant la clé publique de confiance (hex).
-    #[arg(long)]
-    cle_publique: PathBuf,
+    /// Fichier de confiance : membres de la gouvernance et seuil (au moins 2).
+    #[arg(long, default_value = crate::gouverner::CONFIANCE)]
+    confiance: PathBuf,
+    /// Intervalle de scellement du journal, en secondes (EF-I1).
+    #[arg(long, default_value_t = 60)]
+    scellement: u64,
     /// Dossier du journal.
     #[arg(long, default_value = "journal")]
     journal: PathBuf,
@@ -381,9 +384,12 @@ fn cle_reponses(chemin: &std::path::Path) -> Result<ed25519_dalek::SigningKey, S
 }
 
 pub fn lancer(opts: Options) -> Result<(), String> {
-    let cle_hex = std::fs::read_to_string(&opts.cle_publique).map_err(|e| format!("clé publique : {e}"))?;
-    let cle = sal_core::mandat::cle_publique(&cle_hex).map_err(|e| e.to_string())?;
-    let mandat = sal_core::mandat::charger(&opts.mandat, &cle).map_err(|e| format!("mandat refusé : {e}"))?;
+    let confiance = sal_core::gouvernance::Confiance::depuis_yaml(&std::fs::read_to_string(&opts.confiance).map_err(
+        |e| format!("{} : {e} — première installation : sal init --membre <id> --membre <id>", opts.confiance.display()),
+    )?)?;
+    let (mandat, signataires_mandat) = sal_core::mandat::charger_cosigne(&opts.mandat, &confiance).map_err(|e| {
+        format!("mandat refusé : {e} — faire cosigner : sal cosigner {} --compte <id>", opts.mandat.display())
+    })?;
     if mandat.mandat.profil != "code" {
         return Err(format!("profil « {} » non pris en charge (MVP : code)", mandat.mandat.profil));
     }
@@ -395,7 +401,11 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let signataire = cle_reponses(&opts.cle_reponses)?;
     let texte_comptes = std::fs::read_to_string(&opts.comptes)
         .map_err(|e| format!("comptes {} : {e} (créer un compte : sal compte nouveau)", opts.comptes.display()))?;
-    let autorite = Autorite::depuis_yaml(&texte_comptes).map_err(|e| format!("comptes : {e}"))?;
+    let (autorite, signataires_comptes) = Autorite::depuis_yaml_cosigne(&texte_comptes, &confiance).map_err(|e| {
+        format!("comptes refusés : {e} — faire cosigner : sal cosigner {} --compte <id>", opts.comptes.display())
+    })?;
+    let dossier_journal = opts.journal.clone();
+    let cle_scelles = signataire.clone();
     let (diffusion, _) = broadcast::channel(1024);
     let etat = Etat {
         interne: Arc::new(Mutex::new(Interne {
@@ -428,25 +438,48 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/gel", post(gel))
         .route("/admin/degel", post(degel))
         .layer(DefaultBodyLimit::max(64 * 1024))
-        .with_state(etat);
+        .with_state(etat.clone());
+    let etat_scellement = etat;
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let l_decision = tokio::net::TcpListener::bind(opts.ecoute_decision).await.map_err(|e| e.to_string())?;
         let l_admin = tokio::net::TcpListener::bind(opts.ecoute_admin).await.map_err(|e| e.to_string())?;
-        eprintln!("SAL — mandat {id}");
+        eprintln!("SAL — mandat {id}, cosigné par {}", signataires_mandat.join(" et "));
         eprintln!("  API décision       : http://{}", opts.ecoute_decision);
         eprintln!("  API administration : http://{}  (vue technique)", opts.ecoute_admin);
-        eprintln!("  comptes            : {}", opts.comptes.display());
+        eprintln!("  comptes            : {} (cosignés par {})", opts.comptes.display(), signataires_comptes.join(" et "));
+        eprintln!("  scellement         : toutes les {} s, et à l'arrêt", opts.scellement);
         eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());
         eprintln!("  connexion à la vue : sal admin connexion --compte <id>");
         let arret = async {
             let _ = tokio::signal::ctrl_c().await;
         };
-        tokio::select! {
+        // Scellement périodique (EF-I1) ; le verrou garantit qu'aucune écriture n'est en cours.
+        let (etat_scelle, dossier_scelle, cle_periodique) = (etat_scellement.clone(), dossier_journal.clone(), cle_scelles.clone());
+        let periode = std::time::Duration::from_secs(opts.scellement.max(5));
+        tokio::spawn(async move {
+            let mut tic = tokio::time::interval(periode);
+            loop {
+                tic.tick().await;
+                let _verrou = etat_scelle.interne.lock().expect("verrou");
+                if let Err(e) = sal_core::scellement::sceller(&dossier_scelle, &cle_periodique, maintenant()) {
+                    eprintln!("  SCELLEMENT EN ÉCHEC : {e}");
+                }
+            }
+        });
+        let r = tokio::select! {
             r = axum::serve(l_decision, api_decision) => r.map_err(|e| e.to_string()),
             r = axum::serve(l_admin, api_admin) => r.map_err(|e| e.to_string()),
             _ = arret => Ok(()),
+        };
+        // Scellé final : l'état à l'arrêt est figé et signé.
+        let _verrou = etat_scellement.interne.lock().expect("verrou");
+        match sal_core::scellement::sceller(&dossier_journal, &cle_scelles, maintenant()) {
+            Ok(Some(s)) => eprintln!("  scellé final n° {}", s.seq),
+            Ok(None) => {}
+            Err(e) => eprintln!("  SCELLEMENT FINAL EN ÉCHEC : {e}"),
         }
+        r
     })
 }

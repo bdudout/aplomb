@@ -2,15 +2,17 @@
 //!
 //! - `sal serve`  — API de décision et API d'administration, sur deux ports distincts ;
 //! - `sal hook`   — adaptateur hook Claude Code (niveau d'assurance 1), fail-closed ;
-//! - `sal keygen` — paire de clés ed25519 pour signer les mandats ;
-//! - `sal sign`   — calcule les empreintes des règles et signe un mandat ;
-//! - `sal verify` — vérifie les chaînes du journal ;
+//! - `sal init` — parcours guidé : comptes, confiance, cosignatures (une commande) ;
+//! - `sal cosigner` — ajoute sa signature à un mandat ou au fichier de comptes (EF-S2) ;
+//! - `sal verify` — vérifie le journal : chaînes, scellés, ancre (EF-I1, EF-I2) ;
+//! - `sal ancrer` — copie la chaîne de scellés hors de la machine ;
 //! - `sal mermaid` — exporte les sessions en diagrammes de séquence Mermaid ;
 //! - `sal effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2) ;
 //! - `sal compte` / `sal admin` — comptes d'administration et requêtes signées (EF-S2).
 #![forbid(unsafe_code)]
 
 mod admin;
+mod gouverner;
 mod hook;
 mod trousseau;
 mod serveur;
@@ -43,19 +45,43 @@ enum Commande {
         #[arg(long)]
         cle_serveur: Option<PathBuf>,
     },
-    /// Génère une paire de clés (sal.cle privée, sal.pub publique).
-    Keygen {
-        #[arg(long, default_value = ".")]
-        dossier: PathBuf,
+    /// Prépare tout en une commande : deux comptes, la confiance, les cosignatures.
+    Init {
+        /// Les deux personnes de la gouvernance (répéter : --membre alice --membre bob).
+        #[arg(long = "membre", required = true)]
+        membres: Vec<String>,
+        /// Mandats à cosigner (défaut : tous ceux de mandats/).
+        #[arg(long = "mandat")]
+        mandats: Vec<PathBuf>,
+        #[arg(long, default_value = "comptes.yaml")]
+        comptes: PathBuf,
+        #[arg(long, default_value = gouverner::CONFIANCE)]
+        confiance: PathBuf,
     },
-    /// Signe un mandat (et lie l'empreinte de ses règles Cedar).
-    Sign {
-        mandat: PathBuf,
+    /// Ajoute sa signature à un mandat ou au fichier de comptes (deux membres requis).
+    Cosigner {
+        fichier: PathBuf,
         #[arg(long)]
-        cle: PathBuf,
+        compte: String,
+        #[arg(long)]
+        cle: Option<PathBuf>,
+        #[arg(long, default_value = gouverner::CONFIANCE)]
+        confiance: PathBuf,
     },
-    /// Vérifie toutes les chaînes du journal.
+    /// Vérifie le journal : chaînes, scellés signés, et copie d'ancrage si fournie.
     Verify {
+        #[arg(long, default_value = "journal")]
+        journal: PathBuf,
+        /// Copie d'ancrage à confronter (sinon : dernière ancre connue, si elle existe).
+        #[arg(long)]
+        ancre: Option<PathBuf>,
+        #[arg(long, default_value = "cles/reponses.pub")]
+        cle_serveur: PathBuf,
+    },
+    /// Copie la chaîne de scellés hors de la machine (autre disque, clé USB…).
+    Ancrer {
+        #[arg(long)]
+        vers: PathBuf,
         #[arg(long, default_value = "journal")]
         journal: PathBuf,
     },
@@ -164,9 +190,15 @@ fn main() -> ExitCode {
     let res = match cli.commande {
         Commande::Serve(opts) => serveur::lancer(opts),
         Commande::Hook { perimetre, cle_serveur } => return hook::executer(&perimetre, cle_serveur.as_deref()),
-        Commande::Keygen { dossier } => keygen(&dossier),
-        Commande::Sign { mandat, cle } => signer(&mandat, &cle),
-        Commande::Verify { journal } => verifier(&journal),
+        Commande::Init { membres, mandats, comptes, confiance } => {
+            let mandats = if mandats.is_empty() { mandats_par_defaut() } else { mandats };
+            gouverner::init(&membres, &comptes, &mandats, &confiance)
+        }
+        Commande::Cosigner { fichier, compte, cle, confiance } => {
+            gouverner::cosigner(&fichier, &compte, cle.as_deref(), &confiance)
+        }
+        Commande::Verify { journal, ancre, cle_serveur } => verifier(&journal, ancre.as_deref(), &cle_serveur),
+        Commande::Ancrer { vers, journal } => ancrer(&journal, &vers),
         Commande::Mermaid { journal, session, sortie, max, dechiffrer, coffre } => {
             let coffre = if dechiffrer { Some(coffre) } else { None };
             mermaid(&journal, session.as_deref(), &sortie, max, coffre.as_deref())
@@ -197,41 +229,61 @@ fn main() -> ExitCode {
     }
 }
 
-fn keygen(dossier: &std::path::Path) -> Result<(), String> {
-    let mut graine = [0u8; 32];
-    getrandom::getrandom(&mut graine).map_err(|e| e.to_string())?;
-    let cle = ed25519_dalek::SigningKey::from_bytes(&graine);
-    std::fs::create_dir_all(dossier).map_err(|e| e.to_string())?;
-    let privee = dossier.join("sal.cle");
-    trousseau::ecrire_cle_privee(&privee, "mandat", &cle)?;
-    std::fs::write(dossier.join("sal.pub"), hex::encode(cle.verifying_key().to_bytes())).map_err(|e| e.to_string())?;
-    println!("clés écrites : {} (privée, enveloppée, 0600) et sal.pub", privee.display());
-    Ok(())
+fn mandats_par_defaut() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir("mandats")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+        .collect();
+    v.sort();
+    v
 }
 
-fn signer(chemin: &std::path::Path, cle: &std::path::Path) -> Result<(), String> {
-    let texte = std::fs::read_to_string(chemin).map_err(|e| e.to_string())?;
-    let mut mandat: sal_core::mandat::Mandat = serde_yaml::from_str(&texte).map_err(|e| e.to_string())?;
-    let privee = trousseau::lire_cle_privee(cle, "mandat")?;
-    let dossier = chemin.parent().unwrap_or(std::path::Path::new("."));
-    mandat.signer(dossier, &privee).map_err(|e| e.to_string())?;
-    std::fs::write(chemin, serde_yaml::to_string(&mandat).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    println!("mandat {} v{} signé", mandat.id, mandat.version);
-    Ok(())
-}
+/// Dernière ancre utilisée, retenue pour que `sal verify` la confronte sans option.
+const ANCRE_CONNUE: &str = "scelles/derniere-ancre";
 
-fn verifier(journal: &std::path::Path) -> Result<(), String> {
+fn verifier(journal: &std::path::Path, ancre: Option<&std::path::Path>, cle_serveur: &std::path::Path) -> Result<(), String> {
+    use sal_core::scellement;
     let j = sal_core::journal::Journal::ouvrir(journal).map_err(|e| e.to_string())?;
-    match j.verifier_tout() {
-        Ok(sessions) => {
-            for (f, n) in &sessions {
-                println!("OK  {f}  ({n} entrées)");
-            }
-            println!("{} session(s), chaînes intactes", sessions.len());
-            Ok(())
-        }
-        Err((f, e)) => Err(format!("ÉCHEC {f} : {e}")),
+    let sessions = j.verifier_tout().map_err(|(f, e)| format!("ÉCHEC {f} : {e}"))?;
+    println!("chaînes : {} session(s) intactes", sessions.len());
+    let cle = sal_core::mandat::cle_publique(
+        &std::fs::read_to_string(cle_serveur).map_err(|e| format!("{} : {e}", cle_serveur.display()))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let r = scellement::verifier(journal, &cle).map_err(|e| format!("ÉCHEC des scellés : {e}"))?;
+    if r.scelles == 0 {
+        println!("scellés : aucun encore (le superviseur scelle toutes les minutes)");
+    } else {
+        println!(
+            "scellés : {} signés et chaînés ; {} session(s) conforme(s) au dernier, {} nouvelle(s) depuis",
+            r.scelles, r.sessions_scellees, r.sessions_nouvelles
+        );
+        println!("témoin du dernier scellé : {}", r.temoin.unwrap_or_default());
     }
+    let ancre = ancre
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::fs::read_to_string(journal.join(ANCRE_CONNUE)).ok().map(|s| PathBuf::from(s.trim())));
+    match ancre {
+        Some(a) if a.exists() => {
+            let n = scellement::verifier_ancre(journal, &a).map_err(|e| format!("ÉCHEC de l'ancre {} : {e}", a.display()))?;
+            println!("ancre {} : {n} scellé(s) retrouvés à l'identique", a.display());
+        }
+        Some(a) => println!("ancre {} introuvable (support débranché ?) : non vérifiée", a.display()),
+        None => println!("aucune ancre : sal ancrer --vers <autre disque> pour en créer une"),
+    }
+    Ok(())
+}
+
+fn ancrer(journal: &std::path::Path, vers: &std::path::Path) -> Result<(), String> {
+    let cible = sal_core::scellement::ancrer(journal, vers)?;
+    let _ = std::fs::write(journal.join(ANCRE_CONNUE), cible.display().to_string());
+    let (seq, temoin) = sal_core::scellement::temoin(journal)?.unwrap_or_default();
+    println!("chaîne de scellés copiée vers {}", cible.display());
+    println!("témoin à noter ailleurs (papier, courriel à soi-même) : scellé {seq}, {temoin}");
+    Ok(())
 }
 
 /// Enveloppe chaque fichier de clé encore en clair, en place (écriture atomique, 0600).
@@ -249,7 +301,6 @@ fn migrer(coffre: &std::path::Path, comptes: &std::path::Path, cles: &std::path:
     };
     lister(coffre, &|n| Coffre::etiquette_fichier(n));
     lister(comptes, &|n| format!("compte:{}", n.trim_end_matches(".cle")));
-    a_traiter.push((cles.join("sal.cle"), "mandat".into()));
     a_traiter.push((cles.join("reponses.cle"), "reponses".into()));
     let (mut faits, mut deja) = (0, 0);
     for (chemin, etiquette) in a_traiter {

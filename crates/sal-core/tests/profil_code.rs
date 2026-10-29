@@ -28,6 +28,7 @@ fn superviseur() -> Superviseur {
         },
         bornes: None,
         signature: None,
+        signatures: Vec::new(),
     };
     Superviseur::nouveau(MandatCharge { mandat, regles: REGLES.into(), revue: REVUE.into(), empreinte: "e".into() })
         .expect("règles du profil C valides")

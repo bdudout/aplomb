@@ -24,18 +24,27 @@ fn depuis_env() -> Option<Result<Cle, String>> {
     )
 }
 
+/// Clé maîtresse lue une seule fois par commande : une seule demande au trousseau, même
+/// quand la commande ouvre plusieurs clés (`sal init` en ouvre quatre).
+static EN_MEMOIRE: std::sync::OnceLock<Cle> = std::sync::OnceLock::new();
+
 /// Clé maîtresse ; `creer` l'engendre si elle n'existe pas encore.
 pub fn cle_maitresse(creer: bool) -> Result<Cle, String> {
-    if let Some(r) = depuis_env() {
-        return r;
+    if let Some(c) = EN_MEMOIRE.get() {
+        return Ok(*c);
     }
-    lire_ou_creer(creer)
+    let cle = match depuis_env() {
+        Some(r) => r?,
+        None => lire_ou_creer(creer)?,
+    };
+    Ok(*EN_MEMOIRE.get_or_init(|| cle))
 }
 
 #[cfg(target_os = "macos")]
 fn lire_ou_creer(creer: bool) -> Result<Cle, String> {
     use security_framework::passwords::{get_generic_password, set_generic_password};
     const INTROUVABLE: i32 = -25300; // errSecItemNotFound
+    const ANNULE: i32 = -128; // errSecUserCanceled
     match get_generic_password(SERVICE, COMPTE) {
         Ok(o) => hex::decode(&o).ok().and_then(|o| o.try_into().ok()).ok_or("entrée du trousseau illisible".into()),
         Err(e) if e.code() == INTROUVABLE && creer => {
@@ -47,6 +56,11 @@ fn lire_ou_creer(creer: bool) -> Result<Cle, String> {
             Ok(cle)
         }
         Err(e) if e.code() == INTROUVABLE => Err("aucune clé maîtresse dans le trousseau".into()),
+        Err(e) if e.code() == ANNULE => Err(
+            "accès au trousseau refusé : relancer la commande et cliquer « Toujours autoriser » \
+             dans la fenêtre de macOS (elle revient après chaque recompilation de sal)"
+                .into(),
+        ),
         Err(e) => Err(format!("trousseau : accès refusé ({e})")),
     }
 }

@@ -325,7 +325,15 @@ fn touche_supervision(texte: &str) -> bool {
         || t.contains("killall sal")
         || t.contains("sal serve")
         || t.contains("disableallhooks")
-        || ["sal admin", "sal compte"].iter().any(|c| {
+        // Trousseau et signature de code : avec le certificat local de SAL, un binaire signé
+        // par l'agent lirait la clé maîtresse sans aucune demande.
+        || [
+            "sal admin", "sal compte", "sal cosigner", "sal init", "sal trousseau", "codesign",
+            "security find-", "security dump-keychain", "security export", "security import",
+            "security add-", "security delete-", "security set-key-partition-list", "security unlock-keychain",
+        ]
+        .iter()
+        .any(|c| {
             t.starts_with(c) || t.contains(&format!(" {c}")) || t.contains(&format!("/{c}"))
         })
 }
@@ -494,6 +502,7 @@ mod tests {
             },
             bornes: None,
             signature: None,
+            signatures: Vec::new(),
         }
     }
 
@@ -582,6 +591,9 @@ mod tests {
         // Pas de faux positifs.
         assert!(!b(&ctx("Bash", json!({"command": "python3 -c 'x=[1]; x.clear()'"})), "commande_lit_secret"));
         assert!(!b(&ctx("Bash", json!({"command": "grep -r 'universal admin' ."})), "touche_supervision"));
+        assert!(b(&ctx("Bash", json!({"command": "codesign -f -s 'SAL dev local' ./x"})), "touche_supervision"));
+        assert!(b(&ctx("Bash", json!({"command": "security find-generic-password -s sal -w"})), "touche_supervision"));
+        assert!(!b(&ctx("Bash", json!({"command": "pip install security"})), "touche_supervision"));
     }
 
     #[test]
