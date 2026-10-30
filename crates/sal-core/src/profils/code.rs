@@ -328,7 +328,8 @@ fn touche_supervision(texte: &str) -> bool {
         // Trousseau et signature de code : avec le certificat local de SAL, un binaire signé
         // par l'agent lirait la clé maîtresse sans aucune demande.
         || [
-            "sal admin", "sal compte", "sal cosigner", "sal init", "sal trousseau", "codesign",
+            "sal admin", "sal compte", "sal cosigner", "sal init", "sal trousseau", "sal phrase", "sal cles",
+            "codesign",
             "security find-", "security dump-keychain", "security export", "security import",
             "security add-", "security delete-", "security set-key-partition-list", "security unlock-keychain",
         ]

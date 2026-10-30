@@ -3,7 +3,7 @@
 //! - `sal admin <operation>` — envoie une requête signée par la clé du compte.
 //!
 //! Les clés privées des comptes vivent par défaut dans `~/.config/sal/comptes/`, hors de
-//! tout dépôt, **enveloppées** par la clé maîtresse du trousseau : les lire ne donne que
+//! tout dépôt, **enveloppées** par la clé maîtresse (phrase de passe) : les lire ne donne que
 //! du chiffré (le profil C refuse en outre à l'agent de les lire).
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,7 +40,7 @@ pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) 
     getrandom::getrandom(&mut graine).map_err(|e| e.to_string())?;
     let cle = ed25519_dalek::SigningKey::from_bytes(&graine);
     let chemin = dossier.join(format!("{id}.cle"));
-    crate::trousseau::ecrire_cle_privee(&chemin, &format!("compte:{id}"), &cle)?;
+    crate::cle_maitresse::ecrire_cle_privee(&chemin, &format!("compte:{id}"), &cle)?;
     // La liste change : les signatures de la gouvernance ne la couvrent plus.
     let etaient_signes = !comptes.signatures.is_empty();
     comptes.signatures.clear();
@@ -60,7 +60,7 @@ pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) 
 
 pub fn envoyer(compte: &str, cle: Option<&Path>, url: &str, operation: Operation, session: Option<String>) -> Result<(), String> {
     let chemin = cle.map(Path::to_path_buf).unwrap_or_else(|| dossier_cles().join(format!("{compte}.cle")));
-    let privee = crate::trousseau::lire_cle_privee(&chemin, &format!("compte:{compte}"))?;
+    let privee = crate::cle_maitresse::lire_cle_privee(&chemin, &format!("compte:{compte}"))?;
     let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
     let r = requete(compte, &privee, operation, session, t);
     let reponse: Value = match ureq::post(&format!("{url}/admin/requete")).send_json(&r) {

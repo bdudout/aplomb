@@ -12,10 +12,10 @@
 #![forbid(unsafe_code)]
 
 mod admin;
+mod cle_maitresse;
 mod gouverner;
 mod hook;
 mod passerelle;
-mod trousseau;
 mod serveur;
 
 use std::path::PathBuf;
@@ -105,10 +105,15 @@ enum Commande {
         #[arg(long, default_value = "journal-cles")]
         coffre: PathBuf,
     },
-    /// Trousseau : enveloppe par la clé maîtresse les fichiers de clés encore en clair.
-    Trousseau {
+    /// Phrase de passe qui protège la clé maîtresse (première installation, changement).
+    Phrase {
         #[command(subcommand)]
-        commande: CommandeTrousseau,
+        commande: CommandePhrase,
+    },
+    /// Enveloppe par la clé maîtresse les fichiers de clés encore en clair.
+    Cles {
+        #[command(subcommand)]
+        commande: CommandeCles,
     },
     /// Gère les comptes d'administration.
     Compte {
@@ -153,10 +158,16 @@ enum CommandeCompte {
 }
 
 #[derive(Subcommand)]
-enum CommandeTrousseau {
-    /// Vérifie, sans afficher de dialogue, que sal lit sa clé maîtresse sans rien demander.
-    Verifier,
-    /// Enveloppe les clés en clair : sessions, comptes, signature du mandat et des réponses.
+enum CommandePhrase {
+    /// Première installation : choisir la phrase de passe (reprend une ancienne clé du trousseau).
+    Initialiser,
+    /// Changer de phrase de passe.
+    Changer,
+}
+
+#[derive(Subcommand)]
+enum CommandeCles {
+    /// Enveloppe les clés en clair : sessions, comptes, signature des réponses.
     Migrer {
         #[arg(long, default_value = "journal-cles")]
         coffre: PathBuf,
@@ -207,10 +218,9 @@ fn main() -> ExitCode {
             mermaid(&journal, session.as_deref(), &sortie, max, coffre.as_deref())
         }
         Commande::Effacer { session, coffre } => effacer(&session, &coffre),
-        Commande::Trousseau { commande: CommandeTrousseau::Verifier } => trousseau::verifier_sans_dialogue().map(|()| {
-            println!("trousseau : accès à la clé maîtresse sans aucune demande");
-        }),
-        Commande::Trousseau { commande: CommandeTrousseau::Migrer { coffre, comptes, cles } } => {
+        Commande::Phrase { commande: CommandePhrase::Initialiser } => cle_maitresse::initialiser(),
+        Commande::Phrase { commande: CommandePhrase::Changer } => cle_maitresse::changer(),
+        Commande::Cles { commande: CommandeCles::Migrer { coffre, comptes, cles } } => {
             migrer(&coffre, &comptes.unwrap_or_else(admin::dossier_cles), &cles)
         }
         Commande::Compte { commande: CommandeCompte::Nouveau { id, roles, fichier, dossier } } => {
@@ -295,7 +305,7 @@ fn ancrer(journal: &std::path::Path, vers: &std::path::Path) -> Result<(), Strin
 /// Enveloppe chaque fichier de clé encore en clair, en place (écriture atomique, 0600).
 fn migrer(coffre: &std::path::Path, comptes: &std::path::Path, cles: &std::path::Path) -> Result<(), String> {
     use sal_core::confidentiel::{envelopper, est_enveloppe, Coffre};
-    let maitre = trousseau::cle_maitresse(true)?;
+    let maitre = cle_maitresse::cle_maitresse()?;
     let mut a_traiter: Vec<(PathBuf, String)> = Vec::new();
     let mut lister = |dossier: &std::path::Path, etiquette: &dyn Fn(&str) -> String| {
         for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
@@ -360,7 +370,7 @@ fn mermaid(
         Some(d) => Some(
             sal_core::confidentiel::Coffre::ouvrir(d)
                 .map_err(|e| e.to_string())?
-                .avec_maitre(trousseau::cle_maitresse(false)?),
+                .avec_maitre(cle_maitresse::cle_maitresse()?),
         ),
         None => None,
     };

@@ -60,6 +60,70 @@ pub fn est_enveloppe(texte: &str) -> bool {
     texte.trim().starts_with(PREFIXE_ENVELOPPE)
 }
 
+/// Clé maîtresse protégée par une **phrase de passe** : la clé est enveloppée par une clé
+/// dérivée de la phrase avec Argon2id (coûteux en mémoire, ce qui rend lents les essais à
+/// l'aveugle). Le fichier peut être lu par tous les processus de l'utilisateur : sans la
+/// phrase, il ne donne rien.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FichierMaitre {
+    pub version: u32,
+    pub kdf: String,
+    /// Paramètres Argon2id : mémoire (Kio), passes, parallélisme.
+    pub memoire_kio: u32,
+    pub passes: u32,
+    pub parallelisme: u32,
+    /// Sel aléatoire (hex).
+    pub sel: String,
+    pub enveloppe: String,
+}
+
+/// Paramètres par défaut : 64 Mio, 3 passes (environ une demi-seconde).
+pub const ARGON2_MEMOIRE_KIO: u32 = 64 * 1024;
+pub const ARGON2_PASSES: u32 = 3;
+
+fn deriver(phrase: &str, sel: &[u8], memoire_kio: u32, passes: u32, parallelisme: u32) -> Result<Cle, String> {
+    use argon2::{Algorithm, Argon2, Params, Version};
+    let params = Params::new(memoire_kio, passes, parallelisme, Some(32)).map_err(|e| e.to_string())?;
+    let mut cle = [0u8; 32];
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password_into(phrase.as_bytes(), sel, &mut cle)
+        .map_err(|e| e.to_string())?;
+    Ok(cle)
+}
+
+/// Protège la clé maîtresse par une phrase de passe (paramètres explicites, pour les tests).
+pub fn proteger_maitre_avec(maitre: &Cle, phrase: &str, memoire_kio: u32, passes: u32) -> Result<FichierMaitre, String> {
+    let mut sel = [0u8; 16];
+    getrandom::getrandom(&mut sel).map_err(|e| e.to_string())?;
+    let kek = deriver(phrase, &sel, memoire_kio, passes, 1)?;
+    Ok(FichierMaitre {
+        version: 1,
+        kdf: "argon2id".into(),
+        memoire_kio,
+        passes,
+        parallelisme: 1,
+        sel: hex::encode(sel),
+        enveloppe: envelopper(&kek, "cle-maitresse", maitre),
+    })
+}
+
+pub fn proteger_maitre(maitre: &Cle, phrase: &str) -> Result<FichierMaitre, String> {
+    proteger_maitre_avec(maitre, phrase, ARGON2_MEMOIRE_KIO, ARGON2_PASSES)
+}
+
+/// Ouvre la clé maîtresse ; une mauvaise phrase de passe est refusée.
+pub fn ouvrir_maitre(f: &FichierMaitre, phrase: &str) -> Result<Cle, String> {
+    if f.kdf != "argon2id" {
+        return Err(format!("dérivation de clé inconnue : {}", f.kdf));
+    }
+    let sel = hex::decode(&f.sel).map_err(|_| "fichier de clé maîtresse illisible".to_string())?;
+    let kek = deriver(phrase, &sel, f.memoire_kio, f.passes, f.parallelisme)?;
+    lire_secret(&f.enveloppe, Some(&kek), "cle-maitresse")
+        .map_err(|_| "phrase de passe incorrecte".to_string())?
+        .try_into()
+        .map_err(|_| "clé maîtresse : 32 octets attendus".to_string())
+}
+
 /// Lit un secret de fichier : enveloppé (clé maîtresse requise) ou, format antérieur, en
 /// hexadécimal clair.
 pub fn lire_secret(texte: &str, maitre: Option<&Cle>, etiquette: &str) -> Result<Vec<u8>, String> {
@@ -329,6 +393,20 @@ mod tests {
         assert!(lire_secret(&e, None, "compte:alice").is_err());
         // Format antérieur, en clair : toujours lisible.
         assert_eq!(lire_secret("0a0b", None, "x").unwrap(), vec![10, 11]);
+    }
+
+    #[test]
+    fn phrase_de_passe() {
+        let maitre = [7u8; 32];
+        // Paramètres réduits pour que le test reste rapide.
+        let f = proteger_maitre_avec(&maitre, "une phrase assez longue", 1024, 1).unwrap();
+        assert!(!f.enveloppe.contains(&hex::encode(maitre)));
+        assert_eq!(ouvrir_maitre(&f, "une phrase assez longue").unwrap(), maitre);
+        assert_eq!(ouvrir_maitre(&f, "une autre phrase").unwrap_err(), "phrase de passe incorrecte");
+        // Même clé et même phrase, autre sel : autre fichier.
+        let g = proteger_maitre_avec(&maitre, "une phrase assez longue", 1024, 1).unwrap();
+        assert_ne!(f.sel, g.sel);
+        assert_ne!(f.enveloppe, g.enveloppe);
     }
 
     #[test]

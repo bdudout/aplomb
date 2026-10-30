@@ -58,7 +58,7 @@ fn charger_confiance(chemin: &Path) -> Result<Option<(Confiance, Vec<String>)>, 
 /// Ajoute la signature du compte à un mandat ou au fichier de comptes.
 pub fn cosigner(fichier: &Path, compte: &str, cle: Option<&Path>, confiance: &Path) -> Result<(), String> {
     let chemin_cle = cle.map(Path::to_path_buf).unwrap_or_else(|| admin::dossier_cles().join(format!("{compte}.cle")));
-    let privee = crate::trousseau::lire_cle_privee(&chemin_cle, &format!("compte:{compte}"))?;
+    let privee = crate::cle_maitresse::lire_cle_privee(&chemin_cle, &format!("compte:{compte}"))?;
     let conf = charger_confiance(confiance)?;
     let (c, membres) = match &conf {
         Some((c, m)) => (Some(c), m.clone()),
@@ -98,6 +98,10 @@ pub fn init(membres: &[String], comptes: &Path, mandats: &[PathBuf], confiance: 
     }
     if membres[0] == membres[1] {
         return Err("les deux membres doivent être distincts".into());
+    }
+    // 0. Phrase de passe : à la première installation, elle protège la clé maîtresse.
+    if !crate::cle_maitresse::chemin().exists() {
+        crate::cle_maitresse::initialiser()?;
     }
     // 1. Comptes : créés s'ils n'existent pas (le premier opère, le second approuve).
     let existants: FichierComptes = match std::fs::read_to_string(comptes) {

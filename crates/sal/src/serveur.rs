@@ -17,7 +17,7 @@
 //! tenue dans un coffre distinct (`--coffre`). La vue technique, en mémoire, montre les
 //! actions en clair à l'opérateur pendant la session.
 //!
-//! Limites : pas de mTLS ni de trousseau (lot 4 de J2) ; HTTP en clair sur la boucle
+//! Limites : pas de mTLS (reporté au niveau 3, J3) ; HTTP en clair sur la boucle
 //! locale ; le fichier de comptes n'est pas encore signé.
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -393,7 +393,7 @@ async fn deconnexion(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
 /// Clé de signature des réponses : lue, ou créée (enveloppée) avec sa clé publique.
 fn cle_reponses(chemin: &std::path::Path) -> Result<ed25519_dalek::SigningKey, String> {
     if chemin.exists() {
-        return crate::trousseau::lire_cle_privee(chemin, "reponses");
+        return crate::cle_maitresse::lire_cle_privee(chemin, "reponses");
     }
     let mut graine = [0u8; 32];
     getrandom::getrandom(&mut graine).map_err(|e| e.to_string())?;
@@ -401,7 +401,7 @@ fn cle_reponses(chemin: &std::path::Path) -> Result<ed25519_dalek::SigningKey, S
     if let Some(d) = chemin.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    crate::trousseau::ecrire_cle_privee(chemin, "reponses", &cle)?;
+    crate::cle_maitresse::ecrire_cle_privee(chemin, "reponses", &cle)?;
     let publique = chemin.with_extension("pub");
     std::fs::write(&publique, hex::encode(cle.verifying_key().to_bytes())).map_err(|e| e.to_string())?;
     eprintln!("  clé de signature des réponses créée ; clé publique pour le hook : {}", publique.display());
@@ -421,7 +421,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let id = format!("{} v{}", mandat.mandat.id, mandat.mandat.version);
     let superviseur = Superviseur::nouveau(mandat).map_err(|e| e.to_string())?;
     let journal = Journal::ouvrir(&opts.journal).map_err(|e| e.to_string())?;
-    let maitre = crate::trousseau::cle_maitresse(true)?;
+    let maitre = crate::cle_maitresse::cle_maitresse()?;
     let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?.avec_maitre(maitre);
     let signataire = cle_reponses(&opts.cle_reponses)?;
     let texte_comptes = std::fs::read_to_string(&opts.comptes)
