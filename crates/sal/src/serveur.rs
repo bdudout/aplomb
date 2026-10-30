@@ -54,6 +54,12 @@ pub struct Options {
     /// Fichier de confiance : membres de la gouvernance et seuil (au moins 2).
     #[arg(long, default_value = crate::gouverner::CONFIANCE)]
     confiance: PathBuf,
+    /// Passerelle réseau sortante (proxy HTTP pour `HTTPS_PROXY`), sur la boucle locale.
+    #[arg(long, default_value = "127.0.0.1:7702")]
+    ecoute_passerelle: SocketAddr,
+    /// Plafond d'envoi par connexion de la passerelle, en octets (sens des flux, EF-C4).
+    #[arg(long, default_value_t = 1024 * 1024)]
+    plafond_envoi: u64,
     /// Intervalle de scellement du journal, en secondes (EF-I1).
     #[arg(long, default_value_t = 60)]
     scellement: u64,
@@ -87,7 +93,7 @@ struct Interne {
 }
 
 #[derive(Clone)]
-struct Etat {
+pub(crate) struct Etat {
     interne: Arc<Mutex<Interne>>,
     diffusion: broadcast::Sender<String>,
     signataire: Arc<ed25519_dalek::SigningKey>,
@@ -151,35 +157,54 @@ impl Etat {
     }
 }
 
-async fn decider(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> impl IntoResponse {
-    if evt.phase != Phase::Avant {
-        return erreur(StatusCode::BAD_REQUEST, "phase « avant » attendue");
-    }
+/// Juge un événement et journalise la décision (journal d'abord : une décision non
+/// journalisée n'est jamais rendue). Chemin unique du hook et de la passerelle.
+pub(crate) fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(sal_core::decision::DecisionFinale, u64), String> {
     let t = maintenant();
     let mut interne = etat.interne.lock().expect("verrou");
-    if let Err(e) = etat.ouvrir_session(&mut interne, &evt, t) {
-        return erreur(StatusCode::INTERNAL_SERVER_ERROR, format!("journal indisponible : {e}"));
-    }
-    let (action, d) = interne.superviseur.decider(&evt);
+    etat.ouvrir_session(&mut interne, evt, t).map_err(|e| format!("journal indisponible : {e}"))?;
+    let (action, d) = interne.superviseur.decider(evt);
     let contenu = json!({
         "outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource,
         "contexte": action.contexte, "verdict": d.verdict, "regle": d.politique.regle,
         "motif": d.motif, "durci": d.durci, "avis": d.avis,
     });
-    // Journal d'abord : une décision non journalisée n'est pas rendue (fail-closed).
-    let cle = match interne.coffre.cle_ou_creer(&evt.session) {
-        Ok(c) => c,
-        Err(e) => return erreur(StatusCode::INTERNAL_SERVER_ERROR, format!("coffre indisponible : {e}")),
-    };
+    let cle = interne.coffre.cle_ou_creer(&evt.session).map_err(|e| format!("coffre indisponible : {e}"))?;
     let minimise = minimiser(&cle, &evt.session, &contenu);
-    let entree = match interne.journal.ajouter(&evt.session, "decision", minimise, t) {
-        Ok(e) => e,
-        Err(e) => return erreur(StatusCode::INTERNAL_SERVER_ERROR, format!("journal indisponible : {e}")),
-    };
+    let entree = interne
+        .journal
+        .ajouter(&evt.session, "decision", minimise, t)
+        .map_err(|e| format!("journal indisponible : {e}"))?;
     interne.compteurs[d.verdict as usize] += 1;
     let evenement = json!({"type": "decision", "horodatage": t, "session": evt.session, "seq": entree.seq, "detail": contenu});
     etat.publier(&mut interne, evenement);
-    let mut reponse = json!({"verdict": d.verdict, "regle": d.politique.regle, "motif": d.motif, "seq": entree.seq});
+    Ok((d, entree.seq))
+}
+
+/// Journalise ce qui s'est passé après une action (minimisé comme les décisions).
+pub(crate) fn constater(etat: &Etat, evt: &EvenementOutil, contenu: Value) -> Result<(), String> {
+    let t = maintenant();
+    let mut interne = etat.interne.lock().expect("verrou");
+    etat.ouvrir_session(&mut interne, evt, t).map_err(|e| e.to_string())?;
+    let cle = interne.coffre.cle_ou_creer(&evt.session).map_err(|e| e.to_string())?;
+    let e = interne
+        .journal
+        .ajouter(&evt.session, "observation", minimiser(&cle, &evt.session, &contenu), t)
+        .map_err(|e| e.to_string())?;
+    let evenement = json!({"type": "observation", "horodatage": t, "session": evt.session, "seq": e.seq, "detail": contenu});
+    etat.publier(&mut interne, evenement);
+    Ok(())
+}
+
+async fn decider(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> impl IntoResponse {
+    if evt.phase != Phase::Avant {
+        return erreur(StatusCode::BAD_REQUEST, "phase « avant » attendue");
+    }
+    let (d, seq) = match juger(&etat, &evt) {
+        Ok(r) => r,
+        Err(e) => return erreur(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let mut reponse = json!({"verdict": d.verdict, "regle": d.politique.regle, "motif": d.motif, "seq": seq});
     if let Some(nonce) = &evt.nonce {
         let verdict = serde_json::to_value(d.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
         reponse["signature"] = json!(sal_core::reponse::signer(&etat.signataire, nonce, &evt.session, &verdict, &d.politique.regle));
@@ -445,9 +470,13 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     rt.block_on(async move {
         let l_decision = tokio::net::TcpListener::bind(opts.ecoute_decision).await.map_err(|e| e.to_string())?;
         let l_admin = tokio::net::TcpListener::bind(opts.ecoute_admin).await.map_err(|e| e.to_string())?;
+        let l_passerelle = tokio::net::TcpListener::bind(opts.ecoute_passerelle).await.map_err(|e| e.to_string())?;
+        let agent = etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat.agent.clone();
+        tokio::spawn(crate::passerelle::servir(l_passerelle, etat_scellement.clone(), agent, opts.plafond_envoi));
         eprintln!("SAL — mandat {id}, cosigné par {}", signataires_mandat.join(" et "));
         eprintln!("  API décision       : http://{}", opts.ecoute_decision);
         eprintln!("  API administration : http://{}  (vue technique)", opts.ecoute_admin);
+        eprintln!("  passerelle sortante: http://{}  (HTTPS_PROXY de l'agent ; envoi plafonné à {} Kio par connexion)", opts.ecoute_passerelle, opts.plafond_envoi / 1024);
         eprintln!("  comptes            : {} (cosignés par {})", opts.comptes.display(), signataires_comptes.join(" et "));
         eprintln!("  scellement         : toutes les {} s, et à l'arrêt", opts.scellement);
         eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());

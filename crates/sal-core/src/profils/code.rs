@@ -38,7 +38,7 @@ pub fn verbe(outil: &str) -> &'static str {
         "Bash" | "BashOutput" | "KillShell" => "executer",
         "Read" | "Glob" | "Grep" | "LS" | "NotebookRead" => "lire",
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => "ecrire",
-        "WebFetch" | "WebSearch" => "reseau",
+        "WebFetch" | "WebSearch" | "Passerelle" => "reseau",
         "Task" | "Agent" => "deleguer",
         "TodoWrite" | "TodoRead" | "ExitPlanMode" | "EnterPlanMode" | "ToolSearch" | "Skill" => "interne",
         o if o.starts_with("mcp__") => "outil_mcp",
@@ -455,7 +455,10 @@ pub fn normaliser(evt: &EvenementOutil, mandat: &Mandat) -> Action {
     mettre("touche_supervision", json!(touche_supervision(&commande) || touche_supervision(script)));
     mettre("ecrit_point_protege", json!(ecrit_point_protege));
     mettre("shell_ecrit_hors_depot", json!(shell_ecrit_hors_depot));
-    mettre("envoi_externe", json!(envoi_externe(&commande, script)));
+    // Passerelle : une méthode qui envoie, visible en clair, compte comme un envoi.
+    let methode_envoie = evt.outil == crate::passerelle::OUTIL
+        && matches!(chaine(e, &["methode"]).as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+    mettre("envoi_externe", json!(envoi_externe(&commande, script) || methode_envoie));
 
     let ressource = if !chemin_txt.is_empty() && verbe != "executer" {
         chemin_txt

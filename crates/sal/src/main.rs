@@ -14,6 +14,7 @@
 mod admin;
 mod gouverner;
 mod hook;
+mod passerelle;
 mod trousseau;
 mod serveur;
 
@@ -153,6 +154,8 @@ enum CommandeCompte {
 
 #[derive(Subcommand)]
 enum CommandeTrousseau {
+    /// Vérifie, sans afficher de dialogue, que sal lit sa clé maîtresse sans rien demander.
+    Verifier,
     /// Enveloppe les clés en clair : sessions, comptes, signature du mandat et des réponses.
     Migrer {
         #[arg(long, default_value = "journal-cles")]
@@ -204,6 +207,9 @@ fn main() -> ExitCode {
             mermaid(&journal, session.as_deref(), &sortie, max, coffre.as_deref())
         }
         Commande::Effacer { session, coffre } => effacer(&session, &coffre),
+        Commande::Trousseau { commande: CommandeTrousseau::Verifier } => trousseau::verifier_sans_dialogue().map(|()| {
+            println!("trousseau : accès à la clé maîtresse sans aucune demande");
+        }),
         Commande::Trousseau { commande: CommandeTrousseau::Migrer { coffre, comptes, cles } } => {
             migrer(&coffre, &comptes.unwrap_or_else(admin::dossier_cles), &cles)
         }

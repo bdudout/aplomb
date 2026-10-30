@@ -65,6 +65,24 @@ fn lire_ou_creer(creer: bool) -> Result<Cle, String> {
     }
 }
 
+/// Diagnostic : la clé maîtresse est-elle lisible **sans aucune demande** ? Les dialogues
+/// sont interdits pendant l'essai : s'il en fallait un, on le sait sans qu'il s'affiche.
+#[cfg(target_os = "macos")]
+pub fn verifier_sans_dialogue() -> Result<(), String> {
+    use security_framework::os::macos::keychain::SecKeychain;
+    use security_framework::passwords::get_generic_password;
+    let _sans_dialogue = SecKeychain::disable_user_interaction().map_err(|e| e.to_string())?;
+    match get_generic_password(SERVICE, COMPTE) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("une demande d'autorisation serait nécessaire ({}, code {})", e, e.code())),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn verifier_sans_dialogue() -> Result<(), String> {
+    Err("pas de trousseau sur ce système".into())
+}
+
 #[cfg(not(target_os = "macos"))]
 fn lire_ou_creer(_creer: bool) -> Result<Cle, String> {
     Err("pas de trousseau sur ce système : définir SAL_CLE_MAITRESSE".into())

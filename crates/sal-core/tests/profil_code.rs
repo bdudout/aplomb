@@ -201,6 +201,22 @@ fn elargissement_progressif_gele() {
     assert_eq!(s.decider(&e).1.verdict, Verdict::Gel);
 }
 
+/// Passerelle réseau : la même politique que les outils de l'agent, y compris le sens
+/// des flux pour une requête visible en clair.
+#[test]
+fn passerelle_jugee_comme_les_outils() {
+    use sal_core::passerelle::{analyser, evenement};
+    let juge = |ligne: &str| {
+        let mut s = superviseur();
+        s.decider(&evenement(&analyser(ligne).unwrap(), "p", "claude-code", "")).1.verdict
+    };
+    assert_eq!(juge("CONNECT docs.rs:443 HTTP/1.1"), Verdict::Allow);
+    assert_eq!(juge("CONNECT index.crates.io:443 HTTP/1.1"), Verdict::Allow);
+    assert_eq!(juge("CONNECT paste.example.com:443 HTTP/1.1"), Verdict::Deny);
+    assert_eq!(juge("GET http://docs.rs/serde HTTP/1.1"), Verdict::Allow);
+    assert_eq!(juge("POST http://docs.rs/upload HTTP/1.1"), Verdict::Review);
+}
+
 #[test]
 fn agent_hors_mandat_refuse() {
     let mut s = superviseur();

@@ -177,7 +177,15 @@ pub fn sequence(entrees: &[Entree], max: usize) -> String {
             }
             "observation" => {
                 let outil = texte(champ(c, "outil"), 30);
-                l.push(format!("    O-->>A: {n}. exécuté : {outil} {}", designation(c)));
+                // Bilan de la passerelle : coupure au plafond d'envoi, ou refus d'adresse interne.
+                let issue = if c.get("coupe_plafond").and_then(Value::as_bool).unwrap_or(false) {
+                    "COUPÉ (plafond d'envoi)"
+                } else if !champ(c, "refus").is_empty() {
+                    "REFUSÉ (adresse interne)"
+                } else {
+                    "exécuté"
+                };
+                l.push(format!("    O-->>A: {n}. {issue} : {outil} {}", designation(c)));
             }
             "administration" => {
                 let action = champ(c, "action");
