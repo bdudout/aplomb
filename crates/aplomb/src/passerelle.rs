@@ -1,11 +1,11 @@
-//! **Passerelle réseau sortante** : proxy HTTP (`CONNECT` et requêtes en clair) que
+//! **Aplomb Gate**, passerelle réseau sortante : proxy HTTP (`CONNECT` et requêtes en clair) que
 //! l'agent utilise via `HTTPS_PROXY` / `HTTP_PROXY`.
 //!
 //! Pour chaque connexion :
 //! 1. la destination est jugée comme une action `reseau` (mandat, bornes, gel) et la
 //!    décision est journalisée, comme pour les outils de l'agent ;
 //! 2. le nom est résolu et **chaque** adresse obtenue est contrôlée : une adresse interne
-//!    (dont la boucle locale, donc l'API d'administration de SAL) est refusée ;
+//!    (dont la boucle locale, donc l'API d'administration d'Aplomb) est refusée ;
 //! 3. le volume envoyé est **plafonné** : un tunnel chiffré ne laisse pas voir la méthode,
 //!    mais un envoi massif vers un domaine autorisé en lecture coupe la connexion (EF-C4) ;
 //! 4. le bilan (octets envoyés, reçus, coupure) est journalisé.
@@ -15,8 +15,8 @@
 //! passerelle est sa seule sortie.
 use std::time::Duration;
 
-use sal_core::decision::Verdict;
-use sal_core::passerelle::{adresse_interne, analyser, evenement, OUTIL};
+use aplomb_core::decision::Verdict;
+use aplomb_core::passerelle::{adresse_interne, analyser, evenement, OUTIL};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -53,7 +53,7 @@ async fn lire_tete(flux: &mut TcpStream) -> std::io::Result<Vec<u8>> {
 }
 
 async fn refuser(flux: &mut TcpStream, statut: &str, motif: &str) -> std::io::Result<()> {
-    let corps = format!("SAL : {motif}\n");
+    let corps = format!("Aplomb : {motif}\n");
     let reponse = format!(
         "HTTP/1.1 {statut}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{corps}",
         corps.len()

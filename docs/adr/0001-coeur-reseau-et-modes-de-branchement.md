@@ -4,16 +4,16 @@
 - **Date** : 2026-10-27
 
 ## Contexte
-SAL doit superviser des IA locales et web, quel que soit le domaine (expression de
+Aplomb doit superviser des IA locales et web, quel que soit le domaine (expression de
 besoin §1, §8). Les agents se branchent de manières très différentes : hooks (Claude
 Code), API LLM compatibles OpenAI ou Anthropic, outils MCP, conteneurs. Le superviseur
 doit pouvoir tourner sur la même machine que l'agent (conteneurisé) ou sur un autre
 hôte, et ne jamais être administrable par l'agent (EF-S1).
 
 ## Décision
-1. Le **cœur** (`sal-core`) est une bibliothèque Rust **pure** : normalisation, politique,
+1. Le **cœur** (`aplomb-core`) est une bibliothèque Rust **pure** : normalisation, politique,
    combinaison, journal. Aucun réseau, aucune connaissance du mode de branchement.
-2. Il est exposé par un **service réseau** (`sal serve`) avec **deux API sur deux ports** :
+2. Il est exposé par un **service réseau** (`aplomb serve`) avec **deux API sur deux ports** :
    décision (joignable par l'agent) et administration (jamais joignable par l'agent).
    Le même binaire tourne en local ou dans un conteneur.
 3. Chaque **mode de branchement** est un adaptateur mince qui traduit son trafic en

@@ -1,8 +1,8 @@
 //! Scénarios du profil C avec les vraies règles `profils/code/*.cedar`.
-use sal_core::action::{EvenementOutil, Phase};
-use sal_core::decision::Verdict;
-use sal_core::mandat::{FichiersPolitique, MandatCharge, Mandat, Perimetre};
-use sal_core::superviseur::Superviseur;
+use aplomb_core::action::{EvenementOutil, Phase};
+use aplomb_core::decision::Verdict;
+use aplomb_core::mandat::{FichiersPolitique, MandatCharge, Mandat, Perimetre};
+use aplomb_core::superviseur::Superviseur;
 use serde_json::{json, Value};
 
 const REGLES: &str = include_str!("../../../profils/code/regles.cedar");
@@ -191,7 +191,7 @@ fn agent_qui_insiste_est_gele() {
 fn elargissement_progressif_gele() {
     let mut mandat = superviseur().mandat;
     mandat.mandat.perimetre.domaines_autorises = vec!["example.org".into()];
-    mandat.mandat.bornes = Some(sal_core::bornes::Bornes { domaines: 3, ..Default::default() });
+    mandat.mandat.bornes = Some(aplomb_core::bornes::Bornes { domaines: 3, ..Default::default() });
     let mut s = Superviseur::nouveau(mandat).unwrap();
     for i in 1..=3 {
         let e = evt("s", "WebFetch", json!({"url": format!("https://h{i}.example.org/")}));
@@ -205,7 +205,7 @@ fn elargissement_progressif_gele() {
 /// des flux pour une requête visible en clair.
 #[test]
 fn passerelle_jugee_comme_les_outils() {
-    use sal_core::passerelle::{analyser, evenement};
+    use aplomb_core::passerelle::{analyser, evenement};
     let juge = |ligne: &str| {
         let mut s = superviseur();
         s.decider(&evenement(&analyser(ligne).unwrap(), "p", "claude-code", "")).1.verdict

@@ -1,10 +1,10 @@
 [package]
-name = "sal-core"
+name = "aplomb-core"
 version.workspace = true
 edition.workspace = true
 license = "Apache-2.0"
 publish.workspace = true
-description = "Cœur de confiance de SAL : normalisation, politique, combinaison, journal. Aucune I/O réseau."
+description = "Cœur de confiance d'Aplomb : normalisation, politique, combinaison, journal. Aucune I/O réseau."
 
 [dependencies]
 serde = { workspace = true }

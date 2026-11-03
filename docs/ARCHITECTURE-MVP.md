@@ -1,4 +1,4 @@
-# SAL — Architecture du MVP (jalon J1)
+# Aplomb — Architecture du MVP (jalon J1)
 
 > Jalon **J1 —
 > MVP « agent de code »** : profil C, déploiement Minimal, niveau d'assurance 1 (coopératif).
@@ -15,7 +15,7 @@ Chaque action de Claude Code dans le dépôt bac à sable est **décidée avant 
 Claude Code (dépôt bac-a-sable)
    │ hook PreToolUse / PostToolUse  (JSON sur stdin)
    ▼
-sal hook ──HTTP──▶ sal serve ── API décision :7700 ─┐
+aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
  (fail-closed)       │                                │  POST /v1/decide   → Allow / Review / Deny / Gel
                      │                                │  POST /v1/observe  → journal du résultat
                      │                                │  GET  /v1/health
@@ -24,24 +24,24 @@ sal hook ──HTTP──▶ sal serve ── API décision :7700 ─┐
                      │  (jamais exposée à l'agent)    │  GET  /admin/events (SSE), POST /admin/gel, /admin/degel
                      │                                │  GET  /admin/verify (vérifie la chaîne du journal)
                      ▼
-              sal-core (bibliothèque, sans I/O réseau)
+              aplomb-core (bibliothèque, sans I/O réseau)
                 normaliser (profil C) → politique Cedar → combiner → journal chaîné
 ```
 
 ## Flux d'une action
 
 1. Claude Code s'apprête à appeler un outil (`Bash`, `Read`, `Write`, `Edit`, `WebFetch`…).
-2. Le hook `sal hook` lit l'événement sur stdin et l'envoie à `POST /v1/decide`.
-3. **Profil C** (`sal_core::profils::code`) : traduit l'appel d'outil en **action normalisée**
+2. Le hook `aplomb hook` lit l'événement sur stdin et l'envoie à `POST /v1/decide`.
+3. **Profil C** (`aplomb_core::profils::code`) : traduit l'appel d'outil en **action normalisée**
    (verbe, ressource réelle, contexte calculé : chemin canonique, dans le dépôt ?, fichier
    sensible ?, domaine réseau autorisé ?, push vers une branche protégée ?…).
-4. **Politique Cedar** (`sal_core::politique`) : deux ensembles de règles issus du mandat :
+4. **Politique Cedar** (`aplomb_core::politique`) : deux ensembles de règles issus du mandat :
    - `regles` — `permit` / `forbid`, refus par défaut ; un `forbid` l'emporte toujours ;
    - `revue` — `permit` dont la correspondance impose une **revue humaine** (palier Orange).
    Toute erreur d'évaluation ⇒ **Deny** (une erreur ne doit jamais faire sauter un `forbid`).
-5. **Algèbre de décision** (`sal_core::decision`) : `final = max(politique, planchers des
+5. **Algèbre de décision** (`aplomb_core::decision`) : `final = max(politique, planchers des
    moniteurs, gel)` dans `Allow < Review < Deny < Gel`. En J1, aucun moniteur probabiliste.
-6. **Journal** (`sal_core::journal`) : une chaîne de hachage SHA-256 **par session**, en JSONL.
+6. **Journal** (`aplomb_core::journal`) : une chaîne de hachage SHA-256 **par session**, en JSONL.
 7. Le hook traduit : Allow → `allow`, Review → `ask` (confirmation dans Claude Code),
    Deny / Gel → `deny`. Serveur injoignable ou réponse invalide ⇒ `deny` (fail-closed).
 
@@ -49,15 +49,15 @@ sal hook ──HTTP──▶ sal serve ── API décision :7700 ─┐
 
 | Chemin | Rôle |
 |---|---|
-| `crates/sal-core/src/decision.rs` | Verdict, avis, combinaison (invariant « ne peut que durcir ») |
-| `crates/sal-core/src/action.rs` | Action normalisée et événement d'outil |
-| `crates/sal-core/src/mandat.rs` | Mandat YAML, signature et vérification ed25519 |
-| `crates/sal-core/src/politique.rs` | Évaluation Cedar (règles + revue), fail-closed |
-| `crates/sal-core/src/profils/code.rs` | Profil C : normalisation des outils Claude Code |
-| `crates/sal-core/src/journal.rs` | Journal chaîné par session, vérification |
-| `crates/sal/src/main.rs` | Binaire `sal` : `serve`, `hook`, `init`, `cosigner`, `verify`, `ancrer`, `admin`, `compte`, `mermaid`, `effacer`, `trousseau` |
-| `crates/sal/src/serveur.rs` | API décision (7700) et API administration (7701) séparées |
-| `crates/sal/src/ui.html` | Vue technique minimale (flux temps réel) |
+| `crates/aplomb-core/src/decision.rs` | Verdict, avis, combinaison (invariant « ne peut que durcir ») |
+| `crates/aplomb-core/src/action.rs` | Action normalisée et événement d'outil |
+| `crates/aplomb-core/src/mandat.rs` | Mandat YAML, signature et vérification ed25519 |
+| `crates/aplomb-core/src/politique.rs` | Évaluation Cedar (règles + revue), fail-closed |
+| `crates/aplomb-core/src/profils/code.rs` | Profil C : normalisation des outils Claude Code |
+| `crates/aplomb-core/src/journal.rs` | Journal chaîné par session, vérification |
+| `crates/aplomb/src/main.rs` | Binaire `aplomb` : `serve`, `hook`, `init`, `cosigner`, `verify`, `ancrer`, `admin`, `compte`, `mermaid`, `effacer`, `trousseau` |
+| `crates/aplomb/src/serveur.rs` | API décision (7700) et API administration (7701) séparées |
+| `crates/aplomb/src/ui.html` | Vue technique minimale (flux temps réel) |
 | `profils/code/` | Règles Cedar et mandat type du profil C |
 | `bac-a-sable/` | Dépôt de test où le hook est activé |
 
@@ -66,6 +66,6 @@ sal hook ──HTTP──▶ sal serve ── API décision :7700 ─┐
 - Niveau 1 seulement : une action faite hors hook n'est pas vue (niveau 3 au jalon J3).
 - ~~Pas d'authentification sur l'API d'administration~~ : fait (J2, lot 3). Comptes nominatifs à clé ed25519, rôles, requêtes signées sans rejeu, dégel à quatre yeux, sessions de navigateur par ticket à usage unique. Quatre yeux pour modifier un mandat ou le fichier de comptes : fait (J2, lot 5).
 - ~~Clés hors trousseau, composants non authentifiés~~ : fait (J2, lot 4). Clé maîtresse protégée par phrase de passe (Argon2id), tous les fichiers de clés enveloppés ; le trousseau macOS a été abandonné, il redemandait le mot de passe à chaque recompilation ; réponses du superviseur signées sur un nonce du hook (anti-usurpation, anti-rejeu). Le chiffrement du trafic (mTLS) est reporté au jalon J3 : sur la boucle locale, au niveau 1, l'agent partage l'utilisateur du hook et un certificat client ne prouverait rien.
-- ~~Journal ni signé ni ancré~~ : fait (J2, lot 5). Scellés périodiques signés (racine de Merkle des sessions), ancrage hors ligne par `sal ancrer`. Les entrées sont signées à travers le scellé, donc avec un décalage d'au plus une période (60 s par défaut).
+- ~~Journal ni signé ni ancré~~ : fait (J2, lot 5). Scellés périodiques signés (racine de Merkle des sessions), ancrage hors ligne par `aplomb ancrer`. Les entrées sont signées à travers le scellé, donc avec un décalage d'au plus une période (60 s par défaut).
 - ~~Minimisation du journal~~ : fait (J2, lot 2). Contenus venant de l'agent chiffrés par session (ChaCha20-Poly1305), effacement par destruction de la clé. Les clés sont encore des fichiers 0600, pas dans le trousseau (lot 4).
 - Pas de moniteur probabiliste (juge, guard model) : J5.

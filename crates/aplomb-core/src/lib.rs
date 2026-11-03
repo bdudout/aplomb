@@ -1,7 +1,7 @@
-//! **sal-core** — cœur de confiance du Superviseur d'Alignement Local.
+//! **aplomb-core** — cœur de confiance du superviseur d'alignement pour agents d'IA.
 //!
 //! Bibliothèque pure : aucune I/O réseau, aucun appel de modèle sur le chemin
-//! d'autorisation (ENF-1). Le binaire `sal` l'expose en service réseau.
+//! d'autorisation (ENF-1). Le binaire `aplomb` l'expose en service réseau.
 //!
 //! Chaîne de traitement d'une action :
 //! `profils::code::normaliser` → `politique::Politique::evaluer` →

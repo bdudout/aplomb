@@ -194,7 +194,7 @@ mod tests {
     use super::*;
 
     fn dossier_test(nom: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("sal-mandat-{nom}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aplomb-mandat-{nom}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("regles.cedar"), "permit(principal, action, resource);").unwrap();
         std::fs::write(d.join("revue.cedar"), "").unwrap();

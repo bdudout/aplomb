@@ -81,6 +81,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "aplomb"
+version = "0.1.0"
+dependencies = [
+ "aplomb-core",
+ "axum",
+ "clap",
+ "ed25519-dalek",
+ "futures-util",
+ "getrandom 0.2.17",
+ "hex",
+ "rpassword",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tokio-stream",
+ "ureq",
+]
+
+[[package]]
+name = "aplomb-core"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "cedar-policy",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "hex",
+ "hmac",
+ "proptest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "ar_archive_writer"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1878,46 +1918,6 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
-name = "sal"
-version = "0.1.0"
-dependencies = [
- "axum",
- "clap",
- "ed25519-dalek",
- "futures-util",
- "getrandom 0.2.17",
- "hex",
- "rpassword",
- "sal-core",
- "security-framework",
- "serde",
- "serde_json",
- "serde_yaml",
- "tokio",
- "tokio-stream",
- "ureq",
-]
-
-[[package]]
-name = "sal-core"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "cedar-policy",
- "chacha20poly1305",
- "ed25519-dalek",
- "getrandom 0.2.17",
- "hex",
- "hmac",
- "proptest",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "thiserror",
-]
 
 [[package]]
 name = "same-file"

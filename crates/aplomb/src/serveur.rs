@@ -3,8 +3,8 @@
 //! - **Décision** (`--ecoute-decision`, joignable par l'agent) :
 //!   `POST /v1/decide`, `POST /v1/observe`, `GET /v1/health`.
 //! - **Administration** (`--ecoute-admin`, jamais exposée à l'agent), réservée aux
-//!   comptes déclarés dans `--comptes` (EF-S2, module `sal_core::autorite`) :
-//!   - `POST /admin/requete` : requête signée par la clé d'un compte (`sal admin`) ;
+//!   comptes déclarés dans `--comptes` (EF-S2, module `aplomb_core::autorite`) :
+//!   - `POST /admin/requete` : requête signée par la clé d'un compte (`aplomb admin`) ;
 //!   - `GET /connexion?ticket=…` : ouvre une session de navigateur (cookie) ;
 //!   - `GET /admin/etat`, `/admin/historique`, `/admin/events` (SSE), `/admin/verify`,
 //!     `POST /admin/gel`, `/admin/degel`, `/admin/deconnexion` : session requise ;
@@ -32,11 +32,11 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
-use sal_core::action::{EvenementOutil, Phase};
-use sal_core::autorite::{Autorite, Issue, Operation, RequeteSignee};
-use sal_core::confidentiel::{minimiser, Coffre};
-use sal_core::journal::Journal;
-use sal_core::superviseur::Superviseur;
+use aplomb_core::action::{EvenementOutil, Phase};
+use aplomb_core::autorite::{Autorite, Issue, Operation, RequeteSignee};
+use aplomb_core::confidentiel::{minimiser, Coffre};
+use aplomb_core::journal::Journal;
+use aplomb_core::superviseur::Superviseur;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
@@ -101,7 +101,7 @@ pub(crate) struct Etat {
 
 /// Session globale du journal pour les actions d'administration sans session visée.
 const SESSION_ADMIN: &str = "_administration";
-const COOKIE: &str = "sal_session";
+const COOKIE: &str = "aplomb_session";
 
 /// Compte de la session de navigateur, depuis le cookie.
 fn compte_web(interne: &mut Interne, entetes: &HeaderMap) -> Option<String> {
@@ -111,7 +111,7 @@ fn compte_web(interne: &mut Interne, entetes: &HeaderMap) -> Option<String> {
 }
 
 fn non_connecte() -> Response {
-    (StatusCode::UNAUTHORIZED, Json(json!({"erreur": "non connecté : sal admin connexion --compte <id>"}))).into_response()
+    (StatusCode::UNAUTHORIZED, Json(json!({"erreur": "non connecté : aplomb admin connexion --compte <id>"}))).into_response()
 }
 
 fn maintenant() -> u64 {
@@ -159,7 +159,7 @@ impl Etat {
 
 /// Juge un événement et journalise la décision (journal d'abord : une décision non
 /// journalisée n'est jamais rendue). Chemin unique du hook et de la passerelle.
-pub(crate) fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(sal_core::decision::DecisionFinale, u64), String> {
+pub(crate) fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_core::decision::DecisionFinale, u64), String> {
     let t = maintenant();
     let mut interne = etat.interne.lock().expect("verrou");
     etat.ouvrir_session(&mut interne, evt, t).map_err(|e| format!("journal indisponible : {e}"))?;
@@ -207,7 +207,7 @@ async fn decider(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> i
     let mut reponse = json!({"verdict": d.verdict, "regle": d.politique.regle, "motif": d.motif, "seq": seq});
     if let Some(nonce) = &evt.nonce {
         let verdict = serde_json::to_value(d.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-        reponse["signature"] = json!(sal_core::reponse::signer(&etat.signataire, nonce, &evt.session, &verdict, &d.politique.regle));
+        reponse["signature"] = json!(aplomb_core::reponse::signer(&etat.signataire, nonce, &evt.session, &verdict, &d.politique.regle));
     }
     (StatusCode::OK, Json(reponse))
 }
@@ -327,7 +327,7 @@ fn appliquer(etat: &Etat, interne: &mut Interne, issue: &Issue, compte: &str, se
     json!({"issue": issue, "detail": detail})
 }
 
-/// Requête signée par la clé d'un compte (`sal admin`).
+/// Requête signée par la clé d'un compte (`aplomb admin`).
 async fn requete_signee(State(etat): State<Etat>, Json(r): Json<RequeteSignee>) -> Response {
     let mut interne = etat.interne.lock().expect("verrou");
     match interne.autorite.traiter(&r, maintenant()) {
@@ -342,8 +342,8 @@ async fn requete_signee(State(etat): State<Etat>, Json(r): Json<RequeteSignee>) 
 
 /// Action depuis la vue technique : session de navigateur et en-tête anti-CSRF exigés.
 async fn action_web(etat: Etat, entetes: HeaderMap, demande: DemandeGel, operation: Operation) -> Response {
-    if entetes.get("x-sal").and_then(|v| v.to_str().ok()) != Some("1") {
-        return (StatusCode::FORBIDDEN, Json(json!({"erreur": "en-tête X-SAL manquant"}))).into_response();
+    if entetes.get("x-aplomb").and_then(|v| v.to_str().ok()) != Some("1") {
+        return (StatusCode::FORBIDDEN, Json(json!({"erreur": "en-tête X-Aplomb manquant"}))).into_response();
     }
     let mut interne = etat.interne.lock().expect("verrou");
     let Some(compte) = compte_web(&mut interne, &entetes) else { return non_connecte() };
@@ -374,7 +374,7 @@ async fn connexion(State(etat): State<Etat>, Query(q): Query<Ticket>) -> Respons
         Ok((jeton, _)) => {
             let cookie = format!(
                 "{COOKIE}={jeton}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
-                sal_core::autorite::SESSION_WEB_MS / 1000
+                aplomb_core::autorite::SESSION_WEB_MS / 1000
             );
             ([("set-cookie", cookie)], Redirect::to("/")).into_response()
         }
@@ -409,11 +409,11 @@ fn cle_reponses(chemin: &std::path::Path) -> Result<ed25519_dalek::SigningKey, S
 }
 
 pub fn lancer(opts: Options) -> Result<(), String> {
-    let confiance = sal_core::gouvernance::Confiance::depuis_yaml(&std::fs::read_to_string(&opts.confiance).map_err(
-        |e| format!("{} : {e} — première installation : sal init --membre <id> --membre <id>", opts.confiance.display()),
+    let confiance = aplomb_core::gouvernance::Confiance::depuis_yaml(&std::fs::read_to_string(&opts.confiance).map_err(
+        |e| format!("{} : {e} — première installation : aplomb init --membre <id> --membre <id>", opts.confiance.display()),
     )?)?;
-    let (mandat, signataires_mandat) = sal_core::mandat::charger_cosigne(&opts.mandat, &confiance).map_err(|e| {
-        format!("mandat refusé : {e} — faire cosigner : sal cosigner {} --compte <id>", opts.mandat.display())
+    let (mandat, signataires_mandat) = aplomb_core::mandat::charger_cosigne(&opts.mandat, &confiance).map_err(|e| {
+        format!("mandat refusé : {e} — faire cosigner : aplomb cosigner {} --compte <id>", opts.mandat.display())
     })?;
     if mandat.mandat.profil != "code" {
         return Err(format!("profil « {} » non pris en charge (MVP : code)", mandat.mandat.profil));
@@ -425,9 +425,9 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?.avec_maitre(maitre);
     let signataire = cle_reponses(&opts.cle_reponses)?;
     let texte_comptes = std::fs::read_to_string(&opts.comptes)
-        .map_err(|e| format!("comptes {} : {e} (créer un compte : sal compte nouveau)", opts.comptes.display()))?;
+        .map_err(|e| format!("comptes {} : {e} (créer un compte : aplomb compte nouveau)", opts.comptes.display()))?;
     let (autorite, signataires_comptes) = Autorite::depuis_yaml_cosigne(&texte_comptes, &confiance).map_err(|e| {
-        format!("comptes refusés : {e} — faire cosigner : sal cosigner {} --compte <id>", opts.comptes.display())
+        format!("comptes refusés : {e} — faire cosigner : aplomb cosigner {} --compte <id>", opts.comptes.display())
     })?;
     let dossier_journal = opts.journal.clone();
     let cle_scelles = signataire.clone();
@@ -473,14 +473,14 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let l_passerelle = tokio::net::TcpListener::bind(opts.ecoute_passerelle).await.map_err(|e| e.to_string())?;
         let agent = etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat.agent.clone();
         tokio::spawn(crate::passerelle::servir(l_passerelle, etat_scellement.clone(), agent, opts.plafond_envoi));
-        eprintln!("SAL — mandat {id}, cosigné par {}", signataires_mandat.join(" et "));
+        eprintln!("Aplomb — mandat {id}, cosigné par {}", signataires_mandat.join(" et "));
         eprintln!("  API décision       : http://{}", opts.ecoute_decision);
-        eprintln!("  API administration : http://{}  (vue technique)", opts.ecoute_admin);
-        eprintln!("  passerelle sortante: http://{}  (HTTPS_PROXY de l'agent ; envoi plafonné à {} Kio par connexion)", opts.ecoute_passerelle, opts.plafond_envoi / 1024);
+        eprintln!("  API administration : http://{}  (Aplomb Watch, vue technique)", opts.ecoute_admin);
+        eprintln!("  Aplomb Gate        : http://{}  (passerelle sortante, HTTPS_PROXY de l'agent ; envoi plafonné à {} Kio par connexion)", opts.ecoute_passerelle, opts.plafond_envoi / 1024);
         eprintln!("  comptes            : {} (cosignés par {})", opts.comptes.display(), signataires_comptes.join(" et "));
         eprintln!("  scellement         : toutes les {} s, et à l'arrêt", opts.scellement);
         eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());
-        eprintln!("  connexion à la vue : sal admin connexion --compte <id>");
+        eprintln!("  connexion à la vue : aplomb admin connexion --compte <id>");
         let arret = async {
             let _ = tokio::signal::ctrl_c().await;
         };
@@ -492,7 +492,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             loop {
                 tic.tick().await;
                 let _verrou = etat_scelle.interne.lock().expect("verrou");
-                if let Err(e) = sal_core::scellement::sceller(&dossier_scelle, &cle_periodique, maintenant()) {
+                if let Err(e) = aplomb_core::scellement::sceller(&dossier_scelle, &cle_periodique, maintenant()) {
                     eprintln!("  SCELLEMENT EN ÉCHEC : {e}");
                 }
             }
@@ -504,7 +504,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         };
         // Scellé final : l'état à l'arrêt est figé et signé.
         let _verrou = etat_scellement.interne.lock().expect("verrou");
-        match sal_core::scellement::sceller(&dossier_journal, &cle_scelles, maintenant()) {
+        match aplomb_core::scellement::sceller(&dossier_journal, &cle_scelles, maintenant()) {
             Ok(Some(s)) => eprintln!("  scellé final n° {}", s.seq),
             Ok(None) => {}
             Err(e) => eprintln!("  SCELLEMENT FINAL EN ÉCHEC : {e}"),

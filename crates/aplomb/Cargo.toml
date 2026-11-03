@@ -1,13 +1,13 @@
 [package]
-name = "sal"
+name = "aplomb"
 version.workspace = true
 edition.workspace = true
 license = "EUPL-1.2"
 publish.workspace = true
-description = "Binaire SAL : service réseau (API décision / administration), hook Claude Code, outils de signature et de vérification."
+description = "Binaire Aplomb : service réseau (API décision / administration), hook Claude Code, outils de signature et de vérification."
 
 [dependencies]
-sal-core = { path = "../sal-core" }
+aplomb-core = { path = "../aplomb-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

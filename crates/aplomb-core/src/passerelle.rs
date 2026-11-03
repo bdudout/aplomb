@@ -5,7 +5,7 @@
 //! bornes, gel. Le proxy vérifie ensuite la **ressource réelle** : l'adresse IP à
 //! laquelle le nom se résout. Une adresse interne (boucle locale, réseau privé,
 //! métadonnées de cloud…) est refusée, ce qui empêche notamment de joindre l'API
-//! d'administration de SAL par la passerelle.
+//! d'administration d'Aplomb par la passerelle.
 use std::net::IpAddr;
 
 use serde_json::json;

@@ -1,6 +1,6 @@
-# Contribuer à SAL
+# Contribuer à Aplomb
 
-Merci de ton intérêt. SAL est publié sous deux licences : `crates/sal-core` sous
+Merci de ton intérêt. Aplomb est publié sous deux licences : `crates/aplomb-core` sous
 Apache-2.0, le reste sous EUPL-1.2 (voir [`README.md`](README.md#licence)).
 
 ## Accord de contribution
@@ -20,5 +20,5 @@ Sans cet accord, la contribution ne peut pas être fusionnée.
 
 - `cargo test` doit passer, et `scripts/scenarios.sh` si la contribution touche aux décisions.
 - Toute modification d'un mandat, des règles `profils/code/*.cedar` ou de `comptes.yaml`
-  doit être recosignée (`sal cosigner`) : le superviseur refuse sinon de démarrer.
+  doit être recosignée (`aplomb cosigner`) : le superviseur refuse sinon de démarrer.
 - Une faille de sécurité se signale en privé, pas dans un ticket public.

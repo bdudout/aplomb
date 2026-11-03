@@ -1,10 +1,10 @@
 //! **Export Mermaid** du journal : un diagramme de séquence par session, pour suivre
 //! les requêtes d'un agent (rendu par tout outil Mermaid, dont Pele).
 //!
-//! Quatre participants, indépendants du domaine : l'agent, SAL, les outils (le monde)
-//! et l'humain. Une décision devient une flèche de l'agent vers SAL, puis :
-//! - `allow`  → SAL laisse passer vers les outils ;
-//! - `review` → SAL demande à l'humain ;
+//! Quatre participants, indépendants du domaine : l'agent, Aplomb, les outils (le monde)
+//! et l'humain. Une décision devient une flèche de l'agent vers Aplomb, puis :
+//! - `allow`  → Aplomb laisse passer vers les outils ;
+//! - `review` → Aplomb demande à l'humain ;
 //! - `deny`   → flèche barrée vers l'agent ;
 //! - `gel`    → flèche barrée et note « session gelée ».
 //!
@@ -115,7 +115,7 @@ pub fn sequence(entrees: &[Entree], max: usize) -> String {
     let ouverture = entrees.iter().find(|e| e.type_ == "session").map(|e| &e.contenu);
     let agent = ouverture.map(|c| champ(c, "agent")).filter(|a| !a.is_empty()).unwrap_or("agent");
     l.push(format!("    participant A as Agent ({})", texte(agent, 40)));
-    l.push("    participant S as SAL".into());
+    l.push("    participant S as Aplomb".into());
     l.push("    participant O as Outils".into());
     l.push("    participant H as Humain".into());
     match ouverture {
@@ -214,7 +214,7 @@ mod tests {
     use serde_json::json;
 
     fn session_type(nom: &str) -> Vec<Entree> {
-        let d = std::env::temp_dir().join(format!("sal-mermaid-{nom}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aplomb-mermaid-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let mut j = Journal::ouvrir(&d).unwrap();
         let s = "s1";
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn cause_du_durcissement_affichee() {
-        let d = std::env::temp_dir().join(format!("sal-mermaid-durci-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aplomb-mermaid-durci-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let mut j = Journal::ouvrir(&d).unwrap();
         let c = json!({"outil": "WebFetch", "verbe": "reseau", "ressource": "x.org", "verdict": "gel",
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn contenus_scelles_puis_effaces() {
         use crate::confidentiel::minimiser;
-        let base = std::env::temp_dir().join(format!("sal-mermaid-scelle-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("aplomb-mermaid-scelle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let mut j = Journal::ouvrir(base.join("journal")).unwrap();
         let coffre = Coffre::ouvrir(base.join("cles")).unwrap();
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn journal_altere_refuse() {
-        let d = std::env::temp_dir().join(format!("sal-mermaid-alt-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aplomb-mermaid-alt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let mut j = Journal::ouvrir(&d).unwrap();
         j.ajouter("s", "decision", json!({"verdict": "deny"}), 1).unwrap();

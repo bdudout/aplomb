@@ -18,7 +18,7 @@
 //! trousseau du système. Lire un fichier de clé ne donne que du chiffré. Une seule entrée
 //! de trousseau : une seule autorisation à donner, pas une par session.
 //!
-//! Un fichier encore en clair (format antérieur) reste lisible ; `sal trousseau migrer`
+//! Un fichier encore en clair (format antérieur) reste lisible ; `aplomb trousseau migrer`
 //! l'enveloppe.
 use std::io::Write;
 use std::path::PathBuf;
@@ -161,7 +161,7 @@ impl Coffre {
         self
     }
 
-    /// Étiquette d'enveloppe : dérivée du nom de fichier, pour que `sal trousseau migrer`
+    /// Étiquette d'enveloppe : dérivée du nom de fichier, pour que `aplomb trousseau migrer`
     /// puisse la retrouver sans connaître l'identifiant de session.
     fn etiquette(session: &str) -> String {
         format!("session:{}", nom_fichier(session).trim_end_matches(".jsonl"))
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn coffre_avec_maitre() {
-        let d = std::env::temp_dir().join(format!("sal-coffre-maitre-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aplomb-coffre-maitre-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let c = Coffre::ouvrir(&d).unwrap().avec_maitre([5u8; 32]);
         let k = c.cle_ou_creer("s").unwrap();
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn coffre_creation_et_effacement() {
-        let d = std::env::temp_dir().join(format!("sal-coffre-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aplomb-coffre-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let c = Coffre::ouvrir(&d).unwrap();
         assert!(c.cle("s").is_none());

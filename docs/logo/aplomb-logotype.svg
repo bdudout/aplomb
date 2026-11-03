@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 120" role="img" aria-label="Aplomb">
+  <style>
+    .trait { stroke: #1f3a5f; }
+    .fil { stroke: #1f3a5f; }
+    .plomb { fill: #e0a030; }
+    .nom { fill: #1f3a5f; font: 600 64px "Inter", "Helvetica Neue", Arial, sans-serif; letter-spacing: 1px; }
+    .devise { fill: #5a6b80; font: 400 15px "Inter", "Helvetica Neue", Arial, sans-serif; letter-spacing: 0.5px; }
+    @media (prefers-color-scheme: dark) {
+      .trait, .fil { stroke: #e8eef6; }
+      .nom { fill: #e8eef6; }
+      .devise { fill: #a9b6c6; }
+    }
+  </style>
+  <path class="trait" d="M22 104 L60 16 L98 104" fill="none" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <line class="fil" x1="60" y1="26" x2="60" y2="64" stroke-width="3" stroke-linecap="round"/>
+  <path class="plomb" d="M51 64 H69 V70 L60 94 L51 70 Z"/>
+  <text class="nom" x="124" y="78">aplomb</text>
+  <text class="devise" x="127" y="102">every AI agent action, checked before it runs</text>
+</svg>

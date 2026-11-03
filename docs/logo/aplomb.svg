@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Aplomb">
+  <style>
+    .trait { stroke: #1f3a5f; }
+    .fil { stroke: #1f3a5f; }
+    .plomb { fill: #e0a030; }
+    @media (prefers-color-scheme: dark) { .trait, .fil { stroke: #e8eef6; } }
+  </style>
+  <!-- Un « A » dont l'axe est un fil à plomb : la verticale de référence. -->
+  <path class="trait" d="M22 104 L60 16 L98 104" fill="none" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <line class="fil" x1="60" y1="26" x2="60" y2="64" stroke-width="3" stroke-linecap="round"/>
+  <path class="plomb" d="M51 64 H69 V70 L60 94 L51 70 Z"/>
+</svg>

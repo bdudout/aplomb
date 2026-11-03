@@ -228,7 +228,7 @@ pub fn ancrer(dossier_journal: &Path, dossier_ancre: &Path) -> Result<PathBuf, S
         return Err("aucun scellé à ancrer (le superviseur scelle toutes les minutes)".into());
     }
     std::fs::create_dir_all(dossier_ancre).map_err(|e| e.to_string())?;
-    let cible = dossier_ancre.join("sal-ancre.jsonl");
+    let cible = dossier_ancre.join("aplomb-ancre.jsonl");
     if cible.exists() {
         verifier_ancre(dossier_journal, &cible).map_err(|e| format!("ancre existante incompatible, conservée : {e}"))?;
     }
@@ -243,7 +243,7 @@ mod tests {
     use serde_json::json;
 
     fn dossier(nom: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("sal-scelle-{nom}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("aplomb-scelle-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }

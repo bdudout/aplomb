@@ -1,13 +1,13 @@
 //! Gouvernance en deux commandes, pour rester simple :
-//! - `sal init` — parcours guidé : comptes, fichier de confiance, cosignature des comptes
+//! - `aplomb init` — parcours guidé : comptes, fichier de confiance, cosignature des comptes
 //!   et des mandats, en une fois ;
-//! - `sal cosigner <fichier>` — ajoute sa signature à un mandat ou au fichier de comptes,
+//! - `aplomb cosigner <fichier>` — ajoute sa signature à un mandat ou au fichier de comptes,
 //!   et dit qui doit encore signer.
 use std::path::{Path, PathBuf};
 
-use sal_core::autorite::{FichierComptes, Role};
-use sal_core::gouvernance::{signer, Confiance, FichierConfiance, Membre, SignatureNommee};
-use sal_core::mandat::{actualiser_empreintes, Mandat};
+use aplomb_core::autorite::{FichierComptes, Role};
+use aplomb_core::gouvernance::{signer, Confiance, FichierConfiance, Membre, SignatureNommee};
+use aplomb_core::mandat::{actualiser_empreintes, Mandat};
 
 use crate::admin;
 
@@ -91,10 +91,10 @@ pub fn cosigner(fichier: &Path, compte: &str, cle: Option<&Path>, confiance: &Pa
     Ok(())
 }
 
-/// Parcours guidé : tout ce qu'il faut pour un premier `sal serve`, en une commande.
+/// Parcours guidé : tout ce qu'il faut pour un premier `aplomb serve`, en une commande.
 pub fn init(membres: &[String], comptes: &Path, mandats: &[PathBuf], confiance: &Path) -> Result<(), String> {
     if membres.len() < 2 {
-        return Err("indiquer deux personnes : sal init --membre <id> --membre <id> (quatre yeux)".into());
+        return Err("indiquer deux personnes : aplomb init --membre <id> --membre <id> (quatre yeux)".into());
     }
     if membres[0] == membres[1] {
         return Err("les deux membres doivent être distincts".into());
@@ -140,7 +140,7 @@ pub fn init(membres: &[String], comptes: &Path, mandats: &[PathBuf], confiance: 
         }
     }
     println!();
-    println!("Prêt. Lancer : ./target/debug/sal serve --mandat {}", mandats.first().map(|p| p.display().to_string()).unwrap_or_default());
+    println!("Prêt. Lancer : ./target/debug/aplomb serve --mandat {}", mandats.first().map(|p| p.display().to_string()).unwrap_or_default());
     println!(
         "Les clés de {} et {} sont sur ce poste. Pour de vrais quatre yeux, chacun garde la sienne sur son propre poste.",
         membres[0], membres[1]

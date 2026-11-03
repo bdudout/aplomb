@@ -1,19 +1,19 @@
 //! Outils d'administration en ligne de commande :
-//! - `sal compte nouveau` — crée un compte (clé ed25519) et l'ajoute au fichier de comptes ;
-//! - `sal admin <operation>` — envoie une requête signée par la clé du compte.
+//! - `aplomb compte nouveau` — crée un compte (clé ed25519) et l'ajoute au fichier de comptes ;
+//! - `aplomb admin <operation>` — envoie une requête signée par la clé du compte.
 //!
-//! Les clés privées des comptes vivent par défaut dans `~/.config/sal/comptes/`, hors de
+//! Les clés privées des comptes vivent par défaut dans `~/.config/aplomb/comptes/`, hors de
 //! tout dépôt, **enveloppées** par la clé maîtresse (phrase de passe) : les lire ne donne que
 //! du chiffré (le profil C refuse en outre à l'agent de les lire).
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sal_core::autorite::{requete, Compte, FichierComptes, Operation, Role};
+use aplomb_core::autorite::{requete, Compte, FichierComptes, Operation, Role};
 use serde_json::Value;
 
 /// Dossier par défaut des clés privées des comptes.
 pub fn dossier_cles() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config/sal/comptes")
+    crate::cle_maitresse::dossier_config().join("comptes")
 }
 
 pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) -> Result<(), String> {
@@ -52,9 +52,9 @@ pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) 
     std::fs::write(fichier, serde_yaml::to_string(&comptes).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     println!("compte {id} ajouté à {} ; clé privée : {} (enveloppée, 0600)", fichier.display(), chemin.display());
     if etaient_signes {
-        println!("la liste des comptes a changé : la faire recosigner par deux membres (sal cosigner {})", fichier.display());
+        println!("la liste des comptes a changé : la faire recosigner par deux membres (aplomb cosigner {})", fichier.display());
     }
-    println!("redémarrer `sal serve` pour le prendre en compte");
+    println!("redémarrer `aplomb serve` pour le prendre en compte");
     Ok(())
 }
 

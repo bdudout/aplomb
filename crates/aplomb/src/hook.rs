@@ -1,9 +1,9 @@
 //! **Adaptateur hook Claude Code** (mode de branchement, niveau d'assurance 1).
 //!
-//! Claude Code exécute `sal hook` avant (`PreToolUse`) et après (`PostToolUse`) chaque
+//! Claude Code exécute `aplomb hook` avant (`PreToolUse`) et après (`PostToolUse`) chaque
 //! outil, en passant l'événement en JSON sur stdin. Traduction de la décision :
 //! - `Allow` → aucune décision : la main revient aux permissions habituelles de Claude
-//!   Code (SAL ne fait que durcir, il n'accorde rien de plus) ;
+//!   Code (Aplomb ne fait que durcir, il n'accorde rien de plus) ;
 //! - `Review` → `ask` : Claude Code demande confirmation à l'utilisateur ;
 //! - `Deny` / `Gel` → `deny`.
 //!
@@ -40,7 +40,7 @@ const MAX_SCRIPT: u64 = 64 * 1024;
 /// Contenu des scripts locaux que la commande exécute (ressource réelle, EF-B4).
 fn contenu_execute(cwd: &str, commande: &str) -> Option<String> {
     let mut contenu = String::new();
-    for script in sal_core::profils::code::scripts_executes(commande) {
+    for script in aplomb_core::profils::code::scripts_executes(commande) {
         let p = Path::new(cwd).join(&script);
         let lisible = std::fs::metadata(&p).is_ok_and(|m| m.is_file() && m.len() <= MAX_SCRIPT);
         if let Some(texte) = lisible.then(|| std::fs::read_to_string(&p).ok()).flatten() {
@@ -56,7 +56,7 @@ fn sortie_pre(decision: &str, motif: &str) -> ExitCode {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": decision,
-            "permissionDecisionReason": format!("SAL : {motif}"),
+            "permissionDecisionReason": format!("Aplomb : {motif}"),
         }
     });
     if decision == "allow" {
@@ -85,7 +85,7 @@ fn nonce() -> String {
 pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>) -> ExitCode {
     let cle_serveur = match cle_serveur.map(|p| std::fs::read_to_string(p).map_err(|e| e.to_string())) {
         None => None,
-        Some(Ok(t)) => match sal_core::mandat::cle_publique(&t) {
+        Some(Ok(t)) => match aplomb_core::mandat::cle_publique(&t) {
             Ok(c) => Some(c),
             Err(_) => return sortie_pre("deny", "clé publique du superviseur illisible (fail-closed)"),
         },
@@ -118,7 +118,7 @@ pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>) -> ExitCode {
     let session = s("session_id");
     let corps = json!({
         "session": s("session_id"),
-        "agent": std::env::var("SAL_AGENT").unwrap_or_else(|_| "claude-code".into()),
+        "agent": std::env::var("APLOMB_AGENT").unwrap_or_else(|_| "claude-code".into()),
         "mode": "hook-claude-code",
         "cwd": cwd,
         "outil": s("tool_name"),
@@ -128,7 +128,7 @@ pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>) -> ExitCode {
         "contenu_execute": contenu_execute(&cwd, commande),
         "nonce": nonce,
     });
-    let base = std::env::var("SAL_URL").unwrap_or_else(|_| URL_DEFAUT.into());
+    let base = std::env::var("APLOMB_URL").unwrap_or_else(|_| URL_DEFAUT.into());
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(3)).build();
 
     if phase == "apres" {
@@ -147,7 +147,7 @@ pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>) -> ExitCode {
     let motif = reponse.get("motif").and_then(Value::as_str).unwrap_or("");
     if let Some(cle) = &cle_serveur {
         let champ = |k: &str| reponse.get(k).and_then(Value::as_str).unwrap_or("");
-        if !sal_core::reponse::verifier(cle, champ("signature"), &nonce, &session, champ("verdict"), champ("regle")) {
+        if !aplomb_core::reponse::verifier(cle, champ("signature"), &nonce, &session, champ("verdict"), champ("regle")) {
             return sortie_pre("deny", "réponse non signée par le superviseur attendu (usurpation possible) — fail-closed");
         }
     }

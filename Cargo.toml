@@ -1,8 +1,8 @@
-# Workspace SAL — Superviseur d'Alignement Local (nom de code provisoire).
-# Cœur de confiance pur (`sal-core`) + binaire réseau/hook (`sal`).
+# Workspace Aplomb — superviseur d'alignement pour agents d'IA.
+# Cœur de confiance pur (`aplomb-core`) + binaire réseau/hook (`aplomb`).
 [workspace]
 resolver = "2"
-members = ["crates/sal-core", "crates/sal"]
+members = ["crates/aplomb-core", "crates/aplomb"]
 
 [workspace.package]
 version = "0.1.0"

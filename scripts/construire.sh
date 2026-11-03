@@ -1,7 +1,7 @@
 #!/bin/sh
-# Compile sal. (Plus de certificat ni de trousseau : la clé maîtresse est protégée par
+# Compile aplomb. (Plus de certificat ni de trousseau : la clé maîtresse est protégée par
 # une phrase de passe, voir src/cle_maitresse.rs.)
 set -eu
 cd "$(dirname "$0")/.."
 cargo build "$@"
-echo "sal compilé : target/debug/sal"
+echo "aplomb compilé : target/debug/aplomb"

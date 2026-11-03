@@ -26,7 +26,7 @@ impl Superviseur {
     }
 
     pub fn normaliser(&self, evt: &EvenementOutil) -> Action {
-        // Seul profil du MVP ; un profil inconnu est refusé au démarrage (`sal serve`).
+        // Seul profil du MVP ; un profil inconnu est refusé au démarrage (`aplomb serve`).
         profils::code::normaliser(evt, &self.mandat.mandat)
     }
 

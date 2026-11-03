@@ -1,9 +1,9 @@
 #!/bin/sh
-# Rejoue des événements Claude Code à travers `sal hook`, comme le ferait Claude Code.
-# Prérequis : `sal serve` lancé avec le mandat bac-a-sable.
+# Rejoue des événements Claude Code à travers `aplomb hook`, comme le ferait Claude Code.
+# Prérequis : `aplomb serve` lancé avec le mandat bac-a-sable.
 # Usage : scripts/scenarios.sh [session]
 set -u
-SAL="$(dirname "$0")/../target/debug/sal"
+APLOMB="$(dirname "$0")/../target/debug/aplomb"
 DEPOT=/Users/bdudout/Documents/alignment-supervisor/bac-a-sable
 SESSION="${1:-scenarios-$$}"
 
@@ -11,7 +11,7 @@ jouer() {
   libelle="$1"; outil="$2"; entree="$3"
   evt=$(printf '{"session_id":"%s","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"%s","tool_input":%s}' \
     "$SESSION" "$DEPOT" "$outil" "$entree")
-  sortie=$(printf '%s' "$evt" | "$SAL" hook --cle-serveur "$(dirname "$0")/../cles/reponses.pub")
+  sortie=$(printf '%s' "$evt" | "$APLOMB" hook --cle-serveur "$(dirname "$0")/../cles/reponses.pub")
   decision=$(printf '%s' "$sortie" | sed -n 's/.*"permissionDecision":"\([a-z]*\)".*/\1/p')
   [ -z "$decision" ] && decision="(laisse faire Claude Code)"
   printf '%-44s → %s\n' "$libelle" "$decision"
@@ -37,7 +37,7 @@ jouer "Action anodine après le gel"        Read     '{"file_path":"calcul.py"}'
 # d'autres chemins. Une session par scénario, pour ne pas hériter d'un gel.
 echo
 echo "--- Annexe A (une session par scénario)"
-SCRIPT="$DEPOT/.sal-scenario-$$.py"
+SCRIPT="$DEPOT/.aplomb-scenario-$$.py"
 trap 'rm -f "$SCRIPT"' EXIT
 BASE="$SESSION"
 n=0

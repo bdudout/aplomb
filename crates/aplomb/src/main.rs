@@ -1,14 +1,14 @@
-//! Binaire **sal** : un seul exécutable pour le service et ses outils.
+//! Binaire **aplomb** : un seul exécutable pour le service et ses outils.
 //!
-//! - `sal serve`  — API de décision et API d'administration, sur deux ports distincts ;
-//! - `sal hook`   — adaptateur hook Claude Code (niveau d'assurance 1), fail-closed ;
-//! - `sal init` — parcours guidé : comptes, confiance, cosignatures (une commande) ;
-//! - `sal cosigner` — ajoute sa signature à un mandat ou au fichier de comptes (EF-S2) ;
-//! - `sal verify` — vérifie le journal : chaînes, scellés, ancre (EF-I1, EF-I2) ;
-//! - `sal ancrer` — copie la chaîne de scellés hors de la machine ;
-//! - `sal mermaid` — exporte les sessions en diagrammes de séquence Mermaid ;
-//! - `sal effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2) ;
-//! - `sal compte` / `sal admin` — comptes d'administration et requêtes signées (EF-S2).
+//! - `aplomb serve`  — API de décision et API d'administration, sur deux ports distincts ;
+//! - `aplomb hook`   — adaptateur hook Claude Code (niveau d'assurance 1), fail-closed ;
+//! - `aplomb init` — parcours guidé : comptes, confiance, cosignatures (une commande) ;
+//! - `aplomb cosigner` — ajoute sa signature à un mandat ou au fichier de comptes (EF-S2) ;
+//! - `aplomb verify` — vérifie le journal : chaînes, scellés, ancre (EF-I1, EF-I2) ;
+//! - `aplomb ancrer` — copie la chaîne de scellés hors de la machine ;
+//! - `aplomb mermaid` — exporte les sessions en diagrammes de séquence Mermaid ;
+//! - `aplomb effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2) ;
+//! - `aplomb compte` / `aplomb admin` — comptes d'administration et requêtes signées (EF-S2).
 #![forbid(unsafe_code)]
 
 mod admin;
@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "sal", version, about = "Superviseur d'Alignement Local")]
+#[command(name = "aplomb", version, about = "Superviseur d'alignement pour agents d'IA")]
 struct Cli {
     #[command(subcommand)]
     commande: Commande,
@@ -124,7 +124,7 @@ enum Commande {
     Admin {
         #[arg(long)]
         compte: String,
-        /// Clé privée du compte (défaut : ~/.config/sal/comptes/<compte>.cle).
+        /// Clé privée du compte (défaut : ~/.config/aplomb/comptes/<compte>.cle).
         #[arg(long)]
         cle: Option<PathBuf>,
         #[arg(long, default_value = "http://127.0.0.1:7701")]
@@ -143,13 +143,13 @@ enum Commande {
 
 #[derive(Subcommand)]
 enum CommandeCompte {
-    /// Crée un compte : clé privée dans ~/.config/sal/comptes, clé publique dans le fichier.
+    /// Crée un compte : clé privée dans ~/.config/aplomb/comptes, clé publique dans le fichier.
     Nouveau {
         #[arg(long)]
         id: String,
         /// Rôle (répétable) : lecteur, operateur, approbateur.
         #[arg(long = "role", value_parser = role)]
-        roles: Vec<sal_core::autorite::Role>,
+        roles: Vec<aplomb_core::autorite::Role>,
         #[arg(long, default_value = "comptes.yaml")]
         fichier: PathBuf,
         #[arg(long)]
@@ -194,7 +194,7 @@ enum OperationAdmin {
     },
 }
 
-fn role(s: &str) -> Result<sal_core::autorite::Role, String> {
+fn role(s: &str) -> Result<aplomb_core::autorite::Role, String> {
     serde_json::from_value(serde_json::Value::String(s.into()))
         .map_err(|_| format!("rôle inconnu « {s} » (lecteur, operateur, approbateur)"))
 }
@@ -227,7 +227,7 @@ fn main() -> ExitCode {
             admin::nouveau_compte(&id, &roles, &dossier.unwrap_or_else(admin::dossier_cles), &fichier)
         }
         Commande::Admin { compte, cle, url, operation } => {
-            use sal_core::autorite::Operation;
+            use aplomb_core::autorite::Operation;
             let (op, session) = match operation {
                 OperationAdmin::Connexion => (Operation::Connexion, None),
                 OperationAdmin::Gel { session } => (Operation::Gel, session),
@@ -239,7 +239,7 @@ fn main() -> ExitCode {
     match res {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("sal : {e}");
+            eprintln!("aplomb : {e}");
             ExitCode::FAILURE
         }
     }
@@ -257,15 +257,15 @@ fn mandats_par_defaut() -> Vec<PathBuf> {
     v
 }
 
-/// Dernière ancre utilisée, retenue pour que `sal verify` la confronte sans option.
+/// Dernière ancre utilisée, retenue pour que `aplomb verify` la confronte sans option.
 const ANCRE_CONNUE: &str = "scelles/derniere-ancre";
 
 fn verifier(journal: &std::path::Path, ancre: Option<&std::path::Path>, cle_serveur: &std::path::Path) -> Result<(), String> {
-    use sal_core::scellement;
-    let j = sal_core::journal::Journal::ouvrir(journal).map_err(|e| e.to_string())?;
+    use aplomb_core::scellement;
+    let j = aplomb_core::journal::Journal::ouvrir(journal).map_err(|e| e.to_string())?;
     let sessions = j.verifier_tout().map_err(|(f, e)| format!("ÉCHEC {f} : {e}"))?;
     println!("chaînes : {} session(s) intactes", sessions.len());
-    let cle = sal_core::mandat::cle_publique(
+    let cle = aplomb_core::mandat::cle_publique(
         &std::fs::read_to_string(cle_serveur).map_err(|e| format!("{} : {e}", cle_serveur.display()))?,
     )
     .map_err(|e| e.to_string())?;
@@ -288,15 +288,15 @@ fn verifier(journal: &std::path::Path, ancre: Option<&std::path::Path>, cle_serv
             println!("ancre {} : {n} scellé(s) retrouvés à l'identique", a.display());
         }
         Some(a) => println!("ancre {} introuvable (support débranché ?) : non vérifiée", a.display()),
-        None => println!("aucune ancre : sal ancrer --vers <autre disque> pour en créer une"),
+        None => println!("aucune ancre : aplomb ancrer --vers <autre disque> pour en créer une"),
     }
     Ok(())
 }
 
 fn ancrer(journal: &std::path::Path, vers: &std::path::Path) -> Result<(), String> {
-    let cible = sal_core::scellement::ancrer(journal, vers)?;
+    let cible = aplomb_core::scellement::ancrer(journal, vers)?;
     let _ = std::fs::write(journal.join(ANCRE_CONNUE), cible.display().to_string());
-    let (seq, temoin) = sal_core::scellement::temoin(journal)?.unwrap_or_default();
+    let (seq, temoin) = aplomb_core::scellement::temoin(journal)?.unwrap_or_default();
     println!("chaîne de scellés copiée vers {}", cible.display());
     println!("témoin à noter ailleurs (papier, courriel à soi-même) : scellé {seq}, {temoin}");
     Ok(())
@@ -304,7 +304,7 @@ fn ancrer(journal: &std::path::Path, vers: &std::path::Path) -> Result<(), Strin
 
 /// Enveloppe chaque fichier de clé encore en clair, en place (écriture atomique, 0600).
 fn migrer(coffre: &std::path::Path, comptes: &std::path::Path, cles: &std::path::Path) -> Result<(), String> {
-    use sal_core::confidentiel::{envelopper, est_enveloppe, Coffre};
+    use aplomb_core::confidentiel::{envelopper, est_enveloppe, Coffre};
     let maitre = cle_maitresse::cle_maitresse()?;
     let mut a_traiter: Vec<(PathBuf, String)> = Vec::new();
     let mut lister = |dossier: &std::path::Path, etiquette: &dyn Fn(&str) -> String| {
@@ -349,7 +349,7 @@ fn migrer(coffre: &std::path::Path, comptes: &std::path::Path, cles: &std::path:
 }
 
 fn effacer(session: &str, coffre: &std::path::Path) -> Result<(), String> {
-    let c = sal_core::confidentiel::Coffre::ouvrir(coffre).map_err(|e| e.to_string())?;
+    let c = aplomb_core::confidentiel::Coffre::ouvrir(coffre).map_err(|e| e.to_string())?;
     if c.effacer(session).map_err(|e| e.to_string())? {
         println!("session {session} : clé détruite, contenus effacés (la chaîne reste vérifiable)");
         Ok(())
@@ -365,10 +365,10 @@ fn mermaid(
     max: usize,
     coffre: Option<&std::path::Path>,
 ) -> Result<(), String> {
-    use sal_core::mermaid::{lire_session, ouvrir_contenus, sequence};
+    use aplomb_core::mermaid::{lire_session, ouvrir_contenus, sequence};
     let coffre = match coffre {
         Some(d) => Some(
-            sal_core::confidentiel::Coffre::ouvrir(d)
+            aplomb_core::confidentiel::Coffre::ouvrir(d)
                 .map_err(|e| e.to_string())?
                 .avec_maitre(cle_maitresse::cle_maitresse()?),
         ),
@@ -380,7 +380,7 @@ fn mermaid(
             .map_err(|e| format!("ÉCHEC {} : {e}", chemin.display()))
     };
     if let Some(s) = session {
-        let j = sal_core::journal::Journal::ouvrir(journal).map_err(|e| e.to_string())?;
+        let j = aplomb_core::journal::Journal::ouvrir(journal).map_err(|e| e.to_string())?;
         let chemin = j.chemin(s);
         if !chemin.exists() {
             return Err(format!("session {s} absente du journal"));

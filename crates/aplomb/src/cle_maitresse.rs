@@ -1,47 +1,59 @@
-//! **Clé maîtresse** de SAL (EF-S4), protégée par une **phrase de passe**.
+//! **Clé maîtresse** d'Aplomb (EF-S4), protégée par une **phrase de passe**.
 //!
 //! La clé maîtresse enveloppe tous les fichiers de clés (sessions, comptes, signature des
-//! réponses). Elle vit dans `~/.config/sal/cle-maitresse.yaml`, elle-même chiffrée par une
+//! réponses). Elle vit dans `~/.config/aplomb/cle-maitresse.yaml`, elle-même chiffrée par une
 //! clé dérivée de la phrase de passe (Argon2id). La phrase se tape sans affichage, une
 //! fois par commande ; l'agent ne la connaît pas.
 //!
 //! Pas de trousseau macOS : son contrôle d'accès dépend de l'empreinte exacte du binaire
 //! et redemandait le mot de passe à chaque recompilation. Le trousseau n'est plus lu qu'une
-//! fois, par `sal phrase initialiser`, pour récupérer une ancienne clé.
+//! fois, par `aplomb phrase initialiser`, pour récupérer une ancienne clé.
 //!
-//! Variables réservées aux tests : `SAL_PHRASE` (phrase sans saisie), `SAL_CLE_MAITRESSE`
-//! (clé en hex, sans fichier), `SAL_FICHIER_MAITRE` (autre emplacement du fichier).
+//! Variables réservées aux tests : `APLOMB_PHRASE` (phrase sans saisie), `APLOMB_CLE_MAITRESSE`
+//! (clé en hex, sans fichier), `APLOMB_FICHIER_MAITRE` (autre emplacement du fichier).
 //! Une variable d'environnement est lisible par les autres processus de l'utilisateur :
 //! jamais en usage réel.
 use std::path::{Path, PathBuf};
 
-use sal_core::confidentiel::{ouvrir_maitre, proteger_maitre, Cle, FichierMaitre};
+use aplomb_core::confidentiel::{ouvrir_maitre, proteger_maitre, Cle, FichierMaitre};
 
 /// Longueur minimale de la phrase de passe.
 const LONGUEUR_MIN: usize = 12;
 
+/// Dossier de configuration (`~/.config/aplomb`). L'ancien dossier `~/.config/sal`, du
+/// temps où le projet s'appelait SAL, est renommé à la première utilisation.
+pub fn dossier_config() -> PathBuf {
+    let maison = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let dossier = maison.join(".config/aplomb");
+    let ancien = maison.join(".config/sal");
+    if !dossier.exists() && ancien.is_dir() && std::fs::rename(&ancien, &dossier).is_ok() {
+        eprintln!("configuration déplacée : {} → {}", ancien.display(), dossier.display());
+    }
+    dossier
+}
+
 pub fn chemin() -> PathBuf {
-    if let Some(p) = std::env::var_os("SAL_FICHIER_MAITRE") {
+    if let Some(p) = std::env::var_os("APLOMB_FICHIER_MAITRE") {
         return PathBuf::from(p);
     }
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config/sal/cle-maitresse.yaml")
+    dossier_config().join("cle-maitresse.yaml")
 }
 
 /// Clé maîtresse ouverte une seule fois par commande.
 static EN_MEMOIRE: std::sync::OnceLock<Cle> = std::sync::OnceLock::new();
 
 fn depuis_env() -> Option<Result<Cle, String>> {
-    let v = std::env::var("SAL_CLE_MAITRESSE").ok()?;
+    let v = std::env::var("APLOMB_CLE_MAITRESSE").ok()?;
     Some(
         hex::decode(v.trim())
             .ok()
             .and_then(|o| o.try_into().ok())
-            .ok_or_else(|| "SAL_CLE_MAITRESSE : 64 caractères hexadécimaux attendus".to_string()),
+            .ok_or_else(|| "APLOMB_CLE_MAITRESSE : 64 caractères hexadécimaux attendus".to_string()),
     )
 }
 
 fn demander(invite: &str) -> Result<String, String> {
-    if let Ok(p) = std::env::var("SAL_PHRASE") {
+    if let Ok(p) = std::env::var("APLOMB_PHRASE") {
         return Ok(p);
     }
     rpassword::prompt_password(invite)
@@ -50,7 +62,7 @@ fn demander(invite: &str) -> Result<String, String> {
 
 fn lire_fichier(chemin: &Path) -> Result<FichierMaitre, String> {
     let texte = std::fs::read_to_string(chemin).map_err(|_| {
-        format!("aucune clé maîtresse ({}) : première installation, lancer sal phrase initialiser", chemin.display())
+        format!("aucune clé maîtresse ({}) : première installation, lancer aplomb phrase initialiser", chemin.display())
     })?;
     serde_yaml::from_str(&texte).map_err(|e| format!("{} : {e}", chemin.display()))
 }
@@ -64,7 +76,7 @@ pub fn cle_maitresse() -> Result<Cle, String> {
         Some(r) => r?,
         None => {
             let f = lire_fichier(&chemin())?;
-            ouvrir_maitre(&f, &demander("Phrase de passe SAL : ")?)?
+            ouvrir_maitre(&f, &demander("Phrase de passe Aplomb : ")?)?
         }
     };
     Ok(*EN_MEMOIRE.get_or_init(|| cle))
@@ -97,11 +109,11 @@ fn ecrire_fichier(chemin: &Path, f: &FichierMaitre) -> Result<(), String> {
 
 /// Demande une nouvelle phrase, deux fois, avec une longueur minimale.
 fn nouvelle_phrase() -> Result<String, String> {
-    let p = demander(&format!("Nouvelle phrase de passe SAL (au moins {LONGUEUR_MIN} caractères) : "))?;
+    let p = demander(&format!("Nouvelle phrase de passe Aplomb (au moins {LONGUEUR_MIN} caractères) : "))?;
     if p.chars().count() < LONGUEUR_MIN {
         return Err(format!("phrase trop courte : au moins {LONGUEUR_MIN} caractères"));
     }
-    if std::env::var("SAL_PHRASE").is_err() && demander("La retaper : ")? != p {
+    if std::env::var("APLOMB_PHRASE").is_err() && demander("La retaper : ")? != p {
         return Err("les deux saisies diffèrent".into());
     }
     Ok(p)
@@ -112,12 +124,12 @@ fn nouvelle_phrase() -> Result<String, String> {
 pub fn initialiser() -> Result<(), String> {
     let chemin = chemin();
     if chemin.exists() {
-        return Err(format!("{} existe déjà : pour changer de phrase, sal phrase changer", chemin.display()));
+        return Err(format!("{} existe déjà : pour changer de phrase, aplomb phrase changer", chemin.display()));
     }
     let (cle, origine) = match depuis_env() {
-        Some(r) => (r?, "variable SAL_CLE_MAITRESSE"),
+        Some(r) => (r?, "variable APLOMB_CLE_MAITRESSE"),
         None => match ancienne_cle_du_trousseau()? {
-            Some(c) => (c, "trousseau (dernier accès : sal ne le lira plus)"),
+            Some(c) => (c, "trousseau (dernier accès : aplomb ne le lira plus)"),
             None => {
                 let mut c = [0u8; 32];
                 getrandom::getrandom(&mut c).map_err(|e| e.to_string())?;
@@ -168,7 +180,7 @@ fn ancienne_cle_du_trousseau() -> Result<Option<Cle>, String> {
 /// Lit un fichier de clé privée ed25519, enveloppé ou (format antérieur) en clair. La
 /// phrase de passe n'est demandée que si le fichier est enveloppé.
 pub fn lire_cle_privee(chemin: &Path, etiquette: &str) -> Result<ed25519_dalek::SigningKey, String> {
-    use sal_core::confidentiel::{est_enveloppe, lire_secret};
+    use aplomb_core::confidentiel::{est_enveloppe, lire_secret};
     let texte = std::fs::read_to_string(chemin).map_err(|e| format!("clé {} : {e}", chemin.display()))?;
     let maitre = if est_enveloppe(&texte) { Some(cle_maitresse()?) } else { None };
     let octets = lire_secret(&texte, maitre.as_ref(), etiquette)?;
@@ -180,7 +192,7 @@ pub fn lire_cle_privee(chemin: &Path, etiquette: &str) -> Result<ed25519_dalek::
 pub fn ecrire_cle_privee(chemin: &Path, etiquette: &str, cle: &ed25519_dalek::SigningKey) -> Result<(), String> {
     use std::io::Write;
     let maitre = cle_maitresse()?;
-    let texte = sal_core::confidentiel::envelopper(&maitre, etiquette, &cle.to_bytes());
+    let texte = aplomb_core::confidentiel::envelopper(&maitre, etiquette, &cle.to_bytes());
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

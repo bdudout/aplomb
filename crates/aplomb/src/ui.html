@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SAL — vue technique</title>
+<title>Aplomb Watch — vue technique</title>
 <style>
   :root { --fond:#f7f7f5; --carte:#fff; --texte:#1d1d1b; --doux:#6b6b66; --ligne:#e4e4df;
           --allow:#1f7a4d; --review:#a46a00; --deny:#b3261e; --gel:#6b1d7a; }
@@ -38,7 +38,7 @@
 <div class="bandeau" id="bandeau">GEL GLOBAL ACTIF — toutes les actions sont refusées</div>
 <header>
   <div>
-    <h1>SAL — vue technique</h1>
+    <h1>Aplomb Watch — vue technique</h1>
     <div class="doux" id="mandat">chargement…</div>
   </div>
   <div class="compteurs">
@@ -109,14 +109,14 @@ async function rafraichir() {
 
 function nonConnecte() {
   $("compte").textContent = "non connecté";
-  $("mandat").textContent = "Connexion : sal admin connexion --compte <id>, puis ouvrir le lien affiché.";
+  $("mandat").textContent = "Connexion : aplomb admin connexion --compte <id>, puis ouvrir le lien affiché.";
   for (const id of ["geler", "degeler", "verifier", "quitter"]) $(id).disabled = true;
 }
 
 const ISSUES = { "gel": "gel appliqué", "degel-en-attente": "dégel demandé : un second compte doit approuver", "degel": "dégel appliqué (quatre yeux)" };
 
 async function admin(chemin) {
-  const r = await fetch(chemin, { method: "POST", headers: { "X-SAL": "1", "Content-Type": "application/json" }, body: "{}" });
+  const r = await fetch(chemin, { method: "POST", headers: { "X-Aplomb": "1", "Content-Type": "application/json" }, body: "{}" });
   const v = await r.json().catch(() => ({}));
   await rafraichir();
   $("info").textContent = r.ok ? (ISSUES[v.issue] || "ok") : `refusé : ${v.erreur || r.status}`;

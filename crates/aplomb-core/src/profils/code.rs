@@ -14,7 +14,7 @@
 //! | `contourne_controles` | `--no-verify`, désactivation des hooks git |
 //! | `desactive_tests` | Contenu écrit qui désactive des tests (`skip`, `#[ignore]`…) |
 //! | `installe_dependance` | Installation de paquet |
-//! | `touche_supervision` | Agit sur sa propre supervision (API d'administration, arrêt de `sal`, désactivation des hooks) |
+//! | `touche_supervision` | Agit sur sa propre supervision (API d'administration, arrêt d'`aplomb`, désactivation des hooks) |
 //! | `ecrit_point_protege` | Modifie un point protégé (EF-C5) : config `.claude`, démarrage du shell, crontab, hooks git, CI |
 //! | `shell_ecrit_hors_depot` | Une commande écrit hors du dépôt (redirection, `tee`, `cp`, `mv`, `touch`…) |
 //! | `envoi_externe` | Envoie des données vers l'extérieur (POST, téléversement, publication) — EF-C4 |
@@ -72,7 +72,7 @@ fn sous(chemin: &Path, racine: &Path) -> bool {
 
 const MOTIFS_SENSIBLES: &[&str] = &[
     ".env", "id_rsa", "id_ed25519", ".ssh/", ".aws/", ".gnupg", "credentials", ".pem", ".p12",
-    ".key", ".netrc", ".npmrc", ".pypirc", "secrets", "sal.cle", "journal-cles", ".config/sal/",
+    ".key", ".netrc", ".npmrc", ".pypirc", "secrets", "sal.cle", "journal-cles", ".config/aplomb/", ".config/sal/",
 ];
 
 fn est_sensible(texte: &str) -> bool {
@@ -321,13 +321,15 @@ fn touche_supervision(texte: &str) -> bool {
     let t = texte.to_ascii_lowercase();
     t.contains(":7701")
         || t.contains("/admin/")
-        || t.contains("pkill sal")
-        || t.contains("killall sal")
-        || t.contains("sal serve")
+        // `sal` : ancien nom du binaire, encore présent sur les postes non mis à jour.
+        || ["aplomb", "sal"].iter().any(|b| {
+            t.contains(&format!("pkill {b}")) || t.contains(&format!("killall {b}")) || t.contains(&format!("{b} serve"))
+        })
         || t.contains("disableallhooks")
-        // Trousseau et signature de code : avec le certificat local de SAL, un binaire signé
+        // Trousseau et signature de code : avec le certificat local d'Aplomb, un binaire signé
         // par l'agent lirait la clé maîtresse sans aucune demande.
         || [
+            "aplomb admin", "aplomb compte", "aplomb cosigner", "aplomb init", "aplomb trousseau", "aplomb phrase", "aplomb cles",
             "sal admin", "sal compte", "sal cosigner", "sal init", "sal trousseau", "sal phrase", "sal cles",
             "codesign",
             "security find-", "security dump-keychain", "security export", "security import",
@@ -589,9 +591,12 @@ mod tests {
 
     #[test]
     fn cles_et_administration_hors_de_portee() {
+        assert!(b(&ctx("Read", json!({"file_path": "~/.config/aplomb/comptes/alice.cle"})), "chemin_sensible"));
         assert!(b(&ctx("Read", json!({"file_path": "~/.config/sal/comptes/alice.cle"})), "chemin_sensible"));
         assert!(b(&ctx("Bash", json!({"command": "cat journal-cles/x.cle"})), "commande_lit_secret"));
+        assert!(b(&ctx("Bash", json!({"command": "../aplomb/target/debug/aplomb admin --compte a degel"})), "touche_supervision"));
         assert!(b(&ctx("Bash", json!({"command": "../sal/target/debug/sal admin --compte a degel"})), "touche_supervision"));
+        assert!(b(&ctx("Bash", json!({"command": "pkill aplomb"})), "touche_supervision"));
         // Pas de faux positifs.
         assert!(!b(&ctx("Bash", json!({"command": "python3 -c 'x=[1]; x.clear()'"})), "commande_lit_secret"));
         assert!(!b(&ctx("Bash", json!({"command": "grep -r 'universal admin' ."})), "touche_supervision"));

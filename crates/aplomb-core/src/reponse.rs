@@ -3,7 +3,7 @@
 //! Le hook joint à chaque demande un nonce aléatoire. Le superviseur signe sa décision
 //! avec ce nonce par sa clé ed25519 ; le hook vérifie la signature avec la clé publique
 //! qu'on lui a fixée. Un faux superviseur qui écouterait sur le port de décision (par
-//! exemple démarré par l'agent pendant une panne de SAL) ne peut pas produire une
+//! exemple démarré par l'agent pendant une panne d'Aplomb) ne peut pas produire une
 //! réponse valide, et une ancienne réponse « allow » ne peut pas être rejouée.
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::Serialize;

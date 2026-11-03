@@ -1,29 +1,29 @@
-# SAL en conteneur, pour le mode hook (niveau 1) : l'agent tourne sur l'hôte et
+# Aplomb en conteneur, pour le mode hook (niveau 1) : l'agent tourne sur l'hôte et
 # joint l'API de décision sur 127.0.0.1:7700. L'API d'administration (7701) n'est
 # publiée que sur la boucle locale ; aux niveaux 2-3 (J3), l'agent sera dans un
 # réseau Docker interne d'où 7701 est injoignable.
 services:
-  sal:
+  aplomb:
     build: .
     command:
       - serve
-      - --mandat=/etc/sal/mandats/bac-a-sable.yaml
-      - --confiance=/etc/sal/cles/confiance.yaml
-      - --journal=/var/lib/sal/journal
-      - --coffre=/var/lib/sal-cles
-      - --comptes=/etc/sal/comptes.yaml
+      - --mandat=/etc/aplomb/mandats/bac-a-sable.yaml
+      - --confiance=/etc/aplomb/cles/confiance.yaml
+      - --journal=/var/lib/aplomb/journal
+      - --coffre=/var/lib/aplomb-cles
+      - --comptes=/etc/aplomb/comptes.yaml
       - --ecoute-decision=0.0.0.0:7700
       - --ecoute-admin=0.0.0.0:7701
     ports:
       - "127.0.0.1:7700:7700"
       - "127.0.0.1:7701:7701"
     volumes:
-      - ./mandats:/etc/sal/mandats:ro
-      - ./profils:/etc/sal/profils:ro
-      - ./cles/confiance.yaml:/etc/sal/cles/confiance.yaml:ro
-      - ./comptes.yaml:/etc/sal/comptes.yaml:ro
-      - journal:/var/lib/sal/journal
-      - cles:/var/lib/sal-cles
+      - ./mandats:/etc/aplomb/mandats:ro
+      - ./profils:/etc/aplomb/profils:ro
+      - ./cles/confiance.yaml:/etc/aplomb/cles/confiance.yaml:ro
+      - ./comptes.yaml:/etc/aplomb/comptes.yaml:ro
+      - journal:/var/lib/aplomb/journal
+      - cles:/var/lib/aplomb-cles
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
