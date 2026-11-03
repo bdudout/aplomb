@@ -34,7 +34,9 @@ pub fn entetes_amont(entrants: &[(String, String)], jeton: &str) -> Vec<(String,
         })
         .cloned()
         .collect();
-    if jeton.starts_with("sk-ant-oat") {
+    // Clé d'API (`sk-ant-api…`) en x-api-key ; tout autre jeton est un jeton de compte
+    // Claude (OAuth, `claude setup-token`), dont le format peut évoluer.
+    if !jeton.starts_with("sk-ant-api") {
         sortie.push(("authorization".into(), format!("Bearer {jeton}")));
         match sortie.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case("anthropic-beta")) {
             Some((_, v)) if v.split(',').any(|b| b.trim() == BETA_OAUTH) => {}
@@ -144,6 +146,9 @@ mod tests {
         assert!(!s.iter().any(|(n, _)| n == "x-api-key"));
         let s = entetes_amont(&[], "sk-ant-oat01-abc");
         assert!(s.contains(&e("anthropic-beta", "oauth-2025-04-20")));
+        // Jeton de compte d'un autre format : toujours en Bearer.
+        let s = entetes_amont(&[], "cai-0123456789abcdef");
+        assert!(s.contains(&e("authorization", "Bearer cai-0123456789abcdef")));
     }
 
     #[test]

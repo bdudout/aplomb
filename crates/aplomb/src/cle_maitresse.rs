@@ -225,8 +225,8 @@ pub fn enregistrer_jeton_modele() -> Result<(), String> {
             .map_err(|_| "jeton requis : lancer la commande dans un terminal".to_string())?,
     };
     let jeton = saisi.trim();
-    if !jeton.starts_with("sk-ant-") {
-        return Err("jeton inattendu : une clé d'API ou un jeton Claude commence par sk-ant-".into());
+    if jeton.len() < 20 || jeton.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("jeton inattendu : trop court, ou contient des espaces (recopier le jeton seul)".into());
     }
     let maitre = cle_maitresse()?;
     let chemin = chemin_jeton();
