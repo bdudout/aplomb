@@ -84,6 +84,11 @@ pub fn cle_maitresse() -> Result<Cle, String> {
 
 /// Écrit le fichier de clé maîtresse (dossier 0700, fichier 0600, écriture atomique).
 fn ecrire_fichier(chemin: &Path, f: &FichierMaitre) -> Result<(), String> {
+    ecrire_atomique(chemin, &serde_yaml::to_string(f).map_err(|e| e.to_string())?)
+}
+
+/// Écriture d'un fichier secret : dossier 0700, fichier 0600, remplacement atomique.
+fn ecrire_atomique(chemin: &Path, contenu: &str) -> Result<(), String> {
     use std::io::Write;
     let dossier = chemin.parent().ok_or("chemin invalide")?;
     std::fs::create_dir_all(dossier).map_err(|e| e.to_string())?;
@@ -92,7 +97,7 @@ fn ecrire_fichier(chemin: &Path, f: &FichierMaitre) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dossier, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     }
-    let temporaire = chemin.with_extension("yaml.tmp");
+    let temporaire = chemin.with_extension("tmp");
     let _ = std::fs::remove_file(&temporaire);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -102,7 +107,7 @@ fn ecrire_fichier(chemin: &Path, f: &FichierMaitre) -> Result<(), String> {
         options.mode(0o600);
     }
     let mut fichier = options.open(&temporaire).map_err(|e| e.to_string())?;
-    fichier.write_all(serde_yaml::to_string(f).map_err(|e| e.to_string())?.as_bytes()).map_err(|e| e.to_string())?;
+    fichier.write_all(contenu.as_bytes()).map_err(|e| e.to_string())?;
     fichier.sync_all().map_err(|e| e.to_string())?;
     std::fs::rename(&temporaire, chemin).map_err(|e| e.to_string())
 }
@@ -202,4 +207,38 @@ pub fn ecrire_cle_privee(chemin: &Path, etiquette: &str, cle: &ed25519_dalek::Si
     }
     let mut f = options.open(chemin).map_err(|e| format!("{} : {e}", chemin.display()))?;
     f.write_all(texte.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Jeton du fournisseur du modèle (clé d'API, ou jeton de `claude setup-token`), enveloppé
+/// par la clé maîtresse. Le proxy LLM l'injecte : l'agent ne le voit jamais.
+const ETIQUETTE_JETON: &str = "modele:jeton";
+
+fn chemin_jeton() -> PathBuf {
+    dossier_config().join("modele-jeton")
+}
+
+/// Enregistre (ou remplace) le jeton du modèle, saisi sans affichage.
+pub fn enregistrer_jeton_modele() -> Result<(), String> {
+    let saisi = match std::env::var("APLOMB_JETON_MODELE") {
+        Ok(j) => j,
+        Err(_) => rpassword::prompt_password("Jeton du modèle (rien ne s'affiche) : ")
+            .map_err(|_| "jeton requis : lancer la commande dans un terminal".to_string())?,
+    };
+    let jeton = saisi.trim();
+    if !jeton.starts_with("sk-ant-") {
+        return Err("jeton inattendu : une clé d'API ou un jeton Claude commence par sk-ant-".into());
+    }
+    let maitre = cle_maitresse()?;
+    let chemin = chemin_jeton();
+    ecrire_atomique(&chemin, &aplomb_core::confidentiel::envelopper(&maitre, ETIQUETTE_JETON, jeton.as_bytes()))?;
+    println!("jeton du modèle enregistré, enveloppé : {}", chemin.display());
+    println!("redémarrer `aplomb serve` pour que le proxy LLM l'utilise");
+    Ok(())
+}
+
+/// Jeton du modèle, s'il a été enregistré.
+pub fn jeton_modele() -> Result<Option<String>, String> {
+    let Ok(texte) = std::fs::read_to_string(chemin_jeton()) else { return Ok(None) };
+    let octets = aplomb_core::confidentiel::lire_secret(&texte, Some(&cle_maitresse()?), ETIQUETTE_JETON)?;
+    String::from_utf8(octets).map(Some).map_err(|_| "jeton du modèle illisible".to_string())
 }

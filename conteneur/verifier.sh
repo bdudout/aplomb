@@ -6,7 +6,7 @@ set -u
 cd "$(dirname "$0")"
 ENV="${1:-.env}"
 
-docker compose --env-file "$ENV" up -d aplomb-decision aplomb-gate >/dev/null 2>&1 || {
+docker compose --env-file "$ENV" up -d aplomb-decision aplomb-gate aplomb-llm >/dev/null 2>&1 || {
   echo "relais non démarrés (docker compose up)"; exit 1; }
 
 docker compose --env-file "$ENV" run --rm --no-deps -T --entrypoint sh agent -s <<'EOF'
@@ -24,15 +24,26 @@ hook() {
     | /usr/local/bin/aplomb hook --branchement conteneur-isole --cle-serveur /etc/aplomb/reponses.pub | grep -q "$1"
 }
 
+# Appel au proxy LLM ; succès si la réponse contient $2 et pas $3.
+modele() {
+  r=$(curl -s --max-time 30 -X POST "http://aplomb-llm:7703$1" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
+    -d '{"model":"claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"ok"}]}')
+  echo "$r" | grep -q "$2" && ! echo "$r" | grep -q "$3"
+}
+
 attendu "Hook : lecture d'un secret refusée (réponse signée)"      oui hook '"deny"' /home/agent/.ssh/id_rsa
 attendu "Hook : lecture dans le dépôt laissée à Claude Code"       oui hook '^{}$' "$PWD/calcul.py"
 
 attendu "API de décision joignable"                                oui c http://aplomb-decision:7700/v1/health
 attendu "PyPI par Aplomb Gate (domaine du mandat)"                 oui c https://pypi.org/simple/
+# Chaque refus d'Aplomb Gate compte dans la borne de refus de la session « passerelle »
+# (5 par défaut, puis gel) : ce script en consomme trois par passage.
 attendu "Domaine hors mandat par Aplomb Gate"                      non c https://example.com/
-# Canal modèle : toute réponse HTTP prouve que la connexion a abouti (un GET y reçoit 405).
-attendu "Canal modèle (api.anthropic.com) par Aplomb Gate"          oui sh -c 'curl -s -o /dev/null --max-time 8 -w "%{http_code}" https://api.anthropic.com/v1/messages | grep -qv "^000$"'
-attendu "Domaine voisin du canal modèle (anthropic.com)"            non c https://anthropic.com/
+# Le modèle ne se joint que par le proxy LLM, qui injecte le jeton d'Aplomb.
+attendu "Modèle en direct par Aplomb Gate (api.anthropic.com)"      non c https://api.anthropic.com/v1/messages
+attendu "Proxy LLM : conversation relayée au modèle"                oui modele /v1/messages '"type"' '"Aplomb : '
+attendu "Proxy LLM : API des fichiers refusée"                      oui modele /v1/files 'non permis' '^$'
+attendu "Agent sans jeton du modèle"                                non sh -c 'env | grep -q sk-ant-' 
 attendu "Sortie directe, sans proxy"                               non c --noproxy '*' https://pypi.org/simple/
 attendu "Sortie directe par adresse IP"                            non c --noproxy '*' http://1.1.1.1/
 attendu "Hôte : API d'administration (7701)"                       non c --noproxy '*' http://host.docker.internal:7701/

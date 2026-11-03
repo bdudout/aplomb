@@ -17,6 +17,7 @@ pub mod gouvernance;
 pub mod journal;
 pub mod mandat;
 pub mod mermaid;
+pub mod modele;
 pub mod passerelle;
 pub mod politique;
 pub mod profils;

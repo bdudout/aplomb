@@ -57,6 +57,9 @@ pub struct Options {
     /// Passerelle réseau sortante (proxy HTTP pour `HTTPS_PROXY`), sur la boucle locale.
     #[arg(long, default_value = "127.0.0.1:7702")]
     ecoute_passerelle: SocketAddr,
+    /// Proxy LLM (`ANTHROPIC_BASE_URL` de l'agent), sur la boucle locale.
+    #[arg(long, default_value = "127.0.0.1:7703")]
+    ecoute_llm: SocketAddr,
     /// Plafond d'envoi par connexion de la passerelle, en octets (sens des flux, EF-C4).
     #[arg(long, default_value_t = 1024 * 1024)]
     plafond_envoi: u64,
@@ -430,6 +433,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let maitre = crate::cle_maitresse::cle_maitresse()?;
     let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?.avec_maitre(maitre);
     let signataire = cle_reponses(&opts.cle_reponses)?;
+    let jeton = crate::cle_maitresse::jeton_modele()?;
     let texte_comptes = std::fs::read_to_string(&opts.comptes)
         .map_err(|e| format!("comptes {} : {e} (créer un compte : aplomb compte nouveau)", opts.comptes.display()))?;
     let (autorite, signataires_comptes) = Autorite::depuis_yaml_cosigne(&texte_comptes, &confiance).map_err(|e| {
@@ -477,18 +481,25 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let l_decision = tokio::net::TcpListener::bind(opts.ecoute_decision).await.map_err(|e| e.to_string())?;
         let l_admin = tokio::net::TcpListener::bind(opts.ecoute_admin).await.map_err(|e| e.to_string())?;
         let l_passerelle = tokio::net::TcpListener::bind(opts.ecoute_passerelle).await.map_err(|e| e.to_string())?;
-        let (agent, modele) = {
+        let l_llm = tokio::net::TcpListener::bind(opts.ecoute_llm).await.map_err(|e| e.to_string())?;
+        let (agent, amont) = {
             let m = &etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat;
-            (m.agent.clone(), m.perimetre.domaines_modele.clone())
+            (m.agent.clone(), m.perimetre.domaines_modele.first().map(|d| format!("https://{d}")))
         };
-        let canal = if modele.is_empty() { "aucun".to_string() } else { modele.join(", ") };
-        let reglages = crate::passerelle::Reglages { agent, plafond: opts.plafond_envoi, modele };
+        let reglages = crate::passerelle::Reglages { agent: agent.clone(), plafond: opts.plafond_envoi };
         tokio::spawn(crate::passerelle::servir(l_passerelle, etat_scellement.clone(), reglages));
+        let canal = match (&amont, &jeton) {
+            (None, _) => "aucun modèle dans le mandat".to_string(),
+            (Some(a), None) => format!("{a} — aucun jeton : aplomb modele jeton"),
+            (Some(a), Some(_)) => format!("{a}, jeton injecté par Aplomb"),
+        };
+        let proxy = crate::modele::routeur(etat_scellement.clone(), crate::modele::Reglages { agent, amont, jeton });
+        tokio::spawn(async move { axum::serve(l_llm, proxy).await });
         eprintln!("Aplomb — mandat {id}, cosigné par {}", signataires_mandat.join(" et "));
         eprintln!("  API décision       : http://{}", opts.ecoute_decision);
         eprintln!("  API administration : http://{}  (Aplomb Watch, vue technique)", opts.ecoute_admin);
         eprintln!("  Aplomb Gate        : http://{}  (passerelle sortante, HTTPS_PROXY de l'agent ; envoi plafonné à {} Kio par connexion)", opts.ecoute_passerelle, opts.plafond_envoi / 1024);
-        eprintln!("  canal modèle       : {canal}");
+        eprintln!("  proxy LLM          : http://{}  (ANTHROPIC_BASE_URL de l'agent ; {canal})", opts.ecoute_llm);
         eprintln!("  comptes            : {} (cosignés par {})", opts.comptes.display(), signataires_comptes.join(" et "));
         eprintln!("  scellement         : toutes les {} s, et à l'arrêt", opts.scellement);
         eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());

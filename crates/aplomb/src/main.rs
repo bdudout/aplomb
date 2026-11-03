@@ -15,6 +15,7 @@ mod admin;
 mod cle_maitresse;
 mod gouverner;
 mod hook;
+mod modele;
 mod passerelle;
 mod serveur;
 
@@ -114,6 +115,11 @@ enum Commande {
         #[command(subcommand)]
         commande: CommandePhrase,
     },
+    /// Modèle de l'agent : jeton que le proxy LLM injecte à la place de celui de l'agent.
+    Modele {
+        #[command(subcommand)]
+        commande: CommandeModele,
+    },
     /// Enveloppe par la clé maîtresse les fichiers de clés encore en clair.
     Cles {
         #[command(subcommand)]
@@ -167,6 +173,12 @@ enum CommandePhrase {
     Initialiser,
     /// Changer de phrase de passe.
     Changer,
+}
+
+#[derive(Subcommand)]
+enum CommandeModele {
+    /// Enregistre le jeton du modèle (clé d'API, ou `claude setup-token`), saisi sans affichage.
+    Jeton,
 }
 
 #[derive(Subcommand)]
@@ -226,6 +238,7 @@ fn main() -> ExitCode {
         Commande::Effacer { session, coffre } => effacer(&session, &coffre),
         Commande::Phrase { commande: CommandePhrase::Initialiser } => cle_maitresse::initialiser(),
         Commande::Phrase { commande: CommandePhrase::Changer } => cle_maitresse::changer(),
+        Commande::Modele { commande: CommandeModele::Jeton } => cle_maitresse::enregistrer_jeton_modele(),
         Commande::Cles { commande: CommandeCles::Migrer { coffre, comptes, cles } } => {
             migrer(&coffre, &comptes.unwrap_or_else(admin::dossier_cles), &cles)
         }

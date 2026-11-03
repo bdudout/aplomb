@@ -21,6 +21,7 @@ clap = { version = "4", features = ["derive"] }
 ureq = { version = "2", default-features = false, features = ["json"] }
 getrandom = "0.2"
 rpassword = "7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"

@@ -36,7 +36,9 @@ USER agent
 ENV APLOMB_URL=http://aplomb-decision:7700 \
     HTTPS_PROXY=http://aplomb-gate:7702 \
     HTTP_PROXY=http://aplomb-gate:7702 \
-    NO_PROXY=aplomb-decision \
+    NO_PROXY=aplomb-decision,aplomb-llm \
+    ANTHROPIC_BASE_URL=http://aplomb-llm:7703 \
+    ANTHROPIC_AUTH_TOKEN=aplomb-injecte-le-vrai-jeton \
     DISABLE_TELEMETRY=1 \
     DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1

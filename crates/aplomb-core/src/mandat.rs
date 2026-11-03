@@ -34,9 +34,9 @@ pub struct Perimetre {
     /// Branches git sur lesquelles aucun push n'est permis.
     #[serde(default)]
     pub branches_protegees: Vec<String>,
-    /// Canal modèle : domaines du fournisseur du modèle de l'agent (ex. `api.anthropic.com`),
-    /// que l'agent confiné joint par la passerelle sans passer par la politique. Absent du
-    /// texte signé quand la liste est vide : les mandats antérieurs restent valides.
+    /// Fournisseur du modèle de l'agent (ex. `api.anthropic.com`) : le premier domaine est
+    /// l'amont du proxy LLM d'Aplomb, seul chemin de l'agent confiné vers son modèle. Absent
+    /// du texte signé quand la liste est vide : les mandats antérieurs restent valides.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub domaines_modele: Vec<String>,
 }

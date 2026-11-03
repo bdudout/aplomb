@@ -177,15 +177,25 @@ pub fn sequence(entrees: &[Entree], max: usize) -> String {
             }
             "observation" => {
                 let outil = texte(champ(c, "outil"), 30);
-                // Bilan de la passerelle : coupure au plafond d'envoi, ou refus d'adresse interne.
+                // Bilans de la passerelle et du proxy LLM : coupure, refus, ou réponse du modèle.
                 let issue = if c.get("coupe_plafond").and_then(Value::as_bool).unwrap_or(false) {
-                    "COUPÉ (plafond d'envoi)"
+                    "COUPÉ (plafond d'envoi)".to_string()
                 } else if !champ(c, "refus").is_empty() {
-                    "REFUSÉ (adresse interne)"
+                    format!("REFUSÉ ({})", texte(champ(c, "refus"), 30))
+                } else if let Some(s) = c.get("statut").and_then(Value::as_u64) {
+                    format!("réponse {s}")
+                } else if outil == "Modele" {
+                    "envoyé au modèle".to_string()
                 } else {
-                    "exécuté"
+                    "exécuté".to_string()
                 };
-                l.push(format!("    O-->>A: {n}. {issue} : {outil} {}", designation(c)));
+                let outils: Vec<&str> = c
+                    .get("outils_demandes")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                let demandes = if outils.is_empty() { String::new() } else { format!(" — outils demandés : {}", texte(&outils.join(", "), 60)) };
+                l.push(format!("    O-->>A: {n}. {issue} : {outil} {}{demandes}", designation(c)));
             }
             "administration" => {
                 let action = champ(c, "action");
