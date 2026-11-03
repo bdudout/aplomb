@@ -10,7 +10,7 @@ par hook (niveau d'assurance 1, coopératif).
 | Module | Rôle | État |
 |---|---|---|
 | **Aplomb** | Cœur de décision (`aplomb-core`), service `aplomb serve`, hook Claude Code | MVP |
-| **Aplomb Gate** | Passerelles : réseau sortant (`127.0.0.1:7702`), puis proxy LLM et passerelle MCP | réseau sortant fait |
+| **Aplomb Gate** | Passerelles : réseau sortant (`127.0.0.1:7702`) et canal modèle, puis proxy LLM et passerelle MCP | réseau sortant et confinement faits |
 | **Aplomb Watch** | Journal scellé, vue technique, export Mermaid, puis indicateurs pour le management | journal et vue faits |
 | **Aplomb Pentest** | Profil dédié aux tests d'intrusion supervisés | à venir |
 
@@ -68,9 +68,10 @@ poste).
 
 | | |
 |---|---|
-| Tests | 78 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle) |
+| Tests | 80 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
+| Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 17 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
 | Hook hors de portée | Paramètres gérés prêts (`deploiement/`), non installés : droits administrateur requis |
 | Journal minimisé | Métadonnées en clair ; ressource, commande, chemin et domaine chiffrés par session (EF-P1) ; `aplomb effacer` détruit la clé (EF-P2) |
 | Administration | Comptes nominatifs à clé ed25519, rôles lecteur / opérateur / approbateur ; requêtes signées, horodatées, sans rejeu ; geler seul, dégeler à quatre yeux ; toutes les API d'administration authentifiées (EF-S1, EF-S2) |
@@ -78,7 +79,7 @@ poste).
 | Réponses signées | Le hook n'accepte que les réponses signées sur son nonce par la clé du superviseur (`--cle-serveur cles/reponses.pub`) : faux superviseur et rejeu refusés (EF-S3) |
 | Gouvernance | Mandat et comptes cosignés par deux membres distincts au moins (fichier de confiance, seuil 2) ; `aplomb init` prépare tout en une commande (EF-S2) |
 | Scellement | Toutes les 60 s (`--scellement`) et à l'arrêt : racine de Merkle des sessions, signée et chaînée ; troncature, suppression et réécriture détectées ; ancrage hors ligne (EF-I1, EF-I2) |
-| Aplomb Gate (passerelle sortante) | `127.0.0.1:7702` pour `HTTPS_PROXY` : domaines du mandat, adresses internes refusées (ressource réelle), envoi plafonné à 1 Mio par connexion, revue = refus ; tout est journalisé (EF-C1, EF-C4, EF-B4) |
+| Aplomb Gate (passerelle sortante) | `127.0.0.1:7702` pour `HTTPS_PROXY` : domaines du mandat, adresses internes refusées (ressource réelle), envoi plafonné à 1 Mio par connexion, revue = refus ; canal modèle (`domaines_modele` du mandat) ouvert hors politique mais fermé par le gel ; tout est journalisé (EF-C1, EF-C4, EF-B4) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |

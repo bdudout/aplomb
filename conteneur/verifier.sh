@@ -30,6 +30,9 @@ attendu "Hook : lecture dans le dépôt laissée à Claude Code"       oui hook 
 attendu "API de décision joignable"                                oui c http://aplomb-decision:7700/v1/health
 attendu "PyPI par Aplomb Gate (domaine du mandat)"                 oui c https://pypi.org/simple/
 attendu "Domaine hors mandat par Aplomb Gate"                      non c https://example.com/
+# Canal modèle : toute réponse HTTP prouve que la connexion a abouti (un GET y reçoit 405).
+attendu "Canal modèle (api.anthropic.com) par Aplomb Gate"          oui sh -c 'curl -s -o /dev/null --max-time 8 -w "%{http_code}" https://api.anthropic.com/v1/messages | grep -qv "^000$"'
+attendu "Domaine voisin du canal modèle (anthropic.com)"            non c https://anthropic.com/
 attendu "Sortie directe, sans proxy"                               non c --noproxy '*' https://pypi.org/simple/
 attendu "Sortie directe par adresse IP"                            non c --noproxy '*' http://1.1.1.1/
 attendu "Hôte : API d'administration (7701)"                       non c --noproxy '*' http://host.docker.internal:7701/
