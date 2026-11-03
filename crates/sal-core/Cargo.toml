@@ -2,7 +2,7 @@
 name = "sal-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "Apache-2.0"
 publish.workspace = true
 description = "Cœur de confiance de SAL : normalisation, politique, combinaison, journal. Aucune I/O réseau."
 

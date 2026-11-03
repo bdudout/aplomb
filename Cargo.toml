@@ -1,6 +1,5 @@
 # Workspace SAL — Superviseur d'Alignement Local (nom de code provisoire).
 # Cœur de confiance pur (`sal-core`) + binaire réseau/hook (`sal`).
-# Projet local : aucun remote, aucune publication.
 [workspace]
 resolver = "2"
 members = ["crates/sal-core", "crates/sal"]
@@ -8,7 +7,6 @@ members = ["crates/sal-core", "crates/sal"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "AGPL-3.0-or-later"
 rust-version = "1.80"
 publish = false
 

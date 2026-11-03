@@ -9,7 +9,13 @@ par hook (niveau d'assurance 1, coopératif).
 - Architecture du MVP : [`docs/ARCHITECTURE-MVP.md`](docs/ARCHITECTURE-MVP.md)
 - Décision : [`docs/adr/0001-coeur-reseau-et-modes-de-branchement.md`](docs/adr/0001-coeur-reseau-et-modes-de-branchement.md)
 
-> Projet **local** : aucun remote, aucune publication.
+## Licence
+
+- `crates/sal-core` (bibliothèque) : [Apache-2.0](crates/sal-core/LICENSE).
+- Tout le reste (binaire `sal`, profils, scripts, documentation) : [EUPL-1.2](LICENSE),
+  licence de l'Union européenne, valable en français comme dans les autres langues de l'UE.
+
+Les contributions sont les bienvenues : voir [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Démarrage
 

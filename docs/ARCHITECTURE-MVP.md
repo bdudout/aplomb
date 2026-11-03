@@ -3,7 +3,6 @@
 > Cadrage : [`../../docs/EXPRESSION-DE-BESOIN.md`](../../docs/EXPRESSION-DE-BESOIN.md), jalon **J1 —
 > MVP « agent de code »** : profil C, déploiement Minimal, niveau d'assurance 1 (coopératif).
 > Décision structurante : [`adr/0001-coeur-reseau-et-modes-de-branchement.md`](adr/0001-coeur-reseau-et-modes-de-branchement.md).
-> Projet **local** : aucun remote, aucune publication.
 
 ## Critère d'acceptation de J1
 
