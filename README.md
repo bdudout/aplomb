@@ -5,7 +5,6 @@ Superviseur générique d'agents d'IA : chaque action est décidée **avant** ex
 chaîne de hachage. Premier cas : **Claude Code** (profil C « agent de code »), branché
 par hook (niveau d'assurance 1, coopératif).
 
-- Cadrage : [`../docs/EXPRESSION-DE-BESOIN.md`](../docs/EXPRESSION-DE-BESOIN.md)
 - Architecture du MVP : [`docs/ARCHITECTURE-MVP.md`](docs/ARCHITECTURE-MVP.md)
 - Décision : [`docs/adr/0001-coeur-reseau-et-modes-de-branchement.md`](docs/adr/0001-coeur-reseau-et-modes-de-branchement.md)
 
