@@ -5,3 +5,6 @@ journal-cles/
 diagrammes/
 *.cle
 bac-a-sable/.sal/journal/
+
+# Jeton et chemins locaux du conteneur de l'agent
+conteneur/.env

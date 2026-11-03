@@ -45,6 +45,10 @@ enum Commande {
         /// (protège contre un faux superviseur sur le port de décision).
         #[arg(long)]
         cle_serveur: Option<PathBuf>,
+        /// Mode de branchement déclaré au journal : `hook-claude-code` (niveau 1, défaut) ou
+        /// `conteneur-isole` (niveau 3, hook installé par l'image du conteneur de l'agent).
+        #[arg(long, default_value = "hook-claude-code", value_parser = ["hook-claude-code", "conteneur-isole"])]
+        branchement: String,
     },
     /// Prépare tout en une commande : deux comptes, la confiance, les cosignatures.
     Init {
@@ -203,7 +207,9 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let res = match cli.commande {
         Commande::Serve(opts) => serveur::lancer(opts),
-        Commande::Hook { perimetre, cle_serveur } => return hook::executer(&perimetre, cle_serveur.as_deref()),
+        Commande::Hook { perimetre, cle_serveur, branchement } => {
+            return hook::executer(&perimetre, cle_serveur.as_deref(), &branchement)
+        }
         Commande::Init { membres, mandats, comptes, confiance } => {
             let mandats = if mandats.is_empty() { mandats_par_defaut() } else { mandats };
             gouverner::init(&membres, &comptes, &mandats, &confiance)

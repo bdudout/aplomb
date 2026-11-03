@@ -499,6 +499,7 @@ mod tests {
                 racine: "/depot".into(),
                 domaines_autorises: vec!["crates.io".into(), "pypi.org".into()],
                 branches_protegees: vec!["main".into(), "master".into()],
+                domaines_modele: vec![],
             },
             politique: FichiersPolitique {
                 regles: String::new(),

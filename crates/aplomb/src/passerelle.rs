@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use aplomb_core::decision::Verdict;
-use aplomb_core::passerelle::{adresse_interne, analyser, evenement, OUTIL};
+use aplomb_core::passerelle::{adresse_interne, analyser, canal_modele, evenement, OUTIL};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -28,12 +28,21 @@ const SESSION: &str = "passerelle";
 const TETE_MAX: usize = 16 * 1024;
 const DELAI: Duration = Duration::from_secs(10);
 
-pub async fn servir(ecoute: TcpListener, etat: Etat, agent: String, plafond: u64) {
+/// Réglages fixés par le mandat au démarrage.
+pub struct Reglages {
+    pub agent: String,
+    pub plafond: u64,
+    /// Domaines du canal modèle (`perimetre.domaines_modele`).
+    pub modele: Vec<String>,
+}
+
+pub async fn servir(ecoute: TcpListener, etat: Etat, reglages: Reglages) {
+    let reglages = std::sync::Arc::new(reglages);
     loop {
         let Ok((flux, _)) = ecoute.accept().await else { continue };
-        let (etat, agent) = (etat.clone(), agent.clone());
+        let (etat, reglages) = (etat.clone(), reglages.clone());
         tokio::spawn(async move {
-            let _ = traiter(flux, etat, agent, plafond).await;
+            let _ = traiter(flux, etat, &reglages).await;
         });
     }
 }
@@ -62,26 +71,42 @@ async fn refuser(flux: &mut TcpStream, statut: &str, motif: &str) -> std::io::Re
     flux.shutdown().await
 }
 
-async fn traiter(mut client: TcpStream, etat: Etat, agent: String, plafond: u64) -> std::io::Result<()> {
+async fn traiter(mut client: TcpStream, etat: Etat, reglages: &Reglages) -> std::io::Result<()> {
     let tete = lire_tete(&mut client).await?;
     let premiere = String::from_utf8_lossy(&tete).lines().next().unwrap_or("").to_string();
     let Some(cible) = analyser(&premiere) else {
         return refuser(&mut client, "400 Bad Request", "requête non reconnue (proxy HTTP attendu)").await;
     };
-    let evt = evenement(&cible, SESSION, &agent, "");
+    let evt = evenement(&cible, SESSION, &reglages.agent, "");
+
+    // Canal modèle : l'agent parle à son propre modèle, hors politique mais pas hors gel,
+    // en TLS de bout en bout (CONNECT sur 443 seulement), sans plafond d'envoi.
+    let modele = cible.methode == "CONNECT" && cible.port == 443 && canal_modele(&cible.hote, &reglages.modele);
+    let plafond = if modele { u64::MAX } else { reglages.plafond };
 
     // 1. Décision, journalisée avant toute connexion (fail-closed).
-    let decision = match juger(&etat, &evt) {
-        Ok((d, _)) => d,
-        Err(e) => return refuser(&mut client, "503 Service Unavailable", &format!("{e} — fail-closed")).await,
-    };
-    match decision.verdict {
-        Verdict::Allow => {}
-        Verdict::Review => {
-            let motif = format!("{} — la passerelle ne peut pas demander à un humain : refus", decision.motif);
-            return refuser(&mut client, "403 Forbidden", &motif).await;
+    if modele {
+        if etat.gele(SESSION) {
+            return refuser(&mut client, "403 Forbidden", "superviseur gelé : canal modèle fermé").await;
         }
-        _ => return refuser(&mut client, "403 Forbidden", &decision.motif).await,
+        if let Err(e) = constater(&etat, &evt, json!({"outil": OUTIL, "verbe": "reseau", "ressource": cible.url(),
+            "canal": "modele"}))
+        {
+            return refuser(&mut client, "503 Service Unavailable", &format!("{e} — fail-closed")).await;
+        }
+    } else {
+        let decision = match juger(&etat, &evt) {
+            Ok((d, _)) => d,
+            Err(e) => return refuser(&mut client, "503 Service Unavailable", &format!("{e} — fail-closed")).await,
+        };
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Review => {
+                let motif = format!("{} — la passerelle ne peut pas demander à un humain : refus", decision.motif);
+                return refuser(&mut client, "403 Forbidden", &motif).await;
+            }
+            _ => return refuser(&mut client, "403 Forbidden", &decision.motif).await,
+        }
     }
 
     // 2. Ressource réelle : toutes les adresses résolues doivent être publiques.
@@ -115,7 +140,7 @@ async fn traiter(mut client: TcpStream, etat: Etat, agent: String, plafond: u64)
 
     // 4. Bilan.
     let _ = constater(&etat, &evt, json!({"outil": OUTIL, "verbe": "reseau", "ressource": cible.url(),
-        "envoye": envoye, "recu": recu, "coupe_plafond": coupe}));
+        "envoye": envoye, "recu": recu, "coupe_plafond": coupe, "canal": if modele { "modele" } else { "outils" }}));
     Ok(())
 }
 

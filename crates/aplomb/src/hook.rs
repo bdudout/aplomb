@@ -82,7 +82,7 @@ fn nonce() -> String {
     hex::encode(o)
 }
 
-pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>) -> ExitCode {
+pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>, branchement: &str) -> ExitCode {
     let cle_serveur = match cle_serveur.map(|p| std::fs::read_to_string(p).map_err(|e| e.to_string())) {
         None => None,
         Some(Ok(t)) => match aplomb_core::mandat::cle_publique(&t) {
@@ -119,7 +119,7 @@ pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>) -> ExitCode {
     let corps = json!({
         "session": s("session_id"),
         "agent": std::env::var("APLOMB_AGENT").unwrap_or_else(|_| "claude-code".into()),
-        "mode": "hook-claude-code",
+        "mode": branchement,
         "cwd": cwd,
         "outil": s("tool_name"),
         "entree": entree,

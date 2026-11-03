@@ -34,6 +34,11 @@ pub struct Perimetre {
     /// Branches git sur lesquelles aucun push n'est permis.
     #[serde(default)]
     pub branches_protegees: Vec<String>,
+    /// Canal modèle : domaines du fournisseur du modèle de l'agent (ex. `api.anthropic.com`),
+    /// que l'agent confiné joint par la passerelle sans passer par la politique. Absent du
+    /// texte signé quand la liste est vide : les mandats antérieurs restent valides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domaines_modele: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -212,6 +217,7 @@ mod tests {
                 racine: "/tmp/depot".into(),
                 domaines_autorises: vec![],
                 branches_protegees: vec!["main".into()],
+                domaines_modele: vec![],
             },
             politique: FichiersPolitique {
                 regles: "regles.cedar".into(),

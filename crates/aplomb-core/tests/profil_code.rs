@@ -19,6 +19,7 @@ fn superviseur() -> Superviseur {
             racine: "/depot".into(),
             domaines_autorises: vec!["crates.io".into(), "docs.rs".into()],
             branches_protegees: vec!["main".into()],
+            domaines_modele: vec![],
         },
         politique: FichiersPolitique {
             regles: String::new(),
@@ -232,4 +233,17 @@ fn gel_global_par_l_operateur() {
     assert_eq!(s.decider(&evt("s", "Read", json!({"file_path": "/depot/a"}))).1.verdict, Verdict::Gel);
     s.degeler(None);
     assert_eq!(s.decider(&evt("s", "Read", json!({"file_path": "/depot/a"}))).1.verdict, Verdict::Allow);
+}
+
+/// Le mandat réel du dépôt reste valide quand le format du mandat gagne un champ facultatif
+/// (ici `domaines_modele`) : un champ vide n'entre pas dans le texte signé.
+#[test]
+fn mandat_reel_toujours_cosigne() {
+    let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let confiance = aplomb_core::gouvernance::Confiance::depuis_yaml(
+        &std::fs::read_to_string(racine.join("cles/confiance.yaml")).unwrap(),
+    )
+    .unwrap();
+    let (_, signataires) = aplomb_core::mandat::charger_cosigne(&racine.join("mandats/bac-a-sable.yaml"), &confiance).unwrap();
+    assert!(signataires.len() >= 2);
 }

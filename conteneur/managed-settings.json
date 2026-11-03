@@ -1,0 +1,29 @@
+{
+  "allowManagedHooksOnly": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/aplomb hook --branchement conteneur-isole --cle-serveur /etc/aplomb/reponses.pub",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/aplomb hook --branchement conteneur-isole --cle-serveur /etc/aplomb/reponses.pub",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

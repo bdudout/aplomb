@@ -93,6 +93,12 @@ pub fn adresse_interne(ip: IpAddr) -> bool {
 }
 
 /// Événement à juger pour une connexion de la passerelle.
+/// Le domaine fait-il partie du canal modèle (correspondance exacte ou sous-domaine) ?
+pub fn canal_modele(hote: &str, domaines: &[String]) -> bool {
+    let hote = hote.to_ascii_lowercase();
+    domaines.iter().any(|d| hote == *d || hote.ends_with(&format!(".{d}")))
+}
+
 pub fn evenement(cible: &Cible, session: &str, agent: &str, cwd: &str) -> EvenementOutil {
     EvenementOutil {
         session: session.into(),
@@ -111,6 +117,17 @@ pub fn evenement(cible: &Cible, session: &str, agent: &str, cwd: &str) -> Evenem
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canal_modele_exact_ou_sous_domaine() {
+        let d = vec!["api.anthropic.com".to_string()];
+        assert!(canal_modele("api.anthropic.com", &d));
+        assert!(canal_modele("API.anthropic.com", &d));
+        assert!(!canal_modele("anthropic.com", &d));
+        assert!(!canal_modele("api.anthropic.com.evil.io", &d));
+        assert!(!canal_modele("xapi.anthropic.com", &d));
+        assert!(!canal_modele("api.anthropic.com", &[]));
+    }
 
     #[test]
     fn analyse_des_requetes() {

@@ -133,6 +133,12 @@ fn erreur(code: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<Value>)
 }
 
 impl Etat {
+    /// Gel global, ou gel de cette session.
+    pub(crate) fn gele(&self, session: &str) -> bool {
+        let (global, sessions) = self.interne.lock().expect("verrou").superviseur.etat_gel();
+        global || sessions.iter().any(|s| s == session)
+    }
+
     fn publier(&self, interne: &mut Interne, evt: Value) {
         interne.historique.push_back(evt.clone());
         if interne.historique.len() > HISTORIQUE {
@@ -471,12 +477,18 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let l_decision = tokio::net::TcpListener::bind(opts.ecoute_decision).await.map_err(|e| e.to_string())?;
         let l_admin = tokio::net::TcpListener::bind(opts.ecoute_admin).await.map_err(|e| e.to_string())?;
         let l_passerelle = tokio::net::TcpListener::bind(opts.ecoute_passerelle).await.map_err(|e| e.to_string())?;
-        let agent = etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat.agent.clone();
-        tokio::spawn(crate::passerelle::servir(l_passerelle, etat_scellement.clone(), agent, opts.plafond_envoi));
+        let (agent, modele) = {
+            let m = &etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat;
+            (m.agent.clone(), m.perimetre.domaines_modele.clone())
+        };
+        let canal = if modele.is_empty() { "aucun".to_string() } else { modele.join(", ") };
+        let reglages = crate::passerelle::Reglages { agent, plafond: opts.plafond_envoi, modele };
+        tokio::spawn(crate::passerelle::servir(l_passerelle, etat_scellement.clone(), reglages));
         eprintln!("Aplomb — mandat {id}, cosigné par {}", signataires_mandat.join(" et "));
         eprintln!("  API décision       : http://{}", opts.ecoute_decision);
         eprintln!("  API administration : http://{}  (Aplomb Watch, vue technique)", opts.ecoute_admin);
         eprintln!("  Aplomb Gate        : http://{}  (passerelle sortante, HTTPS_PROXY de l'agent ; envoi plafonné à {} Kio par connexion)", opts.ecoute_passerelle, opts.plafond_envoi / 1024);
+        eprintln!("  canal modèle       : {canal}");
         eprintln!("  comptes            : {} (cosignés par {})", opts.comptes.display(), signataires_comptes.join(" et "));
         eprintln!("  scellement         : toutes les {} s, et à l'arrêt", opts.scellement);
         eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());

@@ -1,0 +1,51 @@
+# Aplomb, niveau 3 : Claude Code confiné. Le superviseur tourne sur l'hôte
+# (`aplomb serve`) ; le conteneur de l'agent n'a qu'un réseau interne, sans route vers
+# l'extérieur, où il ne voit que deux relais : la décision (7700) et Aplomb Gate (7702).
+# L'API d'administration (7701) n'est relayée nulle part.
+#
+#   cp .env.exemple .env      # puis le remplir
+#   docker compose run --rm agent
+name: aplomb-conteneur
+
+x-relais: &relais
+  build: { context: .., dockerfile: conteneur/Dockerfile, target: relais }
+  image: aplomb-relais
+  networks: [isole, sortie]
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+services:
+  aplomb-decision:
+    <<: *relais
+    command: ["TCP-LISTEN:7700,fork,reuseaddr", "TCP:host.docker.internal:7700"]
+  aplomb-gate:
+    <<: *relais
+    command: ["TCP-LISTEN:7702,fork,reuseaddr", "TCP:host.docker.internal:7702"]
+
+  agent:
+    build: { context: .., dockerfile: conteneur/Dockerfile, target: agent }
+    image: aplomb-agent
+    depends_on: [aplomb-decision, aplomb-gate]
+    networks: [isole]
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    # Le dépôt est monté au même chemin que sur l'hôte : la racine du mandat signé reste juste.
+    working_dir: "${APLOMB_DEPOT:?APLOMB_DEPOT absent, voir .env.exemple}"
+    volumes:
+      - ${APLOMB_DEPOT}:${APLOMB_DEPOT}
+      - ../cles/reponses.pub:/etc/aplomb/reponses.pub:ro
+    read_only: true
+    tmpfs: [/tmp, "/home/agent:uid=1001,gid=1001"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 4g
+    stdin_open: true
+    tty: true
+
+networks:
+  isole:
+    internal: true
+  sortie: {}
