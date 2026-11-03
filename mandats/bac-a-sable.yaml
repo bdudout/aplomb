@@ -1,5 +1,5 @@
 id: bac-a-sable
-version: 3
+version: 4
 profil: code
 agent: claude-code
 intention: Développer et tester la petite bibliothèque Python du dépôt bac-a-sable (calcul et ses tests), sans toucher à rien en dehors du dépôt.
@@ -12,6 +12,8 @@ perimetre:
   branches_protegees:
   - main
   - master
+  domaines_modele:
+  - api.anthropic.com
 politique:
   regles: ../profils/code/regles.cedar
   revue: ../profils/code/revue.cedar
@@ -25,6 +27,6 @@ bornes:
   actions: 2000
 signatures:
 - id: alice
-  signature: 0742b75eb577c19b7f115b9430bc062bd8d8628b6b05bba65dbef26d372f97f21bf55ce211af93b952bffd8c5d1f3e2e465f09e966c2d350cf59bd0e654e330d
+  signature: 0d8b938d19e80734b6e2851dedeb56683873db80962838770cdd7aa41683758c65715d9d2995fa6d4b59162ad8727fec327bc2ab5d08b3d6c500d68e3176690d
 - id: bob
-  signature: 456ef9e0d19892d8e76fcc983151c33b417cf5960fdd8e0854ef76343b11ca0a0346525b45999a4414df3f769b884fa8a3fd5d31b8d6fe74a2dd2e9767b4cd07
+  signature: eec68220b71c411f2d700b9be5f837b80ae21f8d3a2198d31fa34fa1d47e4f24b1551fc0ecd208880e1fa58931e9b098516d2167271a33c945acb869c8d0dc05
