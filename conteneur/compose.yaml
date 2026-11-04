@@ -1,8 +1,9 @@
 # Aplomb, niveau 3 : Claude Code confiné. Le superviseur tourne sur l'hôte
 # (`aplomb serve`) ; le conteneur de l'agent n'a qu'un réseau interne, sans route vers
-# l'extérieur, où il ne voit que trois relais : la décision (7700), Aplomb Gate (7702) et
-# le proxy LLM (7703). L'API d'administration (7701) n'est relayée nulle part. Le jeton du
-# modèle reste chez Aplomb (`aplomb modele jeton`) : l'agent n'en a aucun.
+# l'extérieur, où il ne voit que quatre relais : la décision (7700), Aplomb Gate (7702),
+# le proxy LLM (7703) et la passerelle MCP (7704). L'API d'administration (7701) n'est
+# relayée nulle part. Le jeton du modèle reste chez Aplomb (`aplomb modele jeton`) : l'agent
+# n'en a aucun.
 #
 #   cp .env.exemple .env      # puis le remplir
 #   docker compose run --rm agent
@@ -27,11 +28,14 @@ services:
   aplomb-llm:
     <<: *relais
     command: ["TCP-LISTEN:7703,fork,reuseaddr", "TCP:host.docker.internal:7703"]
+  aplomb-mcp:
+    <<: *relais
+    command: ["TCP-LISTEN:7704,fork,reuseaddr", "TCP:host.docker.internal:7704"]
 
   agent:
     build: { context: .., dockerfile: conteneur/Dockerfile, target: agent }
     image: aplomb-agent
-    depends_on: [aplomb-decision, aplomb-gate, aplomb-llm]
+    depends_on: [aplomb-decision, aplomb-gate, aplomb-llm, aplomb-mcp]
     networks: [isole]
     # Le dépôt est monté au même chemin que sur l'hôte : la racine du mandat signé reste juste.
     working_dir: "${APLOMB_DEPOT:?APLOMB_DEPOT absent, voir .env.exemple}"

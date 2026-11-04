@@ -1,7 +1,7 @@
 //! Scénarios du profil C avec les vraies règles `profils/code/*.cedar`.
 use aplomb_core::action::{EvenementOutil, Phase};
 use aplomb_core::decision::Verdict;
-use aplomb_core::mandat::{FichiersPolitique, MandatCharge, Mandat, Perimetre};
+use aplomb_core::mandat::{FichiersPolitique, MandatCharge, Mandat, Perimetre, ServeurMcp};
 use aplomb_core::superviseur::Superviseur;
 use serde_json::{json, Value};
 
@@ -9,17 +9,32 @@ const REGLES: &str = include_str!("../../../profils/code/regles.cedar");
 const REVUE: &str = include_str!("../../../profils/code/revue.cedar");
 
 fn superviseur() -> Superviseur {
-    let mandat = Mandat {
+    Superviseur::nouveau(charge(mandat())).expect("règles du profil C valides")
+}
+
+fn charge(mandat: Mandat) -> MandatCharge {
+    MandatCharge { mandat, regles: REGLES.into(), revue: REVUE.into(), empreinte: "e".into() }
+}
+
+fn mandat() -> Mandat {
+    Mandat {
         id: "test".into(),
         version: 1,
         profil: "code".into(),
         agent: "claude-code".into(),
         intention: "Développer dans le dépôt".into(),
+        parent: None,
         perimetre: Perimetre {
             racine: "/depot".into(),
             domaines_autorises: vec!["crates.io".into(), "docs.rs".into()],
             branches_protegees: vec!["main".into()],
             domaines_modele: vec![],
+            serveurs_mcp: vec![ServeurMcp {
+                nom: "notes".into(),
+                commande: vec![],
+                outils: vec!["chercher".into()],
+                fiable: false,
+            }],
         },
         politique: FichiersPolitique {
             regles: String::new(),
@@ -30,9 +45,7 @@ fn superviseur() -> Superviseur {
         bornes: None,
         signature: None,
         signatures: Vec::new(),
-    };
-    Superviseur::nouveau(MandatCharge { mandat, regles: REGLES.into(), revue: REVUE.into(), empreinte: "e".into() })
-        .expect("règles du profil C valides")
+    }
 }
 
 fn evt(session: &str, outil: &str, entree: Value) -> EvenementOutil {
@@ -48,6 +61,7 @@ fn evt(session: &str, outil: &str, entree: Value) -> EvenementOutil {
         contenu_execute: None,
         nonce: None,
         appel: None,
+        delegation: None,
     }
 }
 
@@ -247,4 +261,75 @@ fn mandat_reel_toujours_cosigne() {
     .unwrap();
     let (_, signataires) = aplomb_core::mandat::charger_cosigne(&racine.join("mandats/bac-a-sable.yaml"), &confiance).unwrap();
     assert!(signataires.len() >= 2);
+}
+
+fn apres(mut e: EvenementOutil) -> EvenementOutil {
+    e.phase = Phase::Apres;
+    e
+}
+
+#[test]
+fn outils_mcp_declares_sans_revue() {
+    assert_eq!(verdict("mcp__notes__chercher", json!({"q": "x"})).0, Verdict::Allow);
+    assert_eq!(verdict("mcp__notes__effacer", json!({})).0, Verdict::Review);
+    assert_eq!(verdict("mcp__inconnu__chercher", json!({})).0, Verdict::Review);
+}
+
+#[test]
+fn contenu_non_fiable_releve_le_palier() {
+    let mut s = superviseur();
+    let tests = || evt("s", "Bash", json!({"command": "cargo test"}));
+    assert_eq!(s.decider(&tests()).1.verdict, Verdict::Allow);
+    // Lire dans le dépôt n'influence pas ; une page web, si.
+    assert_eq!(s.observer(&apres(evt("s", "Read", json!({"file_path": "/depot/a.rs"})))), None);
+    assert_eq!(s.decider(&tests()).1.verdict, Verdict::Allow);
+    assert_eq!(s.observer(&apres(evt("s", "WebFetch", json!({"url": "https://docs.rs/x"})))).as_deref(), Some("WebFetch"));
+    let (a, d) = s.decider(&tests());
+    assert_eq!(d.verdict, Verdict::Review, "{}", d.motif);
+    assert_eq!(a.contexte["influence_externe"], json!(true));
+    assert!(d.avis.iter().any(|a| a.moniteur == "provenance"));
+    // Lire et écrire dans le dépôt restent permis ; une autre session n'est pas touchée.
+    assert_eq!(s.decider(&evt("s", "Edit", json!({"file_path": "/depot/a.rs", "old_string": "a", "new_string": "b"}))).1.verdict, Verdict::Allow);
+    assert_eq!(s.decider(&evt("autre", "Bash", json!({"command": "cargo test"}))).1.verdict, Verdict::Allow);
+    // Un outil MCP déclaré, après un contenu non fiable : revue aussi.
+    assert_eq!(s.decider(&evt("s", "mcp__notes__chercher", json!({}))).1.verdict, Verdict::Review);
+}
+
+#[test]
+fn sortie_de_sous_agent_non_fiable_pour_le_parent() {
+    let mut s = superviseur();
+    assert!(s.observer(&apres(evt("s", "Agent", json!({"subagent_type": "Explore", "prompt": "x"})))).is_some());
+    assert!(s.observer(&apres(evt("t", "mcp__notes__chercher", json!({})))).is_some());
+    assert_eq!(s.decider(&evt("s", "Bash", json!({"command": "cargo build"}))).1.verdict, Verdict::Review);
+}
+
+#[test]
+fn sous_agent_juge_par_son_mandat_et_le_parent() {
+    let mut s = superviseur();
+    let mut e = mandat();
+    e.id = "explorer".into();
+    e.parent = Some("test".into());
+    e.agent = "claude-code/Explore".into();
+    e.perimetre.racine = "/depot/docs".into();
+    e.perimetre.domaines_autorises = vec!["docs.rs".into()];
+    assert_eq!(s.ajouter_enfant(charge(e.clone())).unwrap(), "Explore");
+    let sous_agent = |outil: &str, entree: Value| {
+        let mut x = evt("s", outil, entree);
+        x.delegation = Some(aplomb_core::action::Delegation { type_agent: "Explore".into(), id: "agent-1".into() });
+        x
+    };
+    // Dans le périmètre de l'enfant : permis.
+    assert_eq!(s.decider(&sous_agent("Write", json!({"file_path": "/depot/docs/a.md", "content": "x"}))).1.verdict, Verdict::Allow);
+    // Permis au parent, mais hors du mandat enfant : refusé.
+    let (_, d) = s.decider(&sous_agent("Write", json!({"file_path": "/depot/src/lib.rs", "content": "x"})));
+    assert_eq!(d.verdict, Verdict::Deny);
+    assert!(d.politique.regle.starts_with("explorer:"), "{}", d.politique.regle);
+    assert_eq!(s.decider(&sous_agent("WebFetch", json!({"url": "https://crates.io/x"}))).1.verdict, Verdict::Deny);
+    // Sous-agent sans mandat enfant : le mandat parent s'applique.
+    let mut x = evt("s", "Write", json!({"file_path": "/depot/src/lib.rs", "content": "x"}));
+    x.delegation = Some(aplomb_core::action::Delegation { type_agent: "Plan".into(), id: "agent-2".into() });
+    assert_eq!(s.decider(&x).1.verdict, Verdict::Allow);
+    // Un mandat enfant plus large que le parent est refusé au chargement.
+    e.perimetre.domaines_autorises.push("evil.example".into());
+    assert!(s.ajouter_enfant(charge(e)).unwrap_err().contains("evil.example"));
 }

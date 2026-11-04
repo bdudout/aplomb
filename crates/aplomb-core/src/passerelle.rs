@@ -106,6 +106,7 @@ pub fn evenement(cible: &Cible, session: &str, agent: &str, cwd: &str) -> Evenem
         contenu_execute: None,
         nonce: None,
         appel: None,
+        delegation: None,
     }
 }
 

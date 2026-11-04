@@ -79,6 +79,7 @@ fn evenement(agent: &str, ressource: &str, methode: &str) -> EvenementOutil {
         contenu_execute: None,
         nonce: None,
         appel: None,
+        delegation: None,
     }
 }
 

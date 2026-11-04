@@ -18,6 +18,8 @@
 //! | `ecrit_point_protege` | Modifie un point protégé (EF-C5) : config `.claude`, démarrage du shell, crontab, hooks git, CI |
 //! | `shell_ecrit_hors_depot` | Une commande écrit hors du dépôt (redirection, `tee`, `cp`, `mv`, `touch`…) |
 //! | `envoi_externe` | Envoie des données vers l'extérieur (POST, téléversement, publication) — EF-C4 |
+//! | `mcp_declare` | Outil MCP d'un serveur déclaré au mandat, et listé dans ses outils permis |
+//! | `influence_externe` | La session a reçu un contenu non fiable (EF-B5) ; posé par le superviseur |
 //!
 //! Les règles portent sur l'**effet**, quel que soit le chemin (EF-B7) : le même point
 //! protégé est défendu contre `Write`, une redirection, `mv`, `sed -i`, `python -c` ou un
@@ -44,6 +46,37 @@ pub fn verbe(outil: &str) -> &'static str {
         o if o.starts_with("mcp__") => "outil_mcp",
         _ => "autre",
     }
+}
+
+/// Serveur et outil d'un nom d'outil MCP (`mcp__<serveur>__<outil>`).
+pub fn outil_mcp(outil: &str) -> Option<(&str, &str)> {
+    outil.strip_prefix("mcp__")?.split_once("__")
+}
+
+/// Le résultat de cette action apporte-t-il un contenu non fiable dans le contexte de
+/// l'agent (EF-B5, EF-D2) ? Page ou recherche web, fichier hors du dépôt, sortie réseau
+/// d'une commande, résultat d'un serveur MCP non déclaré fiable, sortie d'un sous-agent
+/// (EF-B6).
+pub fn source_non_fiable(action: &Action, mandat: &Mandat) -> bool {
+    let c = |k: &str| action.contexte.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let outil = action.contexte.get("outil").and_then(Value::as_str).unwrap_or_default();
+    match action.verbe.as_str() {
+        "reseau" | "deleguer" => true,
+        "lire" => !c("dans_depot"),
+        "executer" => c("reseau"),
+        "outil_mcp" => !outil_mcp(outil)
+            .and_then(|(s, _)| mandat.perimetre.serveurs_mcp.iter().find(|m| m.nom == s))
+            .is_some_and(|m| m.fiable),
+        _ => false,
+    }
+}
+
+/// Une action que le contenu non fiable ne doit pas déclencher seul : son palier est
+/// relevé à la revue quand la session a été influencée. Lire et écrire dans le dépôt
+/// restent permis : le dépôt est le périmètre du mandat.
+pub fn sensible_a_l_influence(action: &Action) -> bool {
+    matches!(action.verbe.as_str(), "executer" | "reseau" | "outil_mcp" | "deleguer" | "autre")
+        || action.contexte.get("envoi_externe").and_then(Value::as_bool).unwrap_or(false)
 }
 
 /// Normalisation lexicale (`.` et `..`), sans accès disque.
@@ -113,7 +146,7 @@ fn domaines(texte: &str) -> Vec<String> {
     res
 }
 
-fn domaine_autorise(domaine: &str, autorises: &[String]) -> bool {
+pub(crate) fn domaine_autorise(domaine: &str, autorises: &[String]) -> bool {
     autorises.iter().any(|a| domaine == a || domaine.ends_with(&format!(".{a}")))
 }
 
@@ -462,6 +495,11 @@ pub fn normaliser(evt: &EvenementOutil, mandat: &Mandat) -> Action {
     let methode_envoie = evt.outil == crate::passerelle::OUTIL
         && matches!(chaine(e, &["methode"]).as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
     mettre("envoi_externe", json!(envoi_externe(&commande, script) || methode_envoie));
+    let mcp_declare = outil_mcp(&evt.outil).is_some_and(|(serveur, outil)| {
+        mandat.perimetre.serveurs_mcp.iter().any(|m| m.nom == serveur && m.permet(outil))
+    });
+    mettre("mcp_declare", json!(mcp_declare));
+    mettre("influence_externe", json!(false));
 
     let ressource = if !chemin_txt.is_empty() && verbe != "executer" {
         chemin_txt
@@ -495,11 +533,13 @@ mod tests {
             profil: "code".into(),
             agent: "claude-code".into(),
             intention: "i".into(),
+            parent: None,
             perimetre: Perimetre {
                 racine: "/depot".into(),
                 domaines_autorises: vec!["crates.io".into(), "pypi.org".into()],
                 branches_protegees: vec!["main".into(), "master".into()],
                 domaines_modele: vec![],
+                serveurs_mcp: vec![],
             },
             politique: FichiersPolitique {
                 regles: String::new(),
@@ -526,6 +566,7 @@ mod tests {
             contenu_execute: None,
             nonce: None,
             appel: None,
+        delegation: None,
         }
     }
 

@@ -51,6 +51,9 @@ pub struct Options {
     /// Mandat cosigné (YAML).
     #[arg(long)]
     mandat: PathBuf,
+    /// Mandat d'un type de sous-agent (répétable), cosigné et inclus dans le mandat (EF-B6).
+    #[arg(long = "mandat-enfant")]
+    mandats_enfants: Vec<PathBuf>,
     /// Fichier de confiance : membres de la gouvernance et seuil (au moins 2).
     #[arg(long, default_value = crate::gouverner::CONFIANCE)]
     confiance: PathBuf,
@@ -60,6 +63,9 @@ pub struct Options {
     /// Proxy LLM (`ANTHROPIC_BASE_URL` de l'agent), sur la boucle locale.
     #[arg(long, default_value = "127.0.0.1:7703")]
     ecoute_llm: SocketAddr,
+    /// Passerelle MCP (serveurs MCP du mandat, en HTTP), sur la boucle locale.
+    #[arg(long, default_value = "127.0.0.1:7704")]
+    ecoute_mcp: SocketAddr,
     /// Plafond d'envoi par connexion de la passerelle, en octets (sens des flux, EF-C4).
     #[arg(long, default_value_t = 1024 * 1024)]
     plafond_envoi: u64,
@@ -185,6 +191,16 @@ pub(crate) fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_core::d
         "contexte": action.contexte, "verdict": d.verdict, "regle": d.politique.regle,
         "motif": d.motif, "durci": d.durci, "avis": d.avis, "appel": evt.appel,
     });
+    // Provenance (EF-B5) : contenus non fiables reçus par la session avant cette action.
+    let sources = interne.superviseur.influences(&evt.session);
+    if !sources.is_empty() {
+        contenu["provenance"] = json!(sources);
+    }
+    // Chaîne de délégation (EF-B6) : sous-agent, et mandat enfant appliqué.
+    if let Some(dl) = &evt.delegation {
+        let enfant = interne.superviseur.mandat_enfant(evt).map(|m| format!("{} v{}", m.mandat.id, m.mandat.version));
+        contenu["delegation"] = json!({"type_agent": dl.type_agent, "id": dl.id, "mandat_enfant": enfant});
+    }
     // Contrôle croisé (niveaux 2 et 3) : dans le conteneur, le modèle ne passe que par le
     // proxy LLM, donc toute action doit avoir été demandée par lui. Un écart est signalé au
     // journal et dans la vue ; il ne change pas (encore) la décision.
@@ -245,8 +261,15 @@ async fn observer(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> 
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
     let action = interne.superviseur.normaliser(&evt);
+    let source = interne.superviseur.observer(&evt);
     // Minimisation : ni le contenu écrit ni la sortie de l'outil ne sont journalisés.
-    let contenu = json!({"outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource, "appel": evt.appel});
+    let mut contenu = json!({"outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource, "appel": evt.appel});
+    if source.is_some() {
+        contenu["contenu_non_fiable"] = json!(true);
+    }
+    if let Some(dl) = &evt.delegation {
+        contenu["delegation"] = json!({"type_agent": dl.type_agent, "id": dl.id});
+    }
     let Ok(cle) = interne.coffre.cle_ou_creer(&evt.session) else {
         return StatusCode::INTERNAL_SERVER_ERROR;
     };
@@ -508,7 +531,17 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         return Err(format!("profil « {} » non pris en charge (MVP : code)", mandat.mandat.profil));
     }
     let id = format!("{} v{}", mandat.mandat.id, mandat.mandat.version);
-    let superviseur = Superviseur::nouveau(mandat).map_err(|e| e.to_string())?;
+    let mut superviseur = Superviseur::nouveau(mandat).map_err(|e| e.to_string())?;
+    let mut enfants = Vec::new();
+    for chemin in &opts.mandats_enfants {
+        let (enfant, _) = aplomb_core::mandat::charger_cosigne(chemin, &confiance)
+            .map_err(|e| format!("mandat enfant {} refusé : {e}", chemin.display()))?;
+        let nom = format!("{} v{}", enfant.mandat.id, enfant.mandat.version);
+        let type_agent = superviseur
+            .ajouter_enfant(enfant)
+            .map_err(|e| format!("mandat enfant {} non inclus dans le mandat : {e}", chemin.display()))?;
+        enfants.push(format!("{nom} (sous-agent {type_agent})"));
+    }
     let journal = Journal::ouvrir(&opts.journal).map_err(|e| e.to_string())?;
     let maitre = crate::cle_maitresse::cle_maitresse()?;
     let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?.avec_maitre(maitre);
@@ -565,10 +598,19 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let l_admin = tokio::net::TcpListener::bind(opts.ecoute_admin).await.map_err(|e| e.to_string())?;
         let l_passerelle = tokio::net::TcpListener::bind(opts.ecoute_passerelle).await.map_err(|e| e.to_string())?;
         let l_llm = tokio::net::TcpListener::bind(opts.ecoute_llm).await.map_err(|e| e.to_string())?;
-        let (agent, amont) = {
+        let l_mcp = tokio::net::TcpListener::bind(opts.ecoute_mcp).await.map_err(|e| e.to_string())?;
+        let (agent, amont, racine, serveurs_mcp) = {
             let m = &etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat;
-            (m.agent.clone(), m.perimetre.domaines_modele.first().map(|d| aplomb_core::modele::amont(d)).transpose()?)
+            (
+                m.agent.clone(),
+                m.perimetre.domaines_modele.first().map(|d| aplomb_core::modele::amont(d)).transpose()?,
+                m.perimetre.racine.clone(),
+                m.perimetre.serveurs_mcp.clone(),
+            )
         };
+        let lances: Vec<String> = serveurs_mcp.iter().filter(|s| !s.commande.is_empty()).map(|s| s.nom.clone()).collect();
+        let mcp = crate::mcp::routeur(etat_scellement.clone(), crate::mcp::Reglages { agent: agent.clone(), racine, serveurs: serveurs_mcp });
+        tokio::spawn(async move { axum::serve(l_mcp, mcp).await });
         let reglages = crate::passerelle::Reglages { agent: agent.clone(), plafond: opts.plafond_envoi };
         tokio::spawn(crate::passerelle::servir(l_passerelle, etat_scellement.clone(), reglages));
         let canal = match (&amont, &jeton) {
@@ -583,6 +625,14 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         eprintln!("  API administration : http://{}  (Aplomb Watch, vue technique)", opts.ecoute_admin);
         eprintln!("  Aplomb Gate        : http://{}  (passerelle sortante, HTTPS_PROXY de l'agent ; envoi plafonné à {} Kio par connexion)", opts.ecoute_passerelle, opts.plafond_envoi / 1024);
         eprintln!("  proxy LLM          : http://{}  (ANTHROPIC_BASE_URL de l'agent ; {canal})", opts.ecoute_llm);
+        eprintln!(
+            "  passerelle MCP     : http://{}/mcp/<nom>  ({})",
+            opts.ecoute_mcp,
+            if lances.is_empty() { "aucun serveur MCP au mandat".to_string() } else { lances.join(", ") }
+        );
+        if !enfants.is_empty() {
+            eprintln!("  mandats enfants    : {}", enfants.join(", "));
+        }
         eprintln!("  comptes            : {} (cosignés par {})", opts.comptes.display(), signataires_comptes.join(" et "));
         eprintln!("  scellement         : toutes les {} s, et à l'arrêt", opts.scellement);
         eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());

@@ -128,6 +128,9 @@ pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>, branchement: 
         "contenu_execute": contenu_execute(&cwd, commande),
         "nonce": nonce,
         "appel": evt.get("tool_use_id").and_then(Value::as_str),
+        // Sous-agent (Claude Code : agent_type et agent_id dans un sous-agent).
+        "delegation": evt.get("agent_type").and_then(Value::as_str).filter(|t| !t.is_empty())
+            .map(|t| json!({"type_agent": t, "id": s("agent_id")})),
     });
     let base = std::env::var("APLOMB_URL").unwrap_or_else(|_| URL_DEFAUT.into());
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(3)).build();

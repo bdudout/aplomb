@@ -6,7 +6,7 @@ set -u
 cd "$(dirname "$0")"
 ENV="${1:-.env}"
 
-docker compose --env-file "$ENV" up -d aplomb-decision aplomb-gate aplomb-llm >/dev/null 2>&1 || {
+docker compose --env-file "$ENV" up -d aplomb-decision aplomb-gate aplomb-llm aplomb-mcp >/dev/null 2>&1 || {
   echo "relais non démarrés (docker compose up)"; exit 1; }
 
 docker compose --env-file "$ENV" run --rm --no-deps -T --entrypoint sh agent -s <<'EOF'
@@ -43,6 +43,8 @@ attendu "Domaine hors mandat par Aplomb Gate"                      non c https:/
 attendu "Modèle en direct par Aplomb Gate (api.anthropic.com)"      non c https://api.anthropic.com/v1/messages
 attendu "Proxy LLM : conversation relayée au modèle"                oui modele /v1/messages '"type"' '"Aplomb : '
 attendu "Proxy LLM : API des fichiers refusée"                      oui modele /v1/files 'non permis' '^$'
+# Passerelle MCP : seuls les serveurs du mandat existent (404 pour un autre nom).
+attendu "Passerelle MCP joignable, serveur hors mandat inconnu"     oui sh -c '[ "$(curl -s -o /dev/null -w %{http_code} -X POST http://aplomb-mcp:7704/mcp/hors-mandat -H content-type:application/json -d {})" = 404 ]'
 attendu "Agent sans jeton du modèle"                                non sh -c 'env | grep -q sk-ant-' 
 attendu "Sortie directe, sans proxy"                               non c --noproxy '*' https://pypi.org/simple/
 attendu "Sortie directe par adresse IP"                            non c --noproxy '*' http://1.1.1.1/

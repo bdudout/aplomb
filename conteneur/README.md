@@ -13,7 +13,8 @@ aplomb serve (phrase de passe)                réseau « isole » (internal : au
   :7700 décision   ◀── relais aplomb-decision ──┐
   :7701 admin      ✗ (relayée nulle part)       ├── agent : Claude Code, utilisateur agent,
   :7702 Aplomb Gate ◀── relais aplomb-gate ─────┤   système de fichiers en lecture seule,
-  :7703 proxy LLM  ◀── relais aplomb-llm ──────┘   seul le dépôt est monté, aucun jeton
+  :7703 proxy LLM  ◀── relais aplomb-llm ──────┤   seul le dépôt est monté, aucun jeton
+  :7704 passerelle MCP ◀── relais aplomb-mcp ───┘
        │
        ▼
    internet : domaines du mandat (Gate) ; modèle, avec le jeton d'Aplomb (proxy LLM)
@@ -33,6 +34,9 @@ aplomb serve (phrase de passe)                réseau « isole » (internal : au
   demandés par le modèle) et coupe tout pendant un gel. Le modèle n'est plus joignable
   directement par Aplomb Gate.
 
+- **Passerelle MCP** : les serveurs MCP du mandat tournent sur l'hôte, lancés par Aplomb ;
+  dans le conteneur, `claude mcp add --transport http <nom> http://aplomb-mcp:7704/mcp/<nom>`.
+  Chaque appel d'outil est jugé avant d'être transmis.
 - **Contrôle croisé** : le hook transmet l'identifiant d'appel (`tool_use_id`) que le modèle
   a donné à l'outil ; le superviseur vérifie qu'il l'a vu passer dans une réponse du proxy.
   Une action sans demande du modèle (script, injection hors conversation) est signalée comme

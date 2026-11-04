@@ -188,7 +188,9 @@ function ligneAction(a) {
   const li = el("li");
   li.append(el("span", "v " + a.verdict, a.verdict), " ", `${heure(a.horodatage)} ${a.outil}`,
     " ", el("span", "id", court(a.appel)), " · ", el("span", "doux", a.regle),
-    a.execute ? " · exécutée" : "");
+    a.execute ? " · exécutée" : "",
+    a.sous_agent ? ` · sous-agent ${a.sous_agent}` : "",
+    a.provenance.length ? el("span", "review", ` · influencée (${a.provenance.join(", ")})`) : "");
   return li;
 }
 

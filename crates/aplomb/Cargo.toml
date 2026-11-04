@@ -14,7 +14,7 @@ serde_yaml = { workspace = true }
 hex = { workspace = true }
 ed25519-dalek = { workspace = true }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "io-util", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "io-util", "time", "process"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"
 clap = { version = "4", features = ["derive"] }

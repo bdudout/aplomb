@@ -30,8 +30,10 @@ when { context.envoi_externe };
 @id("revue-delegation")
 permit (principal, action == Action::"deleguer", resource);
 
+// Outil MCP : sans revue seulement s'il est déclaré au mandat (serveur et outil).
 @id("revue-outil-mcp")
-permit (principal, action == Action::"outil_mcp", resource);
+permit (principal, action == Action::"outil_mcp", resource)
+unless { context.mcp_declare };
 
 @id("revue-outil-inconnu")
 permit (principal, action == Action::"autre", resource);

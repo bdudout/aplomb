@@ -57,6 +57,8 @@ aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
 | `crates/aplomb-core/src/journal.rs` | Journal chaîné par session, vérification |
 | `crates/aplomb/src/main.rs` | Binaire `aplomb` : `serve`, `hook`, `init`, `cosigner`, `verify`, `ancrer`, `admin`, `compte`, `mermaid`, `effacer`, `trousseau` |
 | `crates/aplomb/src/serveur.rs` | API décision (7700) et API administration (7701) séparées |
+| `crates/aplomb/src/mcp.rs`, `crates/aplomb-core/src/mcp.rs` | Passerelle MCP (7704) : serveurs du mandat lancés par Aplomb, appels jugés, définitions épinglées |
+| `crates/aplomb-core/src/delegation.rs` | Inclusion d'un mandat de sous-agent dans son parent (EF-B6) |
 | `crates/aplomb/src/ui.html` | Vue technique minimale (flux temps réel) |
 | `profils/code/` | Règles Cedar et mandat type du profil C |
 | `bac-a-sable/` | Dépôt de test où le hook est activé |
@@ -68,4 +70,25 @@ aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
 - ~~Clés hors trousseau, composants non authentifiés~~ : fait (J2, lot 4). Clé maîtresse protégée par phrase de passe (Argon2id), tous les fichiers de clés enveloppés ; le trousseau macOS a été abandonné, il redemandait le mot de passe à chaque recompilation ; réponses du superviseur signées sur un nonce du hook (anti-usurpation, anti-rejeu). Le chiffrement du trafic (mTLS) est reporté au jalon J3 : sur la boucle locale, au niveau 1, l'agent partage l'utilisateur du hook et un certificat client ne prouverait rien.
 - ~~Journal ni signé ni ancré~~ : fait (J2, lot 5). Scellés périodiques signés (racine de Merkle des sessions), ancrage hors ligne par `aplomb ancrer`. Les entrées sont signées à travers le scellé, donc avec un décalage d'au plus une période (60 s par défaut).
 - ~~Minimisation du journal~~ : fait (J2, lot 2). Contenus venant de l'agent chiffrés par session (ChaCha20-Poly1305), effacement par destruction de la clé. Les clés sont encore des fichiers 0600, pas dans le trousseau (lot 4).
+- ~~Ni passerelle MCP, ni provenance, ni délégation~~ : fait (J3, lot 4).
+  - **Passerelle MCP** (niveau 2) : les serveurs MCP du mandat (`perimetre.serveurs_mcp`) sont
+    lancés par Aplomb sur l'hôte, un processus par session ; l'agent les joint en HTTP par
+    `http://127.0.0.1:7704/mcp/<nom>`. Chaque `tools/call` est jugé et journalisé avant
+    transmission ; revue = refus (pas de canal vers l'humain). La définition de chaque outil
+    est épinglée à sa première présentation : si elle change ensuite, l'outil est refusé.
+    Seuls les outils listés au mandat passent sans revue (règle `revue-outil-mcp`).
+  - **Provenance** (EF-B5, EF-D2) : une page web, un fichier hors du dépôt, la sortie réseau
+    d'une commande, le résultat d'un serveur MCP non déclaré fiable ou la sortie d'un
+    sous-agent marquent la session. Le contenu reste dans le contexte du modèle : les
+    actions sensibles qui suivent (commande, réseau, outil MCP, délégation, envoi) passent
+    au moins en revue (moniteur déterministe « provenance »). Lire et écrire dans le dépôt
+    restent permis. La marque vaut pour toute la session : approximation prudente, faute de
+    suivre la provenance valeur par valeur comme CaMeL.
+  - **Délégation** (EF-B6) : un mandat de sous-agent (`agent: claude-code/<type>`,
+    `parent: <id>`) est chargé par `serve --mandat-enfant` s'il est cosigné et inclus dans
+    le parent (racine, domaines, modèles, serveurs MCP, branches protégées, bornes) ; ses
+    actions sont jugées par les deux mandats, le plus sévère l'emporte. Un sous-agent sans
+    mandat enfant suit le mandat parent. Le journal garde la chaîne (type et identifiant
+    du sous-agent, mandat enfant appliqué).
+  - Reste : serveurs MCP distants (HTTP) et secrets des serveurs MCP détenus par Aplomb.
 - Pas de moniteur probabiliste (juge, guard model) : J5.

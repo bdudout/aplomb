@@ -46,6 +46,18 @@ pub struct EvenementOutil {
     /// à la réponse du modèle qui l'a demandée (vue chaînée, contrôle croisé).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appel: Option<String>,
+    /// Sous-agent émetteur, si l'action vient d'un agent délégué (EF-B6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<Delegation>,
+}
+
+/// Agent délégué par l'agent de la session (Claude Code : `agent_type`, `agent_id`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Delegation {
+    /// Type de sous-agent (ex. `Explore`) : désigne son mandat enfant, s'il en a un.
+    pub type_agent: String,
+    #[serde(default)]
+    pub id: String,
 }
 
 /// Action normalisée, indépendante du mode de branchement.

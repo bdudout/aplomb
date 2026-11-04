@@ -15,6 +15,7 @@ mod admin;
 mod cle_maitresse;
 mod gouverner;
 mod hook;
+mod mcp;
 mod modele;
 mod passerelle;
 mod serveur;

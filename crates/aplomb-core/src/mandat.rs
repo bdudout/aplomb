@@ -39,6 +39,31 @@ pub struct Perimetre {
     /// du texte signé quand la liste est vide : les mandats antérieurs restent valides.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub domaines_modele: Vec<String>,
+    /// Serveurs MCP déclarés : seuls leurs outils listés passent sans revue ; ceux qui ont
+    /// une commande sont lancés par la passerelle MCP d'Aplomb (niveau 2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub serveurs_mcp: Vec<ServeurMcp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServeurMcp {
+    pub nom: String,
+    /// Commande et arguments, lancés par Aplomb sur l'hôte (transport stdio).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commande: Vec<String>,
+    /// Outils permis sans revue ; `*` pour tous.
+    #[serde(default)]
+    pub outils: Vec<String>,
+    /// Résultats tenus pour fiables (EF-B5) ; non par défaut : un résultat d'outil MCP est
+    /// un contenu externe.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fiable: bool,
+}
+
+impl ServeurMcp {
+    pub fn permet(&self, outil: &str) -> bool {
+        self.outils.iter().any(|o| o == "*" || o == outil)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,6 +88,10 @@ pub struct Mandat {
     /// Intention en langage naturel, fournie aux futurs moniteurs (EF-A2).
     pub intention: String,
     pub perimetre: Perimetre,
+    /// Mandat parent (son `id`) d'un mandat de sous-agent : l'enfant doit y être inclus
+    /// (EF-B6) et ses actions sont jugées par les deux.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     pub politique: FichiersPolitique,
     /// Bornes cumulées par session (EF-A6) ; absentes : valeurs par défaut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -213,11 +242,13 @@ mod tests {
             profil: "code".into(),
             agent: "claude-code".into(),
             intention: "tester".into(),
+            parent: None,
             perimetre: Perimetre {
                 racine: "/tmp/depot".into(),
                 domaines_autorises: vec![],
                 branches_protegees: vec!["main".into()],
                 domaines_modele: vec![],
+                serveurs_mcp: vec![],
             },
             politique: FichiersPolitique {
                 regles: "regles.cedar".into(),

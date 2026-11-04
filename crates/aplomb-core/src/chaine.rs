@@ -47,6 +47,10 @@ pub struct Action {
     pub verdict: String,
     pub regle: String,
     pub execute: bool,
+    /// Contenus non fiables reçus par la session avant l'action (EF-B5).
+    pub provenance: Vec<String>,
+    /// Type de sous-agent, si l'action vient d'un agent délégué (EF-B6).
+    pub sous_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -149,6 +153,9 @@ fn actions(session: &[Entree]) -> Vec<Action> {
                 ref_ressource: c.get("ref").and_then(Value::as_str).map(String::from),
                 verdict: s(c, "verdict"),
                 regle: s(c, "regle"),
+                provenance: c.get("provenance").and_then(Value::as_array).into_iter().flatten()
+                    .filter_map(|v| v.as_str().map(String::from)).collect(),
+                sous_agent: c.pointer("/delegation/type_agent").and_then(Value::as_str).map(String::from),
             }
         })
         .collect()
