@@ -11,6 +11,7 @@
 pub mod action;
 pub mod autorite;
 pub mod bornes;
+pub mod chaine;
 pub mod confidentiel;
 pub mod decision;
 pub mod gouvernance;

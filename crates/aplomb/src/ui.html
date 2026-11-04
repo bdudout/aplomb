@@ -21,7 +21,7 @@
   .compteur b { display:block; font-size:18px; }
   main { padding:16px 20px; }
   .barre { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; align-items:center; }
-  input, button { font:inherit; padding:6px 10px; border-radius:6px; border:1px solid var(--ligne); background:var(--carte); color:var(--texte); }
+  input, button, select { font:inherit; padding:6px 10px; border-radius:6px; border:1px solid var(--ligne); background:var(--carte); color:var(--texte); }
   button { cursor:pointer; }
   button.danger { border-color:var(--deny); color:var(--deny); }
   table { width:100%; border-collapse:collapse; background:var(--carte); border:1px solid var(--ligne); border-radius:8px; overflow:hidden; }
@@ -31,6 +31,15 @@
   .v { font-weight:600; text-transform:uppercase; font-size:12px; }
   .allow { color:var(--allow); } .review { color:var(--review); } .deny { color:var(--deny); } .gel { color:var(--gel); }
   .bandeau { display:none; padding:8px 20px; background:var(--gel); color:#fff; font-weight:600; }
+  .onglets { display:flex; gap:4px; margin-bottom:12px; }
+  .onglets button[aria-selected="true"] { border-color:var(--texte); font-weight:600; }
+  .tour { background:var(--carte); border:1px solid var(--ligne); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+  .tour h3 { font-size:13px; margin:0 0 6px; display:flex; flex-wrap:wrap; gap:10px; }
+  .tour ul { margin:4px 0 0; padding-left:18px; }
+  .tour li { margin:2px 0; }
+  .id { font-family:ui-monospace, monospace; font-size:12px; color:var(--doux); }
+  .ecart { color:var(--deny); font-weight:600; }
+  .ecarts { border-color:var(--deny); }
   @media (max-width:700px) { .compteurs { margin-left:0; } td.res { max-width:160px; } }
 </style>
 </head>
@@ -57,7 +66,19 @@
     <button id="quitter">Se déconnecter</button>
     <span class="doux" id="info"></span>
   </div>
-  <table>
+  <div class="onglets" role="tablist">
+    <button role="tab" id="o-flux" aria-selected="true">Flux en direct</button>
+    <button role="tab" id="o-chaine" aria-selected="false">Vue chaînée</button>
+  </div>
+  <section id="v-chaine" hidden>
+    <div class="barre">
+      <select id="sessions"></select>
+      <button id="recharger">Actualiser</button>
+      <span class="doux" id="resume"></span>
+    </div>
+    <div id="chaine"></div>
+  </section>
+  <table id="v-flux">
     <thead><tr><th>Heure</th><th>Session</th><th>Outil</th><th>Verdict</th><th>Ressource</th><th>Règle / motif</th></tr></thead>
     <tbody id="lignes"></tbody>
   </table>
@@ -132,6 +153,95 @@ $("verifier").onclick = async () => {
   const v = await (await fetch("/admin/verify")).json();
   $("info").textContent = v.intact ? `journal intact : ${v.sessions} session(s), ${v.entrees} entrées` : `JOURNAL ROMPU : ${v.fichier} — ${v.erreur}`;
 };
+
+// --- Vue chaînée : appel au modèle → outils demandés → décisions → réseau ---
+function el(balise, classe, contenu) {
+  const e = document.createElement(balise);
+  if (classe) e.className = classe;
+  if (contenu !== undefined) e.textContent = contenu;
+  return e;
+}
+const court = (id) => id ? "…" + id.slice(-8) : "sans id";
+const heure = (t) => t ? new Date(t).toLocaleTimeString("fr-FR") : "—";
+
+function onglet(nom) {
+  $("o-flux").setAttribute("aria-selected", nom === "flux");
+  $("o-chaine").setAttribute("aria-selected", nom === "chaine");
+  $("v-flux").hidden = nom !== "flux";
+  $("v-chaine").hidden = nom !== "chaine";
+  if (nom === "chaine" && !$("sessions").options.length) chargerSessions();
+}
+
+async function chargerSessions() {
+  const liste = await (await fetch("/admin/sessions")).json();
+  const sel = $("sessions");
+  sel.replaceChildren();
+  for (const s of liste) {
+    const o = el("option", "", `${heure(s.debut)} · ${s.session.slice(0, 8)} · ${s.mode || "?"} · ${s.decisions} décision(s)`);
+    o.value = s.session;
+    sel.appendChild(o);
+  }
+  if (liste.length) chargerChaine(); else $("chaine").replaceChildren(el("p", "doux", "Aucune session d'agent au journal."));
+}
+
+function ligneAction(a) {
+  const li = el("li");
+  li.append(el("span", "v " + a.verdict, a.verdict), " ", `${heure(a.horodatage)} ${a.outil}`,
+    " ", el("span", "id", court(a.appel)), " · ", el("span", "doux", a.regle),
+    a.execute ? " · exécutée" : "");
+  return li;
+}
+
+async function chargerChaine() {
+  const id = $("sessions").value;
+  const r = await fetch("/admin/chaine?session=" + encodeURIComponent(id));
+  const c = await r.json();
+  const zone = $("chaine");
+  zone.replaceChildren();
+  if (!r.ok) { zone.appendChild(el("p", "ecart", c.erreur || r.status)); return; }
+  $("resume").textContent = `mode ${c.mode || "?"} · niveau ${c.niveau ?? "?"} · rattachement ${c.rattachement} · ${c.tours.length} appel(s) au modèle`;
+  if (c.ecarts.length) {
+    const b = el("div", "tour ecarts");
+    b.appendChild(el("h3", "ecart", `${c.ecarts.length} écart(s) au contrôle croisé`));
+    const ul = el("ul"); c.ecarts.forEach(e => ul.appendChild(el("li", "", e))); b.appendChild(ul);
+    zone.appendChild(b);
+  }
+  for (const t of c.tours) {
+    const e = t.echange, b = el("div", "tour"), h = el("h3");
+    h.append(el("span", "", `Échange ${e.numero}`), el("span", "doux", `${heure(e.debut)} · ${e.modele || "modèle ?"}`),
+      el("span", e.refus ? "ecart" : "doux", e.refus ? `refusé : ${e.refus}` : `statut ${e.statut ?? "—"}`),
+      el("span", "doux", `jetons ${e.jetons_entree ?? "—"} → ${e.jetons_sortie ?? "—"}`));
+    b.appendChild(h);
+    const ul = el("ul");
+    if (!e.outils.length) ul.appendChild(el("li", "doux", "aucun outil demandé"));
+    for (const o of e.outils) {
+      const li = el("li");
+      li.append("demande ", el("b", "", o.nom), " ", el("span", "id", court(o.id)));
+      const lie = t.actions.filter(a => a.appel === o.id);
+      if (lie.length) { const sous = el("ul"); lie.forEach(a => sous.appendChild(ligneAction(a))); li.appendChild(sous); }
+      else if (t.non_presentes.some(n => n.id === o.id)) li.append(" ", el("span", "ecart", "jamais présenté au superviseur"));
+      ul.appendChild(li);
+    }
+    for (const n of t.reseau) {
+      const li = el("li");
+      li.append("réseau ", el("span", "v " + n.verdict, n.verdict), ` ${heure(n.horodatage)} · `, el("span", "doux", n.regle));
+      ul.appendChild(li);
+    }
+    b.appendChild(ul);
+    zone.appendChild(b);
+  }
+  if (c.hors_demande.length) {
+    const b = el("div", "tour ecarts");
+    b.appendChild(el("h3", "ecart", "Actions sans demande du modèle"));
+    const ul = el("ul"); c.hors_demande.forEach(a => ul.appendChild(ligneAction(a))); b.appendChild(ul);
+    zone.appendChild(b);
+  }
+}
+
+$("o-flux").onclick = () => onglet("flux");
+$("o-chaine").onclick = () => onglet("chaine");
+$("sessions").onchange = chargerChaine;
+$("recharger").onclick = chargerSessions;
 
 (async () => {
   if (!(await rafraichir())) return;

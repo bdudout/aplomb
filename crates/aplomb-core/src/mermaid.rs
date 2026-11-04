@@ -189,10 +189,13 @@ pub fn sequence(entrees: &[Entree], max: usize) -> String {
                 } else {
                     "exécuté".to_string()
                 };
+                // Outils demandés par le modèle : `outils` (nom et identifiant d'appel), ou
+                // `outils_demandes` (noms seuls, journaux antérieurs).
                 let outils: Vec<&str> = c
-                    .get("outils_demandes")
+                    .get("outils")
+                    .or_else(|| c.get("outils_demandes"))
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_str).collect())
+                    .map(|a| a.iter().filter_map(|o| o.get("nom").unwrap_or(o).as_str()).collect())
                     .unwrap_or_default();
                 let demandes = if outils.is_empty() { String::new() } else { format!(" — outils demandés : {}", texte(&outils.join(", "), 60)) };
                 l.push(format!("    O-->>A: {n}. {issue} : {outil} {}{demandes}", designation(c)));

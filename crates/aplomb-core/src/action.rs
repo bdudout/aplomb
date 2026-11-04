@@ -42,6 +42,10 @@ pub struct EvenementOutil {
     /// Nonce choisi par le hook : la réponse signée du superviseur le reprend (EF-S3).
     #[serde(default)]
     pub nonce: Option<String>,
+    /// Identifiant de l'appel d'outil attribué par le modèle (`tool_use_id`) : relie l'action
+    /// à la réponse du modèle qui l'a demandée (vue chaînée, contrôle croisé).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appel: Option<String>,
 }
 
 /// Action normalisée, indépendante du mode de branchement.

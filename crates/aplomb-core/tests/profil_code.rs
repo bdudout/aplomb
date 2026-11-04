@@ -47,6 +47,7 @@ fn evt(session: &str, outil: &str, entree: Value) -> EvenementOutil {
         chemin_reel: None,
         contenu_execute: None,
         nonce: None,
+        appel: None,
     }
 }
 

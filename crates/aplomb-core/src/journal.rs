@@ -81,6 +81,10 @@ impl Journal {
         self.dossier.join(nom_fichier(session))
     }
 
+    pub fn dossier(&self) -> &Path {
+        &self.dossier
+    }
+
     /// Vrai si la session a déjà au moins une entrée (en mémoire ou sur disque).
     pub fn connait(&mut self, session: &str) -> Result<bool, ErreurJournal> {
         Ok(self.etat(session)?.seq > 0)

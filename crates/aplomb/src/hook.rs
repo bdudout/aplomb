@@ -127,6 +127,7 @@ pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>, branchement: 
         "chemin_reel": chemin_reel(&cwd, chemin),
         "contenu_execute": contenu_execute(&cwd, commande),
         "nonce": nonce,
+        "appel": evt.get("tool_use_id").and_then(Value::as_str),
     });
     let base = std::env::var("APLOMB_URL").unwrap_or_else(|_| URL_DEFAUT.into());
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(3)).build();

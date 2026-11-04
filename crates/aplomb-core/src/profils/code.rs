@@ -525,6 +525,7 @@ mod tests {
             chemin_reel: None,
             contenu_execute: None,
             nonce: None,
+            appel: None,
         }
     }
 

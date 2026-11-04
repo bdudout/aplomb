@@ -11,7 +11,7 @@ par hook (niveau d'assurance 1, coopératif).
 |---|---|---|
 | **Aplomb** | Cœur de décision (`aplomb-core`), service `aplomb serve`, hook Claude Code | MVP |
 | **Aplomb Gate** | Passerelles : réseau sortant (`127.0.0.1:7702`), proxy LLM (`127.0.0.1:7703`), puis passerelle MCP | réseau sortant, proxy LLM et confinement faits |
-| **Aplomb Watch** | Journal scellé, vue technique, export Mermaid, puis indicateurs pour le management | journal et vue faits |
+| **Aplomb Watch** | Journal scellé, vue technique, export Mermaid, puis indicateurs pour le management | journal, flux en direct et vue chaînée faits |
 | **Aplomb Pentest** | Profil dédié aux tests d'intrusion supervisés | à venir |
 
 - Architecture du MVP : [`docs/ARCHITECTURE-MVP.md`](docs/ARCHITECTURE-MVP.md)
@@ -42,11 +42,21 @@ Changer de phrase : `aplomb phrase changer`. Sans la phrase, les clés sont perd
   affichage, chiffré), puis redémarrer `aplomb serve`. L'agent confiné n'a ainsi aucun jeton.
 - Vue technique (Aplomb Watch) : `./target/debug/aplomb admin --compte alice connexion` affiche un lien de
   connexion à usage unique (2 minutes), qui ouvre une session de navigateur de 8 heures.
+  Onglet « Vue chaînée » : pour une session d'agent, chaque appel au modèle, les outils qu'il
+  demande (identifiant `toolu_…`), la décision d'Aplomb sur chacun, puis le trafic d'Aplomb Gate ;
+  les écarts du contrôle croisé (action sans demande du modèle, outil demandé jamais présenté)
+  sont en rouge.
 - Administration signée : `aplomb admin --compte alice gel [--session <id>]` (effet immédiat) ;
   `aplomb admin --compte alice degel` puis `aplomb admin --compte bob degel` (quatre yeux : deux
   comptes distincts, dans les 10 minutes). Les clés privées sont dans `~/.config/aplomb/comptes/`.
 - Dépôt de test supervisé : `../bac-a-sable` (hook dans `.claude/settings.json`)
 - Rejouer des scénarios sans Claude Code : `scripts/scenarios.sh`
+- Banc d'essai autonome : `scripts/banc.sh` monte une instance jetable (phrase, comptes,
+  mandat, jeton et journal à elle, dans un dossier temporaire) et un faux modèle, puis rejoue
+  le parcours d'un agent confiné : proxy LLM, hook avec identifiant d'appel, contrôle croisé,
+  vue chaînée (17 vérifications). Rien n'est demandé, rien du réel n'est touché.
+- Modèle local (Ollama, vLLM, llama.cpp) : `domaines_modele: ["http://127.0.0.1:11434"]` ;
+  HTTP en clair n'est accepté que vers la machine elle-même.
 - Vérifier le journal : `./target/debug/aplomb verify --journal journal`
 - Effacer les contenus d'une session (la chaîne reste vérifiable) : `./target/debug/aplomb effacer --session <id>`
 - Suivre les requêtes d'un agent en diagramme de séquence Mermaid (rendu par Pele ou tout outil Mermaid) :
@@ -70,7 +80,7 @@ poste).
 
 | | |
 |---|---|
-| Tests | 83 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle) |
+| Tests | 88 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 19 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -83,6 +93,7 @@ poste).
 | Scellement | Toutes les 60 s (`--scellement`) et à l'arrêt : racine de Merkle des sessions, signée et chaînée ; troncature, suppression et réécriture détectées ; ancrage hors ligne (EF-I1, EF-I2) |
 | Aplomb Gate (passerelle sortante) | `127.0.0.1:7702` pour `HTTPS_PROXY` : domaines du mandat, adresses internes refusées (ressource réelle), envoi plafonné à 1 Mio par connexion, revue = refus ; tout est journalisé (EF-C1, EF-C4, EF-B4) |
 | Proxy LLM (niveau 2) | `127.0.0.1:7703` pour `ANTHROPIC_BASE_URL` : amont = `domaines_modele` du mandat ; seuls les appels de conversation passent ; clé de l'agent retirée, jeton d'Aplomb injecté (`aplomb modele jeton`, chiffré) ; appels, jetons et outils demandés journalisés ; coupé par le gel |
+| Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |

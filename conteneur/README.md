@@ -33,6 +33,11 @@ aplomb serve (phrase de passe)                réseau « isole » (internal : au
   demandés par le modèle) et coupe tout pendant un gel. Le modèle n'est plus joignable
   directement par Aplomb Gate.
 
+- **Contrôle croisé** : le hook transmet l'identifiant d'appel (`tool_use_id`) que le modèle
+  a donné à l'outil ; le superviseur vérifie qu'il l'a vu passer dans une réponse du proxy.
+  Une action sans demande du modèle (script, injection hors conversation) est signalée comme
+  écart au journal et dans la vue chaînée d'Aplomb Watch.
+
 ## Utilisation
 
 Prérequis : Docker Desktop, et `aplomb serve` lancé sur l'hôte.

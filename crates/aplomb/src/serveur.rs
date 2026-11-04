@@ -93,6 +93,8 @@ struct Interne {
     historique: VecDeque<Value>,
     compteurs: [u64; 4],
     autorite: Autorite,
+    /// Appels d'outils annoncés par le modèle (proxy LLM), pour le contrôle croisé.
+    annonces: aplomb_core::modele::Annonces,
 }
 
 #[derive(Clone)]
@@ -136,6 +138,11 @@ fn erreur(code: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<Value>)
 }
 
 impl Etat {
+    /// Le proxy LLM a vu le modèle demander cet appel d'outil.
+    pub(crate) fn annoncer(&self, id: &str, annonce: aplomb_core::modele::Annonce) {
+        self.interne.lock().expect("verrou").annonces.annoncer(id, annonce);
+    }
+
     /// Gel global, ou gel de cette session.
     pub(crate) fn gele(&self, session: &str) -> bool {
         let (global, sessions) = self.interne.lock().expect("verrou").superviseur.etat_gel();
@@ -173,11 +180,21 @@ pub(crate) fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_core::d
     let mut interne = etat.interne.lock().expect("verrou");
     etat.ouvrir_session(&mut interne, evt, t).map_err(|e| format!("journal indisponible : {e}"))?;
     let (action, d) = interne.superviseur.decider(evt);
-    let contenu = json!({
+    let mut contenu = json!({
         "outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource,
         "contexte": action.contexte, "verdict": d.verdict, "regle": d.politique.regle,
-        "motif": d.motif, "durci": d.durci, "avis": d.avis,
+        "motif": d.motif, "durci": d.durci, "avis": d.avis, "appel": evt.appel,
     });
+    // Contrôle croisé (niveaux 2 et 3) : dans le conteneur, le modèle ne passe que par le
+    // proxy LLM, donc toute action doit avoir été demandée par lui. Un écart est signalé au
+    // journal et dans la vue ; il ne change pas (encore) la décision.
+    if evt.mode == "conteneur-isole" {
+        contenu["controle_croise"] = json!(match evt.appel.as_deref().map(|a| interne.annonces.trouver(a)) {
+            Some(Some(a)) => format!("demandée par le modèle (échange {})", a.echange),
+            Some(None) => "ÉCART : action sans demande du modèle".to_string(),
+            None => "ÉCART : action sans identifiant d'appel".to_string(),
+        });
+    }
     let cle = interne.coffre.cle_ou_creer(&evt.session).map_err(|e| format!("coffre indisponible : {e}"))?;
     let minimise = minimiser(&cle, &evt.session, &contenu);
     let entree = interne
@@ -229,7 +246,7 @@ async fn observer(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> 
     }
     let action = interne.superviseur.normaliser(&evt);
     // Minimisation : ni le contenu écrit ni la sortie de l'outil ne sont journalisés.
-    let contenu = json!({"outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource});
+    let contenu = json!({"outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource, "appel": evt.appel});
     let Ok(cle) = interne.coffre.cle_ou_creer(&evt.session) else {
         return StatusCode::INTERNAL_SERVER_ERROR;
     };
@@ -301,6 +318,69 @@ async fn verifier_journal(State(etat): State<Etat>, entetes: HeaderMap) -> Respo
             "entrees": s.iter().map(|(_, n)| n).sum::<u64>()})).into_response(),
         Err((f, e)) => Json(json!({"intact": false, "fichier": f, "erreur": e.to_string()})).into_response(),
     }
+}
+
+/// Sessions techniques, rattachées aux sessions d'agents dans la vue chaînée.
+const SESSIONS_TECHNIQUES: &[&str] = &["modele", "passerelle", SESSION_ADMIN];
+
+/// Sessions d'agents du journal, les plus récentes d'abord (métadonnées seulement).
+async fn sessions(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    let dossier = {
+        let mut interne = etat.interne.lock().expect("verrou");
+        if compte_web(&mut interne, &entetes).is_none() {
+            return non_connecte();
+        }
+        interne.journal.dossier().to_path_buf()
+    };
+    let mut liste = Vec::new();
+    for f in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
+        let Ok(texte) = std::fs::read_to_string(f.path()) else { continue };
+        let lignes: Vec<Value> = texte.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let (Some(premiere), Some(derniere)) = (lignes.first(), lignes.last()) else { continue };
+        let session = premiere["session"].as_str().unwrap_or_default();
+        if SESSIONS_TECHNIQUES.contains(&session) {
+            continue;
+        }
+        let tete = lignes.iter().find(|l| l["type"] == "session").map(|l| l["contenu"].clone()).unwrap_or_default();
+        liste.push(json!({"session": session, "mode": tete["mode"], "niveau": tete["niveau_assurance"],
+            "debut": premiere["horodatage"], "fin": derniere["horodatage"],
+            "decisions": lignes.iter().filter(|l| l["type"] == "decision").count()}));
+    }
+    liste.sort_by_key(|s| std::cmp::Reverse(s["fin"].as_u64().unwrap_or(0)));
+    liste.truncate(200);
+    Json(Value::Array(liste)).into_response()
+}
+
+#[derive(Deserialize)]
+struct DemandeChaine {
+    session: String,
+}
+
+/// Vue chaînée d'une session : appels au modèle, outils demandés, actions, réseau.
+async fn chaine(State(etat): State<Etat>, entetes: HeaderMap, Query(q): Query<DemandeChaine>) -> Response {
+    let chemins = {
+        let mut interne = etat.interne.lock().expect("verrou");
+        if compte_web(&mut interne, &entetes).is_none() {
+            return non_connecte();
+        }
+        let j = &interne.journal;
+        [j.chemin(&q.session), j.chemin("modele"), j.chemin("passerelle")]
+    };
+    // Seules des chaînes vérifiées sont montrées ; une session technique absente est vide.
+    let mut lues = Vec::new();
+    for (i, c) in chemins.iter().enumerate() {
+        match aplomb_core::mermaid::lire_session(c) {
+            Ok(e) => lues.push(e),
+            Err(_) if i > 0 && !c.exists() => lues.push(Vec::new()),
+            Err(e) => {
+                return (StatusCode::CONFLICT, Json(json!({"erreur": format!("{} : {e}", c.display())}))).into_response()
+            }
+        }
+    }
+    if lues[0].is_empty() {
+        return (StatusCode::NOT_FOUND, Json(json!({"erreur": "session inconnue"}))).into_response();
+    }
+    Json(aplomb_core::chaine::chainer(&lues[0], &lues[1], &lues[2])).into_response()
 }
 
 #[derive(Deserialize, Default)]
@@ -450,6 +530,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             historique: VecDeque::new(),
             compteurs: [0; 4],
             autorite,
+            annonces: Default::default(),
         })),
         diffusion,
         signataire: Arc::new(signataire),
@@ -467,6 +548,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/historique", get(historique))
         .route("/admin/events", get(flux))
         .route("/admin/verify", get(verifier_journal))
+        .route("/admin/sessions", get(sessions))
+        .route("/admin/chaine", get(chaine))
         .route("/connexion", get(connexion))
         .route("/admin/requete", post(requete_signee))
         .route("/admin/deconnexion", post(deconnexion))
@@ -484,7 +567,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let l_llm = tokio::net::TcpListener::bind(opts.ecoute_llm).await.map_err(|e| e.to_string())?;
         let (agent, amont) = {
             let m = &etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat;
-            (m.agent.clone(), m.perimetre.domaines_modele.first().map(|d| format!("https://{d}")))
+            (m.agent.clone(), m.perimetre.domaines_modele.first().map(|d| aplomb_core::modele::amont(d)).transpose()?)
         };
         let reglages = crate::passerelle::Reglages { agent: agent.clone(), plafond: opts.plafond_envoi };
         tokio::spawn(crate::passerelle::servir(l_passerelle, etat_scellement.clone(), reglages));

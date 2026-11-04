@@ -17,7 +17,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use aplomb_core::action::{EvenementOutil, Phase};
-use aplomb_core::modele::{analyser_reponse, chemin_permis, entetes_amont};
+use aplomb_core::modele::{analyser_reponse, chemin_permis, entetes_amont, Annonce};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
@@ -30,6 +30,8 @@ const OUTIL: &str = "Modele";
 const REQUETE_MAX: usize = 64 * 1024 * 1024;
 /// Part de la réponse conservée pour le bilan.
 const REPONSE_LUE_MAX: usize = 16 * 1024 * 1024;
+/// Numéro d'échange : relie l'envoi au bilan dans le journal.
+static ECHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub struct Reglages {
     pub agent: String,
@@ -76,13 +78,22 @@ fn evenement(agent: &str, ressource: &str, methode: &str) -> EvenementOutil {
         chemin_reel: None,
         contenu_execute: None,
         nonce: None,
+        appel: None,
     }
 }
 
 async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, entetes: HeaderMap, corps: Bytes) -> Response {
     let chemin = uri.path();
     let evt = evenement(&r.agent, chemin, methode.as_str());
-    let base = json!({"outil": OUTIL, "verbe": "modele", "ressource": chemin, "methode": methode.as_str()});
+    let echange = ECHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    // Session de l'agent, s'il la donne (Claude Code : en-tête x-claude-code-session-id).
+    let session_agent = entetes
+        .iter()
+        .find(|(n, _)| n.as_str().contains("session-id"))
+        .and_then(|(_, v)| v.to_str().ok())
+        .map(String::from);
+    let base = json!({"outil": OUTIL, "verbe": "modele", "ressource": chemin, "methode": methode.as_str(),
+        "echange": echange, "session_agent": session_agent});
     let journaliser = |mut detail: Value, extra: Value| {
         if let (Some(d), Some(e)) = (detail.as_object_mut(), extra.as_object()) {
             d.extend(e.clone());
@@ -141,12 +152,20 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
     }
     // Bilan journalisé quand le flux se termine (ou que l'agent coupe).
     let bilan = Arc::new(Mutex::new(Bilan { etat: etat.clone(), evt: evt.clone(), base, statut: statut.as_u16(), lu: Vec::new(), recu: 0 }));
+    let annonce = Annonce { echange, session_agent };
     let flux = reponse.bytes_stream().map(move |morceau| {
         if let Ok(m) = &morceau {
             let mut b = bilan.lock().expect("verrou");
             b.recu += m.len() as u64;
             if b.lu.len() + m.len() <= REPONSE_LUE_MAX {
                 b.lu.extend_from_slice(m);
+            }
+            // Annonce au fil de l'eau : l'agent peut exécuter l'outil dès la fin du flux,
+            // avant même que le bilan soit écrit.
+            if m.windows(8).any(|f| f == b"tool_use") {
+                for o in analyser_reponse(&b.lu).outils {
+                    b.etat.annoncer(&o.id, annonce.clone());
+                }
             }
         }
         morceau
@@ -170,7 +189,10 @@ impl Drop for Bilan {
         if let Some(d) = detail.as_object_mut() {
             d.insert("statut".into(), json!(self.statut));
             d.insert("recu".into(), json!(self.recu));
-            d.insert("outils_demandes".into(), json!(a.outils));
+            for o in &a.outils {
+                self.etat.annoncer(&o.id, Annonce { echange: d["echange"].as_u64().unwrap_or(0), session_agent: d["session_agent"].as_str().map(String::from) });
+            }
+            d.insert("outils".into(), json!(a.outils));
             d.insert("jetons_entree".into(), json!(a.jetons_entree));
             d.insert("jetons_sortie".into(), json!(a.jetons_sortie));
         }
