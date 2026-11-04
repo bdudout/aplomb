@@ -8,6 +8,8 @@
 //!   - `GET /connexion?ticket=…` : ouvre une session de navigateur (cookie) ;
 //!   - `GET /admin/etat`, `/admin/historique`, `/admin/events` (SSE), `/admin/verify`,
 //!     `POST /admin/gel`, `/admin/degel`, `/admin/deconnexion` : session requise ;
+//!   - `GET /admin/revues`, `POST /admin/revue` : file de revue des passerelles (une action
+//!     en revue attend qu'un opérateur ou un approbateur l'approuve ou la refuse) ;
 //!   - `GET /` : la page de la vue technique (sans données).
 //!
 //! Geler se fait seul ; dégeler exige deux comptes distincts (quatre yeux).
@@ -19,7 +21,7 @@
 //!
 //! Limites : pas de mTLS (reporté au niveau 3, J3) ; HTTP en clair sur la boucle
 //! locale ; le fichier de comptes n'est pas encore signé.
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -101,7 +103,19 @@ struct Interne {
     autorite: Autorite,
     /// Appels d'outils annoncés par le modèle (proxy LLM), pour le contrôle croisé.
     annonces: aplomb_core::modele::Annonces,
+    /// Actions des passerelles en attente d'une réponse humaine, par numéro.
+    revues: HashMap<u64, Revue>,
+    revue_suivante: u64,
 }
+
+/// Action en revue : ce que voit l'humain, et la passerelle qui attend sa réponse.
+struct Revue {
+    publique: Value,
+    reponse: tokio::sync::oneshot::Sender<(bool, String)>,
+}
+
+/// Temps laissé à l'humain pour répondre ; ensuite, refus.
+const DELAI_REVUE: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[derive(Clone)]
 pub(crate) struct Etat {
@@ -236,6 +250,45 @@ pub(crate) fn constater(etat: &Etat, evt: &EvenementOutil, contenu: Value) -> Re
     let evenement = json!({"type": "observation", "horodatage": t, "session": evt.session, "seq": e.seq, "detail": contenu});
     etat.publier(&mut interne, evenement);
     Ok(())
+}
+
+/// Soumet une action des passerelles à un humain (Aplomb Watch) et attend sa réponse :
+/// le compte qui approuve, ou le motif du refus. Sans réponse dans le délai : refus. L'issue
+/// est journalisée dans la session de l'action.
+pub(crate) async fn demander_revue(etat: &Etat, evt: &EvenementOutil, resume: &str, motif: &str) -> Result<String, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let id = {
+        let mut interne = etat.interne.lock().expect("verrou");
+        interne.revue_suivante += 1;
+        let id = interne.revue_suivante;
+        let publique = json!({"id": id, "session": evt.session, "mode": evt.mode, "outil": evt.outil, "resume": resume,
+            "motif": motif, "horodatage": maintenant(), "appel": evt.appel, "delai": DELAI_REVUE.as_secs()});
+        interne.revues.insert(id, Revue { publique: publique.clone(), reponse: tx });
+        etat.publier(&mut interne, json!({"type": "revue", "horodatage": maintenant(), "session": evt.session, "detail": publique}));
+        id
+    };
+    let (approuvee, par) = match tokio::time::timeout(DELAI_REVUE, rx).await {
+        Ok(Ok(r)) => r,
+        _ => {
+            let mut interne = etat.interne.lock().expect("verrou");
+            interne.revues.remove(&id);
+            let fin = json!({"id": id, "issue": "expirée"});
+            etat.publier(&mut interne, json!({"type": "revue-close", "horodatage": maintenant(), "session": evt.session, "detail": fin}));
+            (false, String::new())
+        }
+    };
+    let issue = match (approuvee, par.is_empty()) {
+        (true, _) => "approuvée",
+        (false, true) => "expirée",
+        (false, false) => "refusée",
+    };
+    let _ = constater(etat, evt, json!({"outil": evt.outil, "verbe": "revue", "ressource": resume, "appel": evt.appel,
+        "revue": issue, "par": par}));
+    match issue {
+        "approuvée" => Ok(par),
+        "expirée" => Err(format!("revue sans réponse en {} s : refus", DELAI_REVUE.as_secs())),
+        _ => Err(format!("revue refusée par {par}")),
+    }
 }
 
 async fn decider(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> impl IntoResponse {
@@ -474,6 +527,47 @@ async fn degel(State(etat): State<Etat>, entetes: HeaderMap, corps: Option<Json<
     action_web(etat, entetes, corps.map(|j| j.0).unwrap_or_default(), Operation::Degel).await
 }
 
+/// File de revue des passerelles.
+async fn revues(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    let mut interne = etat.interne.lock().expect("verrou");
+    if compte_web(&mut interne, &entetes).is_none() {
+        return non_connecte();
+    }
+    let mut liste: Vec<Value> = interne.revues.values().map(|r| r.publique.clone()).collect();
+    liste.sort_by_key(|r| r["id"].as_u64());
+    Json(Value::Array(liste)).into_response()
+}
+
+#[derive(Deserialize)]
+struct Reponse {
+    id: u64,
+    approuver: bool,
+}
+
+/// Réponse d'un opérateur ou d'un approbateur à une revue (session de navigateur, anti-CSRF).
+async fn repondre_revue(State(etat): State<Etat>, entetes: HeaderMap, Json(r): Json<Reponse>) -> Response {
+    if entetes.get("x-aplomb").and_then(|v| v.to_str().ok()) != Some("1") {
+        return (StatusCode::FORBIDDEN, Json(json!({"erreur": "en-tête X-Aplomb manquant"}))).into_response();
+    }
+    let mut interne = etat.interne.lock().expect("verrou");
+    let Some(compte) = compte_web(&mut interne, &entetes) else { return non_connecte() };
+    use aplomb_core::autorite::Role;
+    if !interne.autorite.roles(&compte).iter().any(|x| matches!(x, Role::Operateur | Role::Approbateur)) {
+        return (StatusCode::FORBIDDEN, Json(json!({"erreur": "rôle opérateur ou approbateur requis"}))).into_response();
+    }
+    let Some(revue) = interne.revues.remove(&r.id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({"erreur": "revue inconnue ou déjà close"}))).into_response();
+    };
+    let issue = if r.approuver { "approuvée" } else { "refusée" };
+    let session = revue.publique["session"].as_str().unwrap_or_default().to_string();
+    let detail = json!({"action": "revue", "id": r.id, "issue": issue, "compte": compte, "outil": revue.publique["outil"]});
+    let t = maintenant();
+    let _ = interne.journal.ajouter(SESSION_ADMIN, "administration", detail.clone(), t);
+    etat.publier(&mut interne, json!({"type": "revue-close", "horodatage": t, "session": session, "detail": detail}));
+    let _ = revue.reponse.send((r.approuver, compte));
+    Json(json!({"issue": issue})).into_response()
+}
+
 #[derive(Deserialize)]
 struct Ticket {
     ticket: String,
@@ -564,6 +658,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             compteurs: [0; 4],
             autorite,
             annonces: Default::default(),
+            revues: HashMap::new(),
+            revue_suivante: 0,
         })),
         diffusion,
         signataire: Arc::new(signataire),
@@ -588,6 +684,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/deconnexion", post(deconnexion))
         .route("/admin/gel", post(gel))
         .route("/admin/degel", post(degel))
+        .route("/admin/revues", get(revues))
+        .route("/admin/revue", post(repondre_revue))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(etat.clone());
     let etat_scellement = etat;

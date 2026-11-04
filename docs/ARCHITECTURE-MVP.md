@@ -74,7 +74,7 @@ aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
   - **Passerelle MCP** (niveau 2) : les serveurs MCP du mandat (`perimetre.serveurs_mcp`) sont
     lancés par Aplomb sur l'hôte, un processus par session ; l'agent les joint en HTTP par
     `http://127.0.0.1:7704/mcp/<nom>`. Chaque `tools/call` est jugé et journalisé avant
-    transmission ; revue = refus (pas de canal vers l'humain). La définition de chaque outil
+    transmission ; une revue attend la réponse d'un humain dans Aplomb Watch (file de revue, 2 min, puis refus). La définition de chaque outil
     est épinglée à sa première présentation : si elle change ensuite, l'outil est refusé.
     Seuls les outils listés au mandat passent sans revue (règle `revue-outil-mcp`).
   - **Provenance** (EF-B5, EF-D2) : une page web, un fichier hors du dépôt, la sortie réseau

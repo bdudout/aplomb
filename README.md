@@ -61,7 +61,7 @@ déverrouillage. macOS et Linux ; Windows : phrase à chaque commande pour l'ins
 - Banc d'essai autonome : `scripts/banc.sh` monte une instance jetable (phrase, comptes,
   mandat, jeton et journal à elle, dans un dossier temporaire) et un faux modèle, puis rejoue
   le parcours d'un agent confiné : proxy LLM, hook avec identifiant d'appel, contrôle croisé,
-  vue chaînée, passerelle MCP, provenance, délégation, déverrouillage (40 vérifications). Rien n'est
+  vue chaînée, passerelle MCP, provenance, délégation, file de revue, déverrouillage (43 vérifications). Rien n'est
   demandé, rien du réel n'est touché.
 - Modèle local (Ollama, vLLM, llama.cpp) : `domaines_modele: ["http://127.0.0.1:11434"]` ;
   HTTP en clair n'est accepté que vers la machine elle-même.
@@ -112,9 +112,10 @@ poste).
 | Réponses signées | Le hook n'accepte que les réponses signées sur son nonce par la clé du superviseur (`--cle-serveur cles/reponses.pub`) : faux superviseur et rejeu refusés (EF-S3) |
 | Gouvernance | Mandat et comptes cosignés par deux membres distincts au moins (fichier de confiance, seuil 2) ; `aplomb init` prépare tout en une commande (EF-S2) |
 | Scellement | Toutes les 60 s (`--scellement`) et à l'arrêt : racine de Merkle des sessions, signée et chaînée ; troncature, suppression et réécriture détectées ; ancrage hors ligne (EF-I1, EF-I2) |
-| Aplomb Gate (passerelle sortante) | `127.0.0.1:7702` pour `HTTPS_PROXY` : domaines du mandat, adresses internes refusées (ressource réelle), envoi plafonné à 1 Mio par connexion, revue = refus ; tout est journalisé (EF-C1, EF-C4, EF-B4) |
+| Aplomb Gate (passerelle sortante) | `127.0.0.1:7702` pour `HTTPS_PROXY` : domaines du mandat, adresses internes refusées (ressource réelle), envoi plafonné à 1 Mio par connexion, une revue attend la réponse d'un humain dans Aplomb Watch ; tout est journalisé (EF-C1, EF-C4, EF-B4) |
 | Proxy LLM (niveau 2) | `127.0.0.1:7703` pour `ANTHROPIC_BASE_URL` : amont = `domaines_modele` du mandat ; seuls les appels de conversation passent ; clé de l'agent retirée, jeton d'Aplomb injecté (`aplomb modele jeton`, chiffré) ; appels, jetons et outils demandés journalisés ; coupé par le gel |
 | Passerelle MCP (niveau 2) | `127.0.0.1:7704/mcp/<nom>` : serveurs du mandat (`serveurs_mcp`) lancés par Aplomb ; chaque appel d'outil jugé et journalisé ; définitions d'outils épinglées (une description qui change = outil refusé) |
+| File de revue | Une action des passerelles (Gate, MCP) en revue attend 2 min la réponse d'un opérateur ou d'un approbateur dans Aplomb Watch (Approuver / Refuser) ; sans réponse, refus ; l'issue et le compte sont journalisés |
 | Provenance (EF-B5) | Après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt, sortie de sous-agent), les actions sensibles de la session passent en revue |
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |
 | Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |

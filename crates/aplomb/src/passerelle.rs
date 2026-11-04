@@ -10,8 +10,8 @@
 //!    mais un envoi massif vers un domaine autorisé en lecture coupe la connexion (EF-C4) ;
 //! 4. le bilan (octets envoyés, reçus, coupure) est journalisé.
 //!
-//! Une décision « revue » est un refus : la passerelle n'a aucun moyen de demander à un
-//! humain. Au niveau 1, l'agent peut ignorer `HTTPS_PROXY` ; au niveau 3 (conteneur), la
+//! Une décision « revue » fait attendre la connexion : un opérateur l'approuve ou la refuse
+//! dans Aplomb Watch (2 min, puis refus). Au niveau 1, l'agent peut ignorer `HTTPS_PROXY` ; au niveau 3 (conteneur), la
 //! passerelle est sa seule sortie.
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::serveur::{constater, juger, Etat};
+use crate::serveur::{constater, demander_revue, juger, Etat};
 
 /// Session du journal pour le trafic de la passerelle.
 const SESSION: &str = "passerelle";
@@ -87,9 +87,11 @@ async fn traiter(mut client: TcpStream, etat: Etat, reglages: &Reglages) -> std:
     };
     match decision.verdict {
         Verdict::Allow => {}
+        // Revue : la connexion attend la réponse d'un humain dans Aplomb Watch.
         Verdict::Review => {
-            let motif = format!("{} — la passerelle ne peut pas demander à un humain : refus", decision.motif);
-            return refuser(&mut client, "403 Forbidden", &motif).await;
+            if let Err(e) = demander_revue(&etat, &evt, &cible.url(), &decision.motif).await {
+                return refuser(&mut client, "403 Forbidden", &format!("{e} — {}", decision.motif)).await;
+            }
         }
         _ => return refuser(&mut client, "403 Forbidden", &decision.motif).await,
     }

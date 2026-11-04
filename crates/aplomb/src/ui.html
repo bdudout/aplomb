@@ -31,6 +31,12 @@
   .v { font-weight:600; text-transform:uppercase; font-size:12px; }
   .allow { color:var(--allow); } .review { color:var(--review); } .deny { color:var(--deny); } .gel { color:var(--gel); }
   .bandeau { display:none; padding:8px 20px; background:var(--gel); color:#fff; font-weight:600; }
+  .revues { margin-bottom:12px; }
+  .revue { background:var(--carte); border:2px solid var(--review); border-radius:8px; padding:10px 12px; margin-bottom:8px;
+           display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  .revue .quoi { flex:1 1 320px; min-width:0; }
+  .revue .res { font-family:ui-monospace, monospace; font-size:12px; word-break:break-all; }
+  button.ok { border-color:var(--allow); color:var(--allow); }
   .onglets { display:flex; gap:4px; margin-bottom:12px; }
   .onglets button[aria-selected="true"] { border-color:var(--texte); font-weight:600; }
   .tour { background:var(--carte); border:1px solid var(--ligne); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
@@ -66,6 +72,7 @@
     <button id="quitter">Se déconnecter</button>
     <span class="doux" id="info"></span>
   </div>
+  <section class="revues" id="revues" aria-live="polite"></section>
   <div class="onglets" role="tablist">
     <button role="tab" id="o-flux" aria-selected="true">Flux en direct</button>
     <button role="tab" id="o-chaine" aria-selected="false">Vue chaînée</button>
@@ -93,7 +100,7 @@ function ajouter(evt) {
   const d = evt.detail || {};
   const tr = document.createElement("tr");
   const heure = new Date(evt.horodatage).toLocaleTimeString("fr-FR");
-  const verdict = evt.type === "decision" ? d.verdict : evt.type;
+  const verdict = evt.type === "decision" ? d.verdict : d.revue ? "revue " + d.revue : evt.type;
   const cellules = [
     heure,
     (evt.session || "—").slice(0, 8),
@@ -101,6 +108,7 @@ function ajouter(evt) {
     null,
     d.ressource || "",
     evt.type === "decision" ? `${d.regle} — ${d.motif}`
+      : d.revue ? (d.par ? `par ${d.par}` : "sans réponse dans le délai")
       : [d.compte || (d.demandeur ? `${d.demandeur} + ${d.approbateur}` : ""), d.session ? `session ${d.session}` : "global"].filter(Boolean).join(" · "),
   ];
   cellules.forEach((c, i) => {
@@ -153,6 +161,34 @@ $("verifier").onclick = async () => {
   const v = await (await fetch("/admin/verify")).json();
   $("info").textContent = v.intact ? `journal intact : ${v.sessions} session(s), ${v.entrees} entrées` : `JOURNAL ROMPU : ${v.fichier} — ${v.erreur}`;
 };
+
+// --- Revues en attente : les passerelles attendent une réponse humaine ---
+async function chargerRevues() {
+  const r = await fetch("/admin/revues");
+  if (!r.ok) return;
+  const zone = $("revues");
+  zone.replaceChildren();
+  for (const v of await r.json()) {
+    const carte = el("div", "revue");
+    const quoi = el("div", "quoi");
+    const reste = Math.max(0, Math.round((v.horodatage + v.delai * 1000 - Date.now()) / 1000));
+    quoi.append(el("b", "review", "Revue demandée "), el("span", "doux", `${v.mode} · ${v.outil} · session ${(v.session || "").slice(0, 8)} · ${reste} s pour répondre`),
+      el("div", "res", v.resume), el("div", "doux", v.motif));
+    const oui = el("button", "ok", "Approuver"), non = el("button", "danger", "Refuser");
+    const repondre = async (approuver) => {
+      oui.disabled = non.disabled = true;
+      const x = await fetch("/admin/revue", { method: "POST", headers: { "X-Aplomb": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({ id: v.id, approuver }) });
+      const j = await x.json().catch(() => ({}));
+      $("info").textContent = x.ok ? `revue ${j.issue}` : `refusé : ${j.erreur || x.status}`;
+      chargerRevues();
+    };
+    oui.onclick = () => repondre(true);
+    non.onclick = () => repondre(false);
+    carte.append(quoi, oui, non);
+    zone.appendChild(carte);
+  }
+}
 
 // --- Vue chaînée : appel au modèle → outils demandés → décisions → réseau ---
 function el(balise, classe, contenu) {
@@ -247,9 +283,15 @@ $("recharger").onclick = chargerSessions;
 
 (async () => {
   if (!(await rafraichir())) return;
-  for (const evt of await (await fetch("/admin/historique")).json()) ajouter(evt);
+  const estRevue = (evt) => evt.type === "revue" || evt.type === "revue-close";
+  for (const evt of await (await fetch("/admin/historique")).json()) if (!estRevue(evt)) ajouter(evt);
+  chargerRevues();
   const flux = new EventSource("/admin/events");
-  flux.onmessage = (m) => { ajouter(JSON.parse(m.data)); rafraichir(); };
+  flux.onmessage = (m) => {
+    const evt = JSON.parse(m.data);
+    if (estRevue(evt)) chargerRevues(); else ajouter(evt);
+    rafraichir();
+  };
 })();
 </script>
 </body>

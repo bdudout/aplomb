@@ -78,7 +78,7 @@ python3 "$RACINE/scripts/faux-modele.py" "${P}04" requetes.jsonl & PIDS="$PIDS $
 "$APLOMB" serve --mandat mandats/banc.yaml --ecoute-decision "127.0.0.1:${P}00" --ecoute-admin "127.0.0.1:${P}01" \
   --ecoute-passerelle "127.0.0.1:${P}02" --ecoute-llm "127.0.0.1:${P}03" --ecoute-mcp "127.0.0.1:${P}05" \
   --mandat-enfant mandats/explorer.yaml > serve.log 2>&1 & PIDS="$PIDS $!"
-for _ in $(seq 50); do curl -s -o /dev/null "http://127.0.0.1:${P}01/" && break; sleep 0.1; done
+for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${P}01/" && break; sleep 0.1; done
 
 S="agent-banc-$$"
 echo "--- Proxy LLM"
@@ -146,7 +146,26 @@ verifier "session MCP ouverte par la passerelle" '[ -n "$SID" ]'
 rpc "$SID" '{"jsonrpc":"2.0","method":"notifications/initialized"}' > /dev/null
 verifier "outils listés" 'rpc "$SID" "$LISTE" | grep -q chercher'
 verifier "outil déclaré transmis" 'appel_mcp "$SID" chercher | grep -q "résultat de chercher"'
-verifier "outil non déclaré refusé (revue = refus)" 'appel_mcp "$SID" effacer | grep -q "\"isError\":true"'
+# Outil non déclaré : revue. L'appel attend la réponse d'un opérateur dans Aplomb Watch.
+ADMIN="http://127.0.0.1:${P}01"
+repondre_revue() {  # approuver (true/false) ; répond à la première revue en attente
+  for _ in $(seq 50); do
+    ID="$(curl -s -b biscuits "$ADMIN/admin/revues" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r[0]["id"] if r else "")')"
+    [ -n "$ID" ] && break; sleep 0.1
+  done
+  curl -s -b biscuits -X POST "$ADMIN/admin/revue" -H "X-Aplomb: 1" -H "content-type: application/json" \
+    -d "{\"id\":$ID,\"approuver\":$1}" > /dev/null
+}
+appel_mcp "$SID" effacer > revue-oui.json & ATTENTE=$!
+repondre_revue true; wait "$ATTENTE"
+verifier "revue approuvée dans Aplomb Watch : outil transmis" 'grep -q "résultat de effacer" revue-oui.json'
+appel_mcp "$SID" effacer > revue-non.json & ATTENTE=$!
+repondre_revue false; wait "$ATTENTE"
+verifier "revue refusée : outil non transmis" 'grep -q "revue refusée par alice" revue-non.json'
+CORPS_REVUE='{"id":1,"approuver":true}'
+verifier "réponse sans en-tête anti-CSRF refusée" \
+  '[ "$(curl -s -o /dev/null -w %{http_code} -b biscuits -X POST "$ADMIN/admin/revue" -H content-type:application/json -d "$CORPS_REVUE")" = 403 ]'
+verifier "issue de la revue au journal" 'grep -q "\"action\":\"revue\"" journal/_administration-*.jsonl'
 verifier "serveur absent du mandat : 404" \
   '[ "$(curl -s -o /dev/null -w %{http_code} -X POST http://127.0.0.1:${P}05/mcp/autre -H content-type:application/json -d "$INIT")" = 404 ]'
 verifier "session MCP inconnue refusée" \
@@ -193,7 +212,7 @@ verifier "socket réservé à l'utilisateur (0600)" '[ "$(stat -f %Lp "$SOCKET" 
 env -u APLOMB_PHRASE "$APLOMB" serve --mandat mandats/banc.yaml --ecoute-decision "127.0.0.1:${P}20" --ecoute-admin "127.0.0.1:${P}21" \
   --ecoute-passerelle "127.0.0.1:${P}22" --ecoute-llm "127.0.0.1:${P}23" --ecoute-mcp "127.0.0.1:${P}25" < /dev/null > serve-sans-phrase.log 2>&1 &
 PIDS="$PIDS $!"
-for _ in $(seq 50); do grep -q "cosigné par" serve-sans-phrase.log && break; sleep 0.1; done
+for _ in $(seq 300); do grep -q "cosigné par" serve-sans-phrase.log && break; sleep 0.1; done
 verifier "serve démarre sans phrase de passe" 'grep -q "cosigné par" serve-sans-phrase.log'
 CLIENT="import socket; s = socket.socket(socket.AF_UNIX); s.connect('$SOCKET'); s.sendall(b'{\"op\":\"cle\"}\n'); print(s.recv(500).decode())"
 python3 -c "$CLIENT" > client.log 2>&1

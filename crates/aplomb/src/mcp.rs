@@ -5,8 +5,8 @@
 //! 1. Seuls les serveurs du mandat signé existent ; Aplomb les lance lui-même (stdio), un
 //!    processus par session MCP, avec un environnement minimal.
 //! 2. Chaque `tools/call` est jugé avant d'être transmis (journal d'abord, fail-closed) ;
-//!    un refus revient à l'agent comme un résultat d'outil en erreur. Revue = refus : la
-//!    passerelle n'a pas de canal vers l'humain (le hook, lui, en a un).
+//!    un refus revient à l'agent comme un résultat d'outil en erreur. Une revue attend la
+//!    réponse d'un humain dans Aplomb Watch (2 min, puis refus).
 //! 3. Les définitions d'outils sont épinglées à leur première présentation ; un outil dont
 //!    la définition change ensuite est refusé (`aplomb_core::mcp::Epingles`).
 //! 4. Gel : plus aucun appel ne passe.
@@ -32,7 +32,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::oneshot;
 
-use crate::serveur::{constater, juger, Etat};
+use crate::serveur::{constater, demander_revue, juger, Etat};
 
 /// Session du journal pour la passerelle MCP.
 const SESSION: &str = "mcp";
@@ -263,10 +263,18 @@ async fn traiter(p: &Partage, serveur: &ServeurMcp, processus: &Processus, m: Va
         Ok((d, _)) => d,
         Err(e) => return refus(&id, &format!("{e} — fail-closed")),
     };
-    if d.verdict != Verdict::Allow {
-        let palier = serde_json::to_value(d.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-        let revue = if d.verdict == Verdict::Review { " (revue humaine requise : non disponible par la passerelle)" } else { "" };
-        return refus(&id, &format!("{outil} {palier}{revue} — {}", d.motif));
+    match d.verdict {
+        Verdict::Allow => {}
+        Verdict::Review => {
+            let resume = format!("{outil} {}", appel.arguments);
+            if let Err(e) = demander_revue(&p.etat, &evt, &resume, &d.motif).await {
+                return refus(&id, &format!("{outil} : {e} — {}", d.motif));
+            }
+        }
+        _ => {
+            let palier = serde_json::to_value(d.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+            return refus(&id, &format!("{outil} {palier} — {}", d.motif));
+        }
     }
     let r = transmettre(processus, &m, &id).await;
     let mut apres = evt.clone();
