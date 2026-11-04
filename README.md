@@ -11,11 +11,90 @@ par hook (niveau d'assurance 1, coopératif).
 |---|---|---|
 | **Aplomb** | Cœur de décision (`aplomb-core`), service `aplomb serve`, hook Claude Code | MVP |
 | **Aplomb Gate** | Passerelles : réseau sortant (`127.0.0.1:7702`), proxy LLM (`127.0.0.1:7703`), passerelle MCP (`127.0.0.1:7704`) | faites, avec le confinement |
-| **Aplomb Watch** | Journal scellé, vue technique, export Mermaid, puis indicateurs pour le management | journal, flux en direct et vue chaînée faits |
+| **Aplomb Watch** | Journal scellé, vue technique, export Mermaid, puis indicateurs pour le management | journal, flux en direct, vue chaînée et file de revue faits |
 | **Aplomb Pentest** | Profil dédié aux tests d'intrusion supervisés | à venir |
 
 - Architecture du MVP : [`docs/ARCHITECTURE-MVP.md`](docs/ARCHITECTURE-MVP.md)
 - Décision : [`docs/adr/0001-coeur-reseau-et-modes-de-branchement.md`](docs/adr/0001-coeur-reseau-et-modes-de-branchement.md)
+
+## Les parties d'Aplomb
+
+### Aplomb, le cœur de décision
+
+- **Mandat** (`mandats/*.yaml`) : ce que l'agent a le droit de faire.
+  - Il fixe le dépôt de travail, les domaines joignables, les serveurs MCP, le modèle et les bornes.
+  - Il est cosigné par deux membres au moins. Un mandat modifié sans nouvelle cosignature est refusé au démarrage.
+- **Profils** (`profils/code/`) : règles Cedar propres à un type d'agent.
+  - `regles.cedar` permet ou refuse.
+  - `revue.cedar` désigne ce qui demande un humain.
+  - Le profil C « agent de code » traduit chaque outil de Claude Code en effet : lire, écrire, exécuter, réseau, outil MCP, déléguer…
+- **Superviseur** (`aplomb-core`, bibliothèque pure, sans code `unsafe`) : combine mandat, règles, moniteurs, bornes et gel. Une décision ne peut que se durcir (Allow < Review < Deny < Gel).
+  - **Moniteurs déterministes** :
+    - provenance : après un contenu non fiable, les actions sensibles passent en revue ;
+    - contrôle croisé : une action qui ne correspond à aucun appel demandé par le modèle est signalée.
+  - **Bornes** : refus, revues, domaines et envois comptés par session. Un dépassement gèle la session.
+  - **Délégation** : un sous-agent est jugé par son propre mandat, inclus dans celui du parent, et par le mandat parent. Le plus strict l'emporte.
+- **Service** `aplomb serve` : sert les décisions (`127.0.0.1:7700`) et tient le journal.
+  - S'il est injoignable, l'agent est bloqué (fail-closed).
+- **Hook Claude Code** (`aplomb hook`, niveau 1) : soumet chaque action avant exécution.
+  - Il n'accepte que des réponses signées sur son nonce : un faux superviseur ou un rejeu est refusé.
+  - En Review, il fait confirmer l'action dans Claude Code.
+
+### Aplomb Gate, les passerelles
+
+- **Passerelle réseau** (`127.0.0.1:7702`, `HTTPS_PROXY`) :
+  - chaque destination est jugée ;
+  - les adresses internes sont refusées après résolution ;
+  - l'envoi est plafonné par connexion ;
+  - le volume échangé est journalisé.
+- **Proxy LLM** (`127.0.0.1:7703`, `ANTHROPIC_BASE_URL`, niveau 2) :
+  - il relaie seulement les appels de conversation vers le modèle du mandat ;
+  - il retire la clé de l'agent et injecte le jeton d'Aplomb ;
+  - il journalise les appels, les jetons et les outils demandés par le modèle.
+- **Passerelle MCP** (`127.0.0.1:7704/mcp/<nom>`, niveau 2) :
+  - Aplomb lance lui-même les serveurs MCP du mandat ;
+  - chaque appel d'outil est jugé ;
+  - les définitions d'outils sont épinglées : si une description change, l'outil est refusé.
+- **Confinement** (`conteneur/`, niveau 3) : Claude Code tourne dans un réseau Docker sans route vers l'extérieur.
+  - Ses seules sorties sont les passerelles et la décision.
+  - Le hook et ses paramètres appartiennent à root.
+  - `conteneur/verifier.sh` rejoue 20 vérifications d'isolement.
+
+Quand une passerelle obtient une décision Review, l'action attend la réponse d'un humain dans Aplomb Watch : c'est la file de revue.
+
+### Aplomb Watch, voir et répondre
+
+- **Journal** : chaîne de hachage par session.
+  - Les contenus venant de l'agent sont chiffrés par session et effaçables avec `aplomb effacer`.
+  - Un scellé signé (racine de Merkle) est posé toutes les 60 s et à l'arrêt.
+  - Il peut être ancré hors ligne (`aplomb ancrer`) et vérifié avec `aplomb verify`.
+- **Vue technique** (`127.0.0.1:7701`) : on s'y connecte par un lien à usage unique (`aplomb admin connexion`).
+  - **Flux en direct** des décisions, avec les compteurs.
+  - **File de revue** : Approuver ou Refuser une action en attente.
+  - **Vue chaînée** : chaque échange avec le modèle, les outils qu'il a demandés et les actions réellement exécutées, avec les écarts.
+  - **Boutons** : geler, dégeler à quatre yeux, vérifier le journal.
+- **Export Mermaid** : la séquence des requêtes d'un agent sous forme de diagramme.
+
+### Administration, gouvernance et clés
+
+- **Comptes nominatifs** (`comptes.yaml`, clés ed25519) avec trois rôles : lecteur, opérateur, approbateur.
+  - Les requêtes sont signées et protégées contre le rejeu.
+  - Un compte seul peut geler ; dégeler demande deux comptes distincts (quatre yeux).
+- **Gouvernance** : mandats et comptes sont cosignés (`aplomb cosigner`) selon un seuil fixé par le fichier de confiance.
+  - `aplomb init` prépare tout en une commande.
+- **Clés** : une clé maîtresse protégée par phrase de passe (Argon2id) enveloppe toutes les autres.
+  - `aplomb deverrouiller` garde la clé disponible pour une durée, dans un service réservé au binaire `aplomb`.
+  - Sur macOS, les opérations sensibles demandent Touch ID ; sous Linux, la phrase de passe.
+
+### Outils de test
+
+- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (43 vérifications), sans rien toucher du réel.
+- `scripts/scenarios.sh` : scénarios du hook, dont ceux de l'annexe « Assume misalignment ».
+- `scripts/faux-modele.py`, `scripts/faux-mcp.py` : un modèle et un serveur MCP factices pour le banc.
+
+### Aplomb Pentest (à venir)
+
+Profil dédié aux tests d'intrusion supervisés : périmètre d'audit au mandat et preuves au journal.
 
 ## Licence
 
