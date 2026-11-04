@@ -9,13 +9,19 @@
 //! - `aplomb mermaid` — exporte les sessions en diagrammes de séquence Mermaid ;
 //! - `aplomb effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2) ;
 //! - `aplomb compte` / `aplomb admin` — comptes d'administration et requêtes signées (EF-S2).
-#![forbid(unsafe_code)]
+// Pas de code `unsafe`, sauf les appels système des deux modules qui en ont besoin
+// (identité du pair d'un socket, Touch ID) ; le cœur `aplomb-core` l'interdit tout à fait.
+#![deny(unsafe_code)]
 
 mod admin;
 mod cle_maitresse;
 mod gouverner;
 mod hook;
+#[allow(unsafe_code)]
+mod deverrouillage;
 mod mcp;
+#[allow(unsafe_code)]
+mod presence;
 mod modele;
 mod passerelle;
 mod serveur;
@@ -65,11 +71,26 @@ enum Commande {
         #[arg(long, default_value = gouverner::CONFIANCE)]
         confiance: PathBuf,
     },
+    /// Phrase de passe une fois pour une durée : ensuite, rien pour serve et admin gel,
+    /// Touch ID (ou la phrase) pour les opérations sensibles.
+    Deverrouiller {
+        #[arg(long, default_value = deverrouillage::DUREE_DEFAUT, value_parser = deverrouillage::lire_duree)]
+        duree: std::time::Duration,
+    },
+    /// Met fin au déverrouillage : la phrase sera redemandée.
+    Verrouiller,
+    /// Service de déverrouillage (lancé par `deverrouiller`).
+    #[command(hide = true)]
+    ServiceCle {
+        #[arg(long)]
+        secondes: u64,
+    },
     /// Ajoute sa signature à un mandat ou au fichier de comptes (deux membres requis).
+    /// `--compte` se répète quand plusieurs clés sont sur ce poste : une seule phrase.
     Cosigner {
         fichier: PathBuf,
-        #[arg(long)]
-        compte: String,
+        #[arg(long = "compte", required = true)]
+        comptes: Vec<String>,
         #[arg(long)]
         cle: Option<PathBuf>,
         #[arg(long, default_value = gouverner::CONFIANCE)]
@@ -227,8 +248,12 @@ fn main() -> ExitCode {
             let mandats = if mandats.is_empty() { mandats_par_defaut() } else { mandats };
             gouverner::init(&membres, &comptes, &mandats, &confiance)
         }
-        Commande::Cosigner { fichier, compte, cle, confiance } => {
-            gouverner::cosigner(&fichier, &compte, cle.as_deref(), &confiance)
+        Commande::Cosigner { fichier, comptes, cle, confiance } => {
+            if cle.is_some() && comptes.len() > 1 {
+                Err("--cle ne vaut que pour un seul --compte".into())
+            } else {
+                comptes.iter().try_for_each(|c| gouverner::cosigner(&fichier, c, cle.as_deref(), &confiance))
+            }
         }
         Commande::Verify { journal, ancre, cle_serveur } => verifier(&journal, ancre.as_deref(), &cle_serveur),
         Commande::Ancrer { vers, journal } => ancrer(&journal, &vers),
@@ -239,6 +264,9 @@ fn main() -> ExitCode {
         Commande::Effacer { session, coffre } => effacer(&session, &coffre),
         Commande::Phrase { commande: CommandePhrase::Initialiser } => cle_maitresse::initialiser(),
         Commande::Phrase { commande: CommandePhrase::Changer } => cle_maitresse::changer(),
+        Commande::Deverrouiller { duree } => deverrouillage::deverrouiller(duree),
+        Commande::Verrouiller => deverrouillage::verrouiller(),
+        Commande::ServiceCle { secondes } => deverrouillage::servir(std::time::Duration::from_secs(secondes)),
         Commande::Modele { commande: CommandeModele::Jeton } => cle_maitresse::enregistrer_jeton_modele(),
         Commande::Cles { commande: CommandeCles::Migrer { coffre, comptes, cles } } => {
             migrer(&coffre, &comptes.unwrap_or_else(admin::dossier_cles), &cles)

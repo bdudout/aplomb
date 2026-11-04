@@ -38,6 +38,13 @@ Toutes les clés d'Aplomb sont chiffrées par une clé maîtresse, elle-même pr
 sans affichage, une fois par commande qui en a besoin (`serve`, `admin`, `cosigner`…).
 Changer de phrase : `aplomb phrase changer`. Sans la phrase, les clés sont perdues.
 
+Pour ne pas la retaper : `aplomb deverrouiller` (8 h par défaut, `--duree 2h`). La phrase est
+demandée une fois, puis `serve` et `admin … gel` ne demandent plus rien ; les opérations
+sensibles (cosigner, dégeler, se connecter à Aplomb Watch, déchiffrer) demandent Touch ID sur
+macOS, la phrase ailleurs. La fenêtre de Touch ID montre la commande exacte, lue par Aplomb
+auprès du système : un agent ne peut pas la déguiser. `aplomb verrouiller` met fin au
+déverrouillage. macOS et Linux ; Windows : phrase à chaque commande pour l'instant.
+
 - Confier le jeton du modèle au proxy LLM : `./target/debug/aplomb modele jeton` (saisi sans
   affichage, chiffré), puis redémarrer `aplomb serve`. L'agent confiné n'a ainsi aucun jeton.
 - Vue technique (Aplomb Watch) : `./target/debug/aplomb admin --compte alice connexion` affiche un lien de
@@ -54,7 +61,7 @@ Changer de phrase : `aplomb phrase changer`. Sans la phrase, les clés sont perd
 - Banc d'essai autonome : `scripts/banc.sh` monte une instance jetable (phrase, comptes,
   mandat, jeton et journal à elle, dans un dossier temporaire) et un faux modèle, puis rejoue
   le parcours d'un agent confiné : proxy LLM, hook avec identifiant d'appel, contrôle croisé,
-  vue chaînée, passerelle MCP, provenance, délégation (35 vérifications). Rien n'est
+  vue chaînée, passerelle MCP, provenance, délégation, déverrouillage (40 vérifications). Rien n'est
   demandé, rien du réel n'est touché.
 - Modèle local (Ollama, vLLM, llama.cpp) : `domaines_modele: ["http://127.0.0.1:11434"]` ;
   HTTP en clair n'est accepté que vers la machine elle-même.
@@ -79,7 +86,8 @@ sous-agent porte `agent: claude-code/<type de sous-agent>` et `parent: <id du ma
 charge par `aplomb serve --mandat <parent> --mandat-enfant <enfant>`.
 
 Toute modification d'un mandat, de ses règles `profils/code/*.cedar` ou de `comptes.yaml`
-impose deux signatures : `aplomb cosigner <fichier> --compte alice`, puis `--compte bob`.
+impose deux signatures : `aplomb cosigner <fichier> --compte alice --compte bob` quand les
+deux clés sont sur ce poste ; sinon chacun signe chez soi avec son `--compte`.
 Sinon `aplomb serve` refuse de démarrer et dit qui doit signer.
 
 - Ancrer le journal hors de la machine : `./target/debug/aplomb ancrer --vers /Volumes/<clé USB>`
@@ -93,14 +101,14 @@ poste).
 
 | | |
 |---|---|
-| Tests | 97 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle) |
+| Tests | 99 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
 | Hook hors de portée | Paramètres gérés prêts (`deploiement/`), non installés : droits administrateur requis |
 | Journal minimisé | Métadonnées en clair ; ressource, commande, chemin et domaine chiffrés par session (EF-P1) ; `aplomb effacer` détruit la clé (EF-P2) |
 | Administration | Comptes nominatifs à clé ed25519, rôles lecteur / opérateur / approbateur ; requêtes signées, horodatées, sans rejeu ; geler seul, dégeler à quatre yeux ; toutes les API d'administration authentifiées (EF-S1, EF-S2) |
-| Clés | Clé maîtresse protégée par phrase de passe (Argon2id) ; clés de session, de comptes et de signature enveloppées (`aplomb cles migrer` pour l'existant) (EF-S4) |
+| Clés | Clé maîtresse protégée par phrase de passe (Argon2id) ; clés de session, de comptes et de signature enveloppées (`aplomb cles migrer` pour l'existant) (EF-S4) ; déverrouillage pour une durée, Touch ID pour les opérations sensibles |
 | Réponses signées | Le hook n'accepte que les réponses signées sur son nonce par la clé du superviseur (`--cle-serveur cles/reponses.pub`) : faux superviseur et rejeu refusés (EF-S3) |
 | Gouvernance | Mandat et comptes cosignés par deux membres distincts au moins (fichier de confiance, seuil 2) ; `aplomb init` prépare tout en une commande (EF-S2) |
 | Scellement | Toutes les 60 s (`--scellement`) et à l'arrêt : racine de Merkle des sessions, signée et chaînée ; troncature, suppression et réécriture détectées ; ancrage hors ligne (EF-I1, EF-I2) |

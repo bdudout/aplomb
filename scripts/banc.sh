@@ -7,8 +7,9 @@
 set -eu
 RACINE="$(cd "$(dirname "$0")/.." && pwd)"
 APLOMB="$RACINE/target/debug/aplomb"
-# Chemin réel (macOS : /var est un lien vers /private/var), comme le calcule le hook.
-B="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/aplomb-banc.XXXXXX")" && pwd -P)"
+# Chemin réel (macOS : /tmp est un lien vers /private/tmp), comme le calcule le hook ;
+# court, car le chemin d'un socket Unix est limité à une centaine de caractères.
+B="$(cd "$(mktemp -d /tmp/aplomb-banc.XXXXXX)" && pwd -P)"
 P=178   # ports 17800 (décision) à 17803 (proxy LLM), 17804 (faux modèle), 17805 (MCP)
 PIDS=""
 fin() {
@@ -184,6 +185,21 @@ verifier "mandat enfant plus large refusé au démarrage" \
   '! "$APLOMB" serve --mandat mandats/banc.yaml --mandat-enfant mandats/large.yaml --ecoute-decision 127.0.0.1:${P}10 \
      --ecoute-admin 127.0.0.1:${P}11 --ecoute-passerelle 127.0.0.1:${P}12 --ecoute-llm 127.0.0.1:${P}13 \
      --ecoute-mcp 127.0.0.1:${P}15 > large.log 2>&1 && grep -q "evil.example" large.log'
+echo "--- Déverrouillage"
+SOCKET="$HOME/.config/aplomb/agent.sock"
+"$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1
+verifier "service de déverrouillage lancé" '[ -S "$SOCKET" ]'
+verifier "socket réservé à l'utilisateur (0600)" '[ "$(stat -f %Lp "$SOCKET" 2>/dev/null || stat -c %a "$SOCKET")" = 600 ]'
+env -u APLOMB_PHRASE "$APLOMB" serve --mandat mandats/banc.yaml --ecoute-decision "127.0.0.1:${P}20" --ecoute-admin "127.0.0.1:${P}21" \
+  --ecoute-passerelle "127.0.0.1:${P}22" --ecoute-llm "127.0.0.1:${P}23" --ecoute-mcp "127.0.0.1:${P}25" < /dev/null > serve-sans-phrase.log 2>&1 &
+PIDS="$PIDS $!"
+for _ in $(seq 50); do grep -q "cosigné par" serve-sans-phrase.log && break; sleep 0.1; done
+verifier "serve démarre sans phrase de passe" 'grep -q "cosigné par" serve-sans-phrase.log'
+CLIENT="import socket; s = socket.socket(socket.AF_UNIX); s.connect('$SOCKET'); s.sendall(b'{\"op\":\"cle\"}\n'); print(s.recv(500).decode())"
+python3 -c "$CLIENT" > client.log 2>&1
+verifier "clé refusée à un autre programme qu'aplomb" 'grep -q "seul le binaire aplomb" client.log'
+"$APLOMB" verrouiller > /dev/null
+verifier "verrouiller arrête le service" '[ ! -e "$SOCKET" ]'
 verifier "journal intact (fin)" '"$APLOMB" verify --journal journal > verify.log 2>&1'
 
 echo

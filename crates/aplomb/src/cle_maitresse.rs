@@ -67,19 +67,29 @@ fn lire_fichier(chemin: &Path) -> Result<FichierMaitre, String> {
     serde_yaml::from_str(&texte).map_err(|e| format!("{} : {e}", chemin.display()))
 }
 
-/// Clé maîtresse : demande la phrase de passe au premier besoin de la commande.
+/// Clé maîtresse au premier besoin de la commande : par le service de déverrouillage s'il
+/// tourne (`aplomb deverrouiller`), sinon par la phrase de passe.
 pub fn cle_maitresse() -> Result<Cle, String> {
     if let Some(c) = EN_MEMOIRE.get() {
         return Ok(*c);
     }
     let cle = match depuis_env() {
         Some(r) => r?,
-        None => {
-            let f = lire_fichier(&chemin())?;
-            ouvrir_maitre(&f, &demander("Phrase de passe Aplomb : ")?)?
-        }
+        None => match crate::deverrouillage::demander_cle() {
+            Some(r) => r?,
+            None => cle_maitresse_par_phrase()?,
+        },
     };
     Ok(*EN_MEMOIRE.get_or_init(|| cle))
+}
+
+/// Clé maîtresse ouverte par la phrase de passe, sans passer par le service.
+pub fn cle_maitresse_par_phrase() -> Result<Cle, String> {
+    if let Some(r) = depuis_env() {
+        return r;
+    }
+    let f = lire_fichier(&chemin())?;
+    ouvrir_maitre(&f, &demander("Phrase de passe Aplomb : ")?)
 }
 
 /// Écrit le fichier de clé maîtresse (dossier 0700, fichier 0600, écriture atomique).
