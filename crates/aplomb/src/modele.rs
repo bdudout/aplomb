@@ -215,6 +215,7 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
                         Some(f) => {
                             // Le modèle de confiance n'est pas soumis au protocole ; ses actions
                             // passent par le hook comme toutes les autres.
+                            let gel = crate::protocole::ecarter(&etat, &examen);
                             let (raisonnement, avis_r) = r.protocole.lire_raisonnement(&f.2);
                             ecartees.push(std::mem::replace(&mut retenue, f).2);
                             examen = crate::protocole::Examen { raisonnement, ..Default::default() };
@@ -223,7 +224,7 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
                                     examen.par_outil.insert(id, (vec![a.clone()], false));
                                 }
                             }
-                            issue = json!({"protocole": "report", "suspecte": motifs, "issue": "remplacée par la réponse du modèle de confiance"});
+                            issue = json!({"protocole": "report", "suspecte": motifs, "issue": "remplacée par la réponse du modèle de confiance", "gel": gel});
                             etat.noter_protocole(|s| s.remplacees += 1);
                         }
                         None => {
@@ -247,11 +248,13 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
                         let Some(ek) = lire(rk).await else { break };
                         let examen_k = crate::protocole::examiner(&etat, &r.protocole, p, &session, &ek.2).await;
                         if !examen_k.suspect {
+                            crate::protocole::ecarter(&etat, &examen);
                             ecartees.push(std::mem::replace(&mut retenue, ek).2);
                             examen = examen_k;
                             retenu = Some(k);
                             break;
                         }
+                        crate::protocole::ecarter(&etat, &examen_k);
                         ecartees.push(ek.2);
                     }
                     issue = match retenu {

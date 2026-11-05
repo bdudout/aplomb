@@ -233,6 +233,10 @@ impl Etat {
         self.interne.lock().expect("verrou").superviseur.examiner(evt).1
     }
 
+    pub(crate) fn ecarter(&self, evt: &EvenementOutil) -> bool {
+        self.interne.lock().expect("verrou").superviseur.ecarter(evt)
+    }
+
     pub(crate) fn noter_protocole(&self, f: impl FnOnce(&mut StatsProtocole)) {
         f(&mut self.interne.lock().expect("verrou").stats_protocole);
     }

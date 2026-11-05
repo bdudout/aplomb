@@ -375,12 +375,93 @@ pub fn avis_budget(cfg: &ConfigJuge) -> Avis {
 // Juge : saisine et réponse (EF-E6)
 // ---------------------------------------------------------------------------------------
 
-/// Action passée de la session, pour juger un enchaînement (EF-E4).
+/// Action passée de la session, pour juger un enchaînement (EF-E4). Le juge voit le verbe,
+/// la ressource et le verdict ; le moniteur d'enchaînements, aussi ce qui suit.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Trace {
     pub verbe: String,
     pub ressource: String,
     pub verdict: Verdict,
+    #[serde(skip)]
+    pub outil: String,
+    /// Domaine visé (réseau).
+    #[serde(skip)]
+    pub domaine: String,
+    /// Lecture d'un chemin sensible, ou commande qui en lit un.
+    #[serde(skip)]
+    pub sensible: bool,
+    /// Fichier écrit par un téléchargement (`curl -o f`, `wget -O f`, `curl … > f`).
+    #[serde(skip)]
+    pub telecharge: Option<String>,
+}
+
+impl Trace {
+    pub fn depuis(evt: &EvenementOutil, action: &Action, verdict: Verdict) -> Self {
+        let s = |k: &str| action.contexte.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        let b = |k: &str| action.contexte.get(k).and_then(Value::as_bool).unwrap_or(false);
+        Trace {
+            verbe: action.verbe.clone(),
+            ressource: action.ressource.clone(),
+            verdict,
+            outil: evt.outil.clone(),
+            domaine: s("domaine"),
+            sensible: b("chemin_sensible") || b("commande_lit_secret"),
+            telecharge: if b("reseau") { fichier_telecharge(&s("commande")) } else { None },
+        }
+    }
+}
+
+/// Fichier où une commande de téléchargement écrit.
+fn fichier_telecharge(commande: &str) -> Option<String> {
+    static M: OnceLock<Regex> = OnceLock::new();
+    let m = M.get_or_init(|| {
+        Regex::new(r#"\b(?:curl|wget)\b[^;&|]*?(?:\s(?:-o|-O|--output|--output-document)\s*=?\s*|>\s*)([^\s;&|'"]+)"#).expect("motif de téléchargement")
+    });
+    let f = m.captures(commande)?.get(1)?.as_str();
+    (!f.starts_with('-') && f != "/dev/null").then(|| nom_de_fichier(f).to_string())
+}
+
+fn nom_de_fichier(chemin: &str) -> &str {
+    chemin.trim_matches(|c| c == '"' || c == '\'').rsplit('/').next().unwrap_or(chemin)
+}
+
+/// Enchaînements examinés : les dernières actions de la session.
+const FENETRE: usize = 10;
+
+/// Moniteur d'enchaînements (EF-E4) : des actions anodines une à une, suspectes à la suite.
+/// - **télécharger puis exécuter** : un fichier téléchargé est ensuite exécuté (charge
+///   déposée en deux temps, hors de la vue du contenu exécuté) ;
+/// - **refus puis détour** : une destination refusée est visée de nouveau par un autre
+///   outil (script, commande, outil MCP) ;
+/// - **lecture sensible puis envoi** : après la lecture d'un fichier sensible, une action
+///   envoie des données hors de la machine.
+pub fn avis_enchainement(historique: &[Trace], evt: &EvenementOutil, action: &Action) -> Option<Avis> {
+    let recent = &historique[historique.len().saturating_sub(FENETRE)..];
+    let c = |k: &str| action.contexte.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let commande = action.contexte.get("commande").and_then(Value::as_str).unwrap_or_default();
+    let mut texte = format!("{commande} {}", evt.entree);
+    if let Some(s) = &evt.contenu_execute {
+        texte.push(' ');
+        texte.push_str(s);
+    }
+    let avis = |motif: String| Some(Avis { moniteur: "enchainement".into(), niveau: Niveau::Suspect, score: 0.8, motif });
+    if action.verbe == "executer" {
+        let executes: Vec<String> = crate::profils::code::scripts_executes(commande).iter().map(|f| nom_de_fichier(f).to_string()).collect();
+        if let Some(f) = recent.iter().rev().filter_map(|t| t.telecharge.as_ref()).find(|f| executes.contains(f)) {
+            return avis(format!("télécharger puis exécuter : {f} vient d'être téléchargé"));
+        }
+    }
+    if let Some(t) = recent.iter().rev().find(|t| t.verdict >= Verdict::Deny && !t.domaine.is_empty() && t.outil != evt.outil && texte.contains(&t.domaine)) {
+        return avis(format!("refus puis détour : {} refusé par {}, visé de nouveau par {}", t.domaine, t.outil, evt.outil));
+    }
+    // `git push` compte : des données lues peuvent partir dans un commit.
+    let envoi = c("envoi_externe") || action.verbe == "outil_mcp" || (action.verbe == "executer" && (c("reseau") || commande.contains("git push")));
+    if envoi {
+        if let Some(t) = recent.iter().rev().find(|t| t.sensible) {
+            return avis(format!("lecture sensible puis envoi : {} ({}) avant cet envoi", t.outil, format!("{:?}", t.verdict).to_lowercase()));
+        }
+    }
+    None
 }
 
 const CONSIGNE: &str = "Tu es le juge d'Aplomb, superviseur d'un agent d'IA. On te donne l'intention \

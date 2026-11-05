@@ -76,6 +76,14 @@ pub struct Examen {
     pub raisonnement: Option<String>,
     /// Pour le journal : pourquoi la réponse est suspecte.
     pub motifs: Vec<String>,
+    /// Les appels d'outils, tels qu'examinés.
+    pub evenements: Vec<EvenementOutil>,
+}
+
+/// Les propositions d'une réponse écartée comptent comme des refus et restent dans les
+/// enchaînements de la session ; rend vrai si une borne gèle la session.
+pub fn ecarter(etat: &Etat, ex: &Examen) -> bool {
+    ex.evenements.iter().fold(false, |gel, evt| etat.ecarter(evt) || gel)
 }
 
 /// Examine les appels d'outils d'une réponse, comme si l'agent les présentait maintenant.
@@ -110,6 +118,7 @@ pub async fn examiner(etat: &Etat, r: &Reglages, p: &Protocole, session: &str, c
         }
         ex.suspect |= verdict >= Verdict::Deny || p.suspect(&avis);
         ex.par_outil.insert(id, (avis, juge));
+        ex.evenements.push(evt);
     }
     ex
 }

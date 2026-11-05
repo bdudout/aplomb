@@ -129,7 +129,15 @@ impl Superviseur {
         if !self.influences(&evt.session).is_empty() && profils::code::sensible_a_l_influence(&action) {
             verdict = verdict.max(Verdict::Review);
         }
+        if self.avis_enchainement(evt, &action).is_some() {
+            verdict = verdict.max(Verdict::Review);
+        }
         (action, verdict)
+    }
+
+    fn avis_enchainement(&self, evt: &EvenementOutil, action: &Action) -> Option<Avis> {
+        let historique: Vec<Trace> = self.traces.get(&evt.session).map(|t| t.iter().cloned().collect()).unwrap_or_default();
+        moniteurs::avis_enchainement(&historique, evt, action)
     }
 
     /// Comme [`Self::preparer`], avec le raisonnement du modèle qui a demandé l'action,
@@ -204,17 +212,37 @@ impl Superviseur {
         }
         // Secrets : moniteur déterministe (EF-D1).
         avis.extend(moniteurs::avis_secrets(evt, &action));
+        // Enchaînements : les actions précédentes de la session (EF-E4).
+        avis.extend(self.avis_enchainement(evt, &action));
         avis.extend(externes);
         let finale = combiner(politique, avis, gele);
         if finale.verdict == Verdict::Gel {
             self.sessions_gelees.insert(evt.session.clone());
         }
         let traces = self.traces.entry(evt.session.clone()).or_default();
-        traces.push_back(Trace { verbe: action.verbe.clone(), ressource: action.ressource.clone(), verdict: finale.verdict });
+        traces.push_back(Trace::depuis(evt, &action, finale.verdict));
         if traces.len() > TRACES_MAX {
             traces.pop_front();
         }
         (action, finale)
+    }
+
+    /// Proposition du modèle écartée par un protocole avant d'atteindre l'agent (EF-E2) :
+    /// elle compte comme un refus dans les bornes et reste dans les enchaînements de la
+    /// session (EF-E4) — l'intention qu'elle trahit ne disparaît pas avec elle. Rend vrai si
+    /// une borne est dépassée : la session est alors gelée.
+    pub fn ecarter(&mut self, evt: &EvenementOutil) -> bool {
+        let action = self.normaliser(evt);
+        let gel = self.suivi.observer(&action, Verdict::Deny).iter().any(|a| a.niveau == Niveau::Critique);
+        if gel {
+            self.sessions_gelees.insert(evt.session.clone());
+        }
+        let traces = self.traces.entry(evt.session.clone()).or_default();
+        traces.push_back(Trace::depuis(evt, &action, Verdict::Deny));
+        if traces.len() > TRACES_MAX {
+            traces.pop_front();
+        }
+        gel
     }
 
     pub fn geler(&mut self, session: Option<&str>) {

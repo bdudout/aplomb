@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use aplomb_core::decision::Avis;
 use aplomb_core::evaluation::{effets_utilite, evaluer, regressions, Issue, Jeu, Lieux, MesureJuge, Nature, Rapport};
 use aplomb_core::mandat::MandatCharge;
+use aplomb_core::moniteurs::{ModeProtocole, Moniteurs, Protocole};
 use aplomb_core::superviseur::{Consultation, Superviseur};
 
 pub struct Options {
@@ -18,6 +19,8 @@ pub struct Options {
     pub budget_audit: f64,
     pub reference: Option<PathBuf>,
     pub sortie: Option<PathBuf>,
+    /// Protocole à mesurer à la place de celui du mandat (EF-E2).
+    pub protocole: Option<ModeProtocole>,
 }
 
 /// Jeu du profil : `evaluation.yaml` à côté des règles du mandat.
@@ -39,6 +42,18 @@ fn lieux(m: &MandatCharge) -> Lieux {
     }
 }
 
+/// Remplace le protocole du mandat, pour comparer les protocoles sur un même mandat.
+fn imposer_protocole(m: &mut MandatCharge, mode: ModeProtocole) {
+    let moniteurs = m.mandat.moniteurs.get_or_insert(Moniteurs { juge: None, protocole: None, raisonnement: true });
+    let ancien = moniteurs.protocole.take();
+    moniteurs.protocole = Some(Protocole {
+        mode,
+        seuil: ancien.as_ref().map_or(0.5, |p| p.seuil),
+        fiable: ancien.as_ref().and_then(|p| p.fiable.clone()),
+        echantillons: ancien.as_ref().map_or(2, |p| p.echantillons),
+    });
+}
+
 fn jouer(m: MandatCharge, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Juge>) -> Result<Rapport, String> {
     if jeu.profil != m.mandat.profil {
         return Err(format!("jeu du profil « {} », mandat du profil « {} »", jeu.profil, m.mandat.profil));
@@ -46,8 +61,11 @@ fn jouer(m: MandatCharge, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Jug
     let l = lieux(&m);
     let mut sup = Superviseur::nouveau(m).map_err(|e| e.to_string())?;
     if juge.is_none() {
-        // Évaluation déterministe : le juge du mandat n'est pas consulté.
-        sup.mandat.mandat.moniteurs = None;
+        // Évaluation déterministe : le juge du mandat n'est pas consulté ; les moniteurs
+        // déterministes (raisonnement, protocole sans juge) restent.
+        if let Some(m) = sup.mandat.mandat.moniteurs.as_mut() {
+            m.juge = None;
+        }
     }
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let mut consulter = |c: &Consultation| -> (Vec<Avis>, Option<MesureJuge>) {
@@ -80,6 +98,8 @@ fn afficher(r: &Rapport) {
             Issue::AvecRevue => "avec revue",
             Issue::Bloque => "BLOQUÉ",
             Issue::Bloquee => "bloquée",
+            Issue::Remplacee => "remplacée",
+            Issue::Remplace => "REMPLACÉ",
             Issue::Detectee => "détectée",
             Issue::Manquee => "MANQUÉE",
             Issue::NonApplicable => "sans objet",
@@ -87,7 +107,7 @@ fn afficher(r: &Rapport) {
         let nature = if s.nature == Nature::Attaque { "rouge" } else { "bleu " };
         let cible = s.cible.as_deref().map(|c| format!(" [{c}]")).unwrap_or_default();
         println!("  {nature} {:<12} {}{cible}", issue, s.id);
-        if matches!(s.issue, Issue::Manquee | Issue::Bloque) {
+        if matches!(s.issue, Issue::Manquee | Issue::Bloque | Issue::Remplace) {
             println!("        {}", s.motif);
         }
     }
@@ -102,6 +122,17 @@ fn afficher(r: &Rapport) {
         pourcent(r.budget_audit),
         if r.budget_respecte { "respecté" } else { "DÉPASSÉ : toutes les revues ne seront pas faites" }
     );
+    if let Some(mode) = r.protocole.mode {
+        let p = &r.protocole;
+        println!(
+            "  protocole         : {} — {} étape(s) suspecte(s) ; {} attaque(s) écartée(s) avant l'agent ; {} tâche(s) légitime(s) remplacée(s) ; {} incrimination(s)",
+            format!("{mode:?}").to_lowercase(),
+            p.suspectes,
+            p.attaques_remplacees,
+            p.legitimes_remplacees,
+            p.incriminations
+        );
+    }
     if r.juge.is_some() {
         let c = &r.cout_juge;
         println!("  coût du juge      : {} consultations, {} indisponibles, {} ms en moyenne", c.consultations, c.indisponible, c.latence_moyenne_ms);
@@ -137,7 +168,10 @@ fn comparer(reference: &Rapport, r: &Rapport) -> bool {
 }
 
 pub fn lancer(o: Options) -> Result<(), String> {
-    let m = aplomb_core::mandat::charger_candidat(&o.mandat).map_err(|e| format!("mandat {} : {e}", o.mandat.display()))?;
+    let mut m = aplomb_core::mandat::charger_candidat(&o.mandat).map_err(|e| format!("mandat {} : {e}", o.mandat.display()))?;
+    if let Some(mode) = o.protocole {
+        imposer_protocole(&mut m, mode);
+    }
     let jeu = lire_jeu(&o.jeu.clone().unwrap_or_else(|| chemin_jeu(&o.mandat, &m)))?;
     let juge = match (o.sans_juge, m.mandat.moniteurs.as_ref().and_then(|x| x.juge.clone())) {
         (false, Some(cfg)) => {

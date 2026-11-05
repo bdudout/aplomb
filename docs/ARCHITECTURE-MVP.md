@@ -97,7 +97,8 @@ aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
   (`aplomb-core/src/evaluation.rs`, `profils/code/evaluation.yaml`, `aplomb evaluer`),
   non-régression à la cosignature, injections visant le juge dans le jeu. Lot 3 fait :
   raisonnement lu au proxy LLM (EF-E3) et protocoles `report` et `reechantillonnage`
-  (EF-E2, `crates/aplomb/src/protocole.rs`). Reste pour J5 : mesurer les protocoles dans
-  `aplomb evaluer` (il juge des actions, pas des réponses du modèle), juger un
-  enchaînement d'actions (EF-E4), essai avec de vrais modèles locaux (juge et modèle de
-  confiance).
+  (EF-E2, `crates/aplomb/src/protocole.rs`). Lot 4 fait : moniteur d'enchaînements
+  (EF-E4, `moniteurs::avis_enchainement`), protocoles et raisonnement mesurés par
+  `aplomb evaluer --protocole` (étapes avec `raisonnement` et `alternatives`), propositions
+  écartées comptées comme refus. J5 est terminé, sauf l'essai avec de vrais modèles locaux
+  (juge et modèle de confiance) : seuls le faux modèle et le faux juge du banc ont servi.

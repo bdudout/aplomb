@@ -126,6 +126,10 @@ enum Commande {
         /// Écrit le rapport (JSON), réutilisable comme référence.
         #[arg(long)]
         sortie: Option<PathBuf>,
+        /// Mesure ce protocole à la place de celui du mandat : surveillance, report,
+        /// reechantillonnage (EF-E2).
+        #[arg(long, value_parser = protocole)]
+        protocole: Option<aplomb_core::moniteurs::ModeProtocole>,
     },
     /// Vérifie le journal : chaînes, scellés signés, et copie d'ancrage si fournie.
     Verify {
@@ -290,6 +294,11 @@ enum OperationAdmin {
     },
 }
 
+fn protocole(s: &str) -> Result<aplomb_core::moniteurs::ModeProtocole, String> {
+    serde_json::from_value(serde_json::Value::String(s.into()))
+        .map_err(|_| format!("protocole inconnu « {s} » (surveillance, report, reechantillonnage)"))
+}
+
 fn role(s: &str) -> Result<aplomb_core::autorite::Role, String> {
     serde_json::from_value(serde_json::Value::String(s.into()))
         .map_err(|_| format!("rôle inconnu « {s} » (lecteur, operateur, approbateur)"))
@@ -313,8 +322,8 @@ fn main() -> ExitCode {
                 comptes.iter().try_for_each(|c| gouverner::cosigner(&fichier, c, cle.as_deref(), &confiance, accepter_regression))
             }
         }
-        Commande::Evaluer { mandat, jeu, sans_juge, budget_audit, reference, sortie } => {
-            evaluer::lancer(evaluer::Options { mandat, jeu, sans_juge, budget_audit, reference, sortie })
+        Commande::Evaluer { mandat, jeu, sans_juge, budget_audit, reference, sortie, protocole } => {
+            evaluer::lancer(evaluer::Options { mandat, jeu, sans_juge, budget_audit, reference, sortie, protocole })
         }
         Commande::Verify { journal, ancre, cle_serveur } => verifier(&journal, ancre.as_deref(), &cle_serveur),
         Commande::Ancrer { vers, journal } => ancrer(&journal, &vers),
