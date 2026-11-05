@@ -9,12 +9,14 @@
 //! - `aplomb ancrer` — copie la chaîne de scellés hors de la machine ;
 //! - `aplomb mermaid` — exporte les sessions en diagrammes de séquence Mermaid ;
 //! - `aplomb effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2) ;
-//! - `aplomb compte` / `aplomb admin` — comptes d'administration et requêtes signées (EF-S2).
+//! - `aplomb compte` / `aplomb admin` — comptes d'administration et requêtes signées (EF-S2) ;
+//! - `aplomb agent` — comptes techniques des agents : consommation et quotas du modèle.
 // Pas de code `unsafe`, sauf les appels système des deux modules qui en ont besoin
 // (identité du pair d'un socket, Touch ID) ; le cœur `aplomb-core` l'interdit tout à fait.
 #![deny(unsafe_code)]
 
 mod admin;
+mod agents;
 mod cle_maitresse;
 mod gouverner;
 mod evaluer;
@@ -180,6 +182,11 @@ enum Commande {
         #[command(subcommand)]
         commande: CommandeCompte,
     },
+    /// Comptes techniques des agents : à qui imputer la consommation du modèle.
+    Agent {
+        #[command(subcommand)]
+        commande: CommandeAgent,
+    },
     /// Requête d'administration signée par la clé d'un compte.
     Admin {
         #[arg(long)]
@@ -214,6 +221,28 @@ enum CommandeCompte {
         fichier: PathBuf,
         #[arg(long)]
         dossier: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommandeAgent {
+    /// Crée un compte technique et affiche sa clé, une seule fois.
+    Nouveau {
+        #[arg(long)]
+        id: String,
+        /// Personne responsable de l'agent.
+        #[arg(long)]
+        utilisateur: String,
+        /// Quota de jetons (entrée, cache compris, et sortie) par jour UTC.
+        #[arg(long)]
+        jetons_par_jour: Option<u64>,
+        #[arg(long, default_value = agents::FICHIER)]
+        fichier: PathBuf,
+    },
+    /// Liste les comptes techniques.
+    Liste {
+        #[arg(long, default_value = agents::FICHIER)]
+        fichier: PathBuf,
     },
 }
 
@@ -305,6 +334,10 @@ fn main() -> ExitCode {
         Commande::Compte { commande: CommandeCompte::Nouveau { id, roles, fichier, dossier } } => {
             admin::nouveau_compte(&id, &roles, &dossier.unwrap_or_else(admin::dossier_cles), &fichier)
         }
+        Commande::Agent { commande: CommandeAgent::Nouveau { id, utilisateur, jetons_par_jour, fichier } } => {
+            agents::nouveau(&fichier, &id, &utilisateur, jetons_par_jour)
+        }
+        Commande::Agent { commande: CommandeAgent::Liste { fichier } } => agents::liste(&fichier),
         Commande::Admin { compte, cle, url, operation } => {
             use aplomb_core::autorite::Operation;
             let (op, session) = match operation {

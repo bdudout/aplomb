@@ -13,4 +13,5 @@ conteneur/.env
 # créée par `aplomb init`. Modèle de mandat : exemples/mandat.yaml.
 /mandats/
 /comptes.yaml
+/agents.yaml
 /cles/

@@ -83,7 +83,7 @@ for port in "${P}04" "${P}06"; do  # faux modèle et faux juge prêts
 done
 "$APLOMB" serve --mandat mandats/banc.yaml --ecoute-decision "127.0.0.1:${P}00" --ecoute-admin "127.0.0.1:${P}01" \
   --ecoute-passerelle "127.0.0.1:${P}02" --ecoute-llm "127.0.0.1:${P}03" --ecoute-mcp "127.0.0.1:${P}05" \
-  --mandat-enfant mandats/explorer.yaml > serve.log 2>&1 & PIDS="$PIDS $!"
+  --mandat-enfant mandats/explorer.yaml > serve.log 2>&1 & SERVE=$!; PIDS="$PIDS $SERVE"
 for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${P}01/" && break; sleep 0.1; done
 
 S="agent-banc-$$"
@@ -256,6 +256,44 @@ cp mandats/banc.evaluation.json mandats/elargi.evaluation.json
 verifier "élargissement : cosignature refusée" \
   '! "$APLOMB" cosigner mandats/elargi.yaml --compte alice > cosigner-elargi.log 2>&1 && grep -q "cosignature refusée" cosigner-elargi.log'
 verifier "élargissement assumé : --accepter-regression" '"$APLOMB" cosigner mandats/elargi.yaml --compte alice --accepter-regression > /dev/null 2>&1'
+echo "--- Consommation"
+conso() { curl -s -b biscuits "http://127.0.0.1:${P}01/admin/consommation?heures=1" > conso.json; }
+lc() { python3 -c "import json; c=json.load(open('conso.json')); print($1)"; }
+conso
+verifier "sans compte technique : imputé à « anonyme »" '[ "$(lc "c[\"par_compte\"][0][\"compte\"]")" = anonyme ]'
+verifier "jetons agrégés (entrée, cache, sortie)" '[ "$(lc "c[\"total\"][\"appels\"]")" -ge 3 ] && [ "$(lc "c[\"total\"][\"cache_lu\"] * 6 == c[\"total\"][\"entree\"]")" = True ]'
+verifier "regroupement par prompt, extrait lisible" '[ "$(lc "[p[\"appels\"] for p in c[\"par_prompt\"] if p[\"extrait\"] == \"ls\"][0]")" = 2 ]'
+verifier "secret masqué dans l'extrait du prompt" 'grep -q "secret masqu" conso.json && ! grep -q "$SECRET" conso.json'
+verifier "contexte suivi par session d'agent" '[ "$(lc "[x[\"contexte_max\"] for x in c[\"par_session\"] if x[\"session_agent\"] == \"$S\"][0]")" = 120 ]'
+verifier "prompt scellé au journal" '! grep -q "\"extrait\"" journal/modele-*.jsonl'
+"$APLOMB" agent nouveau --id dev --utilisateur alice > agent-dev.log
+"$APLOMB" agent nouveau --id agent-quota --utilisateur bob --jetons-par-jour 200 > agent-quota.log
+CLE_DEV="$(grep -o 'aplomb-agent-dev-[0-9a-f]*' agent-dev.log)"; CLE_Q="$(grep -o 'aplomb-agent-agent-quota-[0-9a-f]*' agent-quota.log)"
+verifier "compte technique : seule l'empreinte est gardée" '[ -n "$CLE_DEV" ] && ! grep -q "$CLE_DEV" agents.yaml'
+kill -INT "$SERVE"; wait "$SERVE" 2>/dev/null || true
+"$APLOMB" serve --mandat mandats/banc.yaml --ecoute-decision "127.0.0.1:${P}00" --ecoute-admin "127.0.0.1:${P}01" \
+  --ecoute-passerelle "127.0.0.1:${P}02" --ecoute-llm "127.0.0.1:${P}03" --ecoute-mcp "127.0.0.1:${P}05" \
+  --mandat-enfant mandats/explorer.yaml > serve2.log 2>&1 & SERVE=$!; PIDS="$PIDS $SERVE"
+for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${P}01/" && break; sleep 0.1; done
+LIEN="$("$APLOMB" admin --compte alice --url "http://127.0.0.1:${P}01" connexion | grep -o 'http://[^ ]*ticket=[^ ]*')"
+curl -s -o /dev/null -c biscuits "$LIEN"
+conso
+verifier "redémarrage : consommation relue au journal, prompts compris" '[ "$(lc "[p[\"appels\"] for p in c[\"par_prompt\"] if p[\"extrait\"] == \"ls\"][0]")" = 2 ]'
+code_llm() {  # clé → code HTTP
+  curl -s -o /dev/null -w %{http_code} -X POST "http://127.0.0.1:${P}03/v1/messages" -H "authorization: Bearer $1" \
+    -H "x-claude-code-session-id: conso-$$" -H "content-type: application/json" \
+    -d '{"model":"faux-modele","messages":[{"role":"user","content":"compte les lignes"}]}'
+}
+verifier "clé d'agent connue : appel relayé" '[ "$(code_llm "$CLE_DEV")" = 200 ]'
+verifier "clé inconnue : 401" '[ "$(code_llm aplomb-agent-dev-fausse)" = 401 ]'
+verifier "sans clé : 401" '[ "$(curl -s -o /dev/null -w %{http_code} -X POST "http://127.0.0.1:${P}03/v1/messages" -d "{}")" = 401 ]'
+verifier "quota : premier appel relayé" '[ "$(code_llm "$CLE_Q")" = 200 ]'
+code_llm "$CLE_Q" > /dev/null
+verifier "quota du jour atteint : 429" '[ "$(code_llm "$CLE_Q")" = 429 ]'
+conso
+verifier "par compte technique et par utilisateur" \
+  '[ "$(lc "sorted((x[\"compte\"], x[\"utilisateur\"]) for x in c[\"par_compte\"])")" = "[('"'"'agent-quota'"'"', '"'"'bob'"'"'), ('"'"'anonyme'"'"', '"'"'$USER'"'"'), ('"'"'dev'"'"', '"'"'alice'"'"')]" ]'
+verifier "quota affiché avec la consommation du jour" '[ "$(lc "[x[\"aujourd_hui\"] >= x[\"jetons_par_jour\"] for x in c[\"par_compte\"] if x[\"compte\"] == \"agent-quota\"][0]")" = True ]'
 echo "--- Déverrouillage"
 SOCKET="$HOME/.config/aplomb/agent.sock"
 "$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1

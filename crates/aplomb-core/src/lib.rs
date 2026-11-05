@@ -13,6 +13,7 @@ pub mod autorite;
 pub mod bornes;
 pub mod chaine;
 pub mod confidentiel;
+pub mod consommation;
 pub mod delegation;
 pub mod evaluation;
 pub mod decision;

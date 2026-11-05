@@ -10,6 +10,8 @@
 //!     `POST /admin/gel`, `/admin/degel`, `/admin/deconnexion` : session requise ;
 //!   - `GET /admin/revues`, `POST /admin/revue` : file de revue des passerelles (une action
 //!     en revue attend qu'un opérateur ou un approbateur l'approuve ou la refuse) ;
+//!   - `GET /admin/consommation?heures=24` : jetons et contexte par utilisateur, compte
+//!     technique, prompt et session d'agent (module `aplomb_core::consommation`) ;
 //!   - `GET /` : la page de la vue technique (sans données).
 //!
 //! Geler se fait seul ; dégeler exige deux comptes distincts (quatre yeux).
@@ -37,6 +39,7 @@ use futures_util::StreamExt;
 use aplomb_core::action::{EvenementOutil, Phase};
 use aplomb_core::autorite::{Autorite, Issue, Operation, RequeteSignee};
 use aplomb_core::confidentiel::{minimiser, Coffre};
+use aplomb_core::consommation::{ComptesAgents, Consommation, Releve};
 use aplomb_core::journal::Journal;
 use aplomb_core::superviseur::Superviseur;
 use serde::Deserialize;
@@ -88,6 +91,10 @@ pub struct Options {
     /// Comptes d'administration (YAML) : identifiants, rôles, clés publiques.
     #[arg(long, default_value = "comptes.yaml")]
     comptes: PathBuf,
+    /// Comptes techniques des agents (`aplomb agent nouveau`) ; absent : consommation
+    /// imputée à « anonyme », pour l'utilisateur qui lance le service.
+    #[arg(long, default_value = crate::agents::FICHIER)]
+    agents: PathBuf,
     #[arg(long, default_value = "127.0.0.1:7700")]
     ecoute_decision: SocketAddr,
     #[arg(long, default_value = "127.0.0.1:7701")]
@@ -108,6 +115,17 @@ struct Interne {
     revue_suivante: u64,
     /// Mesure du juge (EF-E5) : consultations, échecs, latence cumulée.
     stats_juge: StatsJuge,
+    /// Consommation du modèle, relevée par le proxy LLM.
+    consommation: Consommation,
+    agents: ComptesAgents,
+    /// Utilisateur à qui imputer les appels quand aucun compte technique n'est déclaré.
+    utilisateur_local: String,
+}
+
+/// Compte auquel imputer un appel au modèle.
+pub(crate) struct Imputation {
+    pub compte: String,
+    pub utilisateur: String,
 }
 
 #[derive(Default)]
@@ -173,6 +191,30 @@ impl Etat {
     /// Le proxy LLM a vu le modèle demander cet appel d'outil.
     pub(crate) fn annoncer(&self, id: &str, annonce: aplomb_core::modele::Annonce) {
         self.interne.lock().expect("verrou").annonces.annoncer(id, annonce);
+    }
+
+    /// Compte technique de la clé présentée au proxy LLM, et quota du jour. Sans compte
+    /// déclaré, tout est imputé à « anonyme ». Rend le motif du refus sinon : clé inconnue
+    /// (401), quota atteint (429).
+    pub(crate) fn imputer(&self, cle: Option<&str>) -> Result<Imputation, (StatusCode, String)> {
+        let interne = self.interne.lock().expect("verrou");
+        if interne.agents.agents.is_empty() {
+            return Ok(Imputation { compte: "anonyme".into(), utilisateur: interne.utilisateur_local.clone() });
+        }
+        let Some(a) = cle.and_then(|c| interne.agents.identifier(c)) else {
+            return Err((StatusCode::UNAUTHORIZED, "clé d'agent inconnue : créer un compte technique (aplomb agent nouveau)".into()));
+        };
+        if let Some(q) = a.jetons_par_jour {
+            let jour = interne.consommation.jetons_du_jour(&a.id, maintenant());
+            if jour >= q {
+                return Err((StatusCode::TOO_MANY_REQUESTS, format!("quota du compte {} atteint : {jour} jetons aujourd'hui pour {q} (UTC)", a.id)));
+            }
+        }
+        Ok(Imputation { compte: a.id.clone(), utilisateur: a.utilisateur.clone() })
+    }
+
+    pub(crate) fn relever(&self, r: Releve) {
+        self.interne.lock().expect("verrou").consommation.ajouter(r);
     }
 
     /// Gel global, ou gel de cette session.
@@ -429,6 +471,35 @@ async fn etat_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
         "compte": compte, "roles": roles, "degels_en_attente": demandes,
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct Periode {
+    heures: Option<u64>,
+}
+
+async fn consommation_admin(State(etat): State<Etat>, entetes: HeaderMap, Query(p): Query<Periode>) -> Response {
+    let mut interne = etat.interne.lock().expect("verrou");
+    if compte_web(&mut interne, &entetes).is_none() {
+        return non_connecte();
+    }
+    let t = maintenant();
+    let depuis = t.saturating_sub(p.heures.unwrap_or(24).saturating_mul(3_600_000));
+    Json(interne.consommation.synthese(depuis, t, &interne.agents)).into_response()
+}
+
+/// Relevés de consommation des sessions précédentes, relus dans le journal du proxy LLM
+/// (prompts déchiffrés par le coffre ; clé effacée : jetons sans prompt).
+fn relire_consommation(journal: &Journal, coffre: &Coffre) -> Consommation {
+    let mut c = Consommation::default();
+    let chemin = journal.chemin(crate::modele::SESSION);
+    let Ok(entrees) = aplomb_core::mermaid::lire_session(&chemin) else { return c };
+    for e in aplomb_core::mermaid::ouvrir_contenus(entrees, Some(coffre)) {
+        if let Some(r) = crate::modele::releve_du_journal(e.horodatage, &e.contenu) {
+            c.ajouter(r);
+        }
+    }
+    c
 }
 
 async fn historique(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
@@ -711,6 +782,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let (autorite, signataires_comptes) = Autorite::depuis_yaml_cosigne(&texte_comptes, &confiance).map_err(|e| {
         format!("comptes refusés : {e} — faire cosigner : aplomb cosigner {} --compte <id>", opts.comptes.display())
     })?;
+    let agents = crate::agents::charger(&opts.agents)?;
+    let consommation = relire_consommation(&journal, &coffre);
     let dossier_journal = opts.journal.clone();
     let cle_scelles = signataire.clone();
     let (diffusion, _) = broadcast::channel(1024);
@@ -726,6 +799,9 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             revues: HashMap::new(),
             revue_suivante: 0,
             stats_juge: StatsJuge::default(),
+            consommation,
+            agents: agents.clone(),
+            utilisateur_local: std::env::var("USER").unwrap_or_else(|_| "local".into()),
         })),
         diffusion,
         signataire: Arc::new(signataire),
@@ -753,6 +829,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/degel", post(degel))
         .route("/admin/revues", get(revues))
         .route("/admin/revue", post(repondre_revue))
+        .route("/admin/consommation", get(consommation_admin))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(etat.clone());
     let juge_affiche = etat.juge.as_ref().map(|j| j.description());
@@ -804,6 +881,14 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             eprintln!("  mandats enfants    : {}", enfants.join(", "));
         }
         eprintln!("  comptes            : {} (cosignés par {})", opts.comptes.display(), signataires_comptes.join(" et "));
+        eprintln!(
+            "  comptes techniques : {}",
+            if agents.agents.is_empty() {
+                format!("aucun ({} absent) : consommation imputée à « anonyme »", opts.agents.display())
+            } else {
+                format!("{} dans {} : clé d'agent exigée par le proxy LLM", agents.agents.len(), opts.agents.display())
+            }
+        );
         eprintln!("  scellement         : toutes les {} s, et à l'arrêt", opts.scellement);
         eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());
         eprintln!("  connexion à la vue : aplomb admin connexion --compte <id>");

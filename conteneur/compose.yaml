@@ -39,6 +39,10 @@ services:
     networks: [isole]
     # Le dépôt est monté au même chemin que sur l'hôte : la racine du mandat signé reste juste.
     working_dir: "${APLOMB_DEPOT:?APLOMB_DEPOT absent, voir .env.exemple}"
+    # Clé du compte technique de l'agent (aplomb agent nouveau) : elle impute la consommation
+    # du modèle ; ce n'est pas le jeton du modèle, qu'Aplomb injecte lui-même.
+    environment:
+      ANTHROPIC_AUTH_TOKEN: "${APLOMB_CLE_AGENT:-aplomb-injecte-le-vrai-jeton}"
     volumes:
       - ${APLOMB_DEPOT}:${APLOMB_DEPOT}
       - ${APLOMB_INSTANCE:-..}/cles/reponses.pub:/etc/aplomb/reponses.pub:ro

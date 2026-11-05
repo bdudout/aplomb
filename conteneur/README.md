@@ -50,7 +50,8 @@ Prérequis : Docker Desktop, et `aplomb serve` lancé sur l'hôte.
 claude setup-token            # sur l'hôte : crée un jeton (ou utiliser une clé d'API)
 aplomb modele jeton           # le confie à Aplomb, chiffré ; puis redémarrer aplomb serve
 cd conteneur
-cp .env.exemple .env          # renseigner APLOMB_DEPOT et APLOMB_INSTANCE
+cp .env.exemple .env          # renseigner APLOMB_DEPOT, APLOMB_INSTANCE et, s'il existe,
+                              # APLOMB_CLE_AGENT (compte technique : aplomb agent nouveau)
 docker compose run --rm agent # première fois : construit les images (quelques minutes)
 ```
 

@@ -56,7 +56,8 @@ par hook (niveau d'assurance 1, coopératif).
 - **Proxy LLM** (`127.0.0.1:7703`, `ANTHROPIC_BASE_URL`, niveau 2) :
   - il relaie seulement les appels de conversation vers le modèle du mandat ;
   - il retire la clé de l'agent et injecte le jeton d'Aplomb ;
-  - il journalise les appels, les jetons et les outils demandés par le modèle.
+  - il journalise les appels, les jetons et les outils demandés par le modèle ;
+  - il impute chaque appel à un **compte technique** : la clé que l'agent lui présente (`aplomb agent nouveau`) désigne le compte et l'utilisateur responsable ; un quota de jetons par jour peut s'y attacher (au-delà : 429).
 - **Passerelle MCP** (`127.0.0.1:7704/mcp/<nom>`, niveau 2) :
   - Aplomb lance lui-même les serveurs MCP du mandat ;
   - chaque appel d'outil est jugé ;
@@ -78,6 +79,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
   - **Flux en direct** des décisions, avec les compteurs.
   - **File de revue** : Approuver ou Refuser une action en attente.
   - **Vue chaînée** : chaque échange avec le modèle, les outils qu'il a demandés et les actions réellement exécutées, avec les écarts.
+  - **Consommation** : jetons (entrée, cache, sortie) par utilisateur, compte technique, prompt et modèle ; taille du contexte et compactions par session d'agent ; quotas du jour. Voir [Suivre la consommation](#suivre-la-consommation-du-modèle).
   - **Boutons** : geler, dégeler à quatre yeux, vérifier le journal.
 - **Export Mermaid** : la séquence des requêtes d'un agent sous forme de diagramme.
 
@@ -94,7 +96,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 
 ### Outils de test
 
-- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (68 vérifications), sans rien toucher du réel.
+- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (83 vérifications), sans rien toucher du réel.
 - `aplomb evaluer --mandat <mandat>` : banc rouge/bleu. Il joue le jeu d'évaluation du profil ([`profils/code/evaluation.yaml`](profils/code/evaluation.yaml)) avec ce mandat, juge compris, et rend :
   - la **sûreté** : la part des attaques bloquées ou mises en revue ;
   - l'**utilité** : la part des tâches légitimes faites sans humain ;
@@ -132,7 +134,7 @@ cargo build --release
 cargo install --path crates/aplomb   # met `aplomb` dans ~/.cargo/bin (déjà dans le PATH avec rustup)
 ```
 
-Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `68 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
+Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `83 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
 
 ### 2. Créer son instance
 
@@ -321,8 +323,25 @@ flowchart LR
 | Ancrer le journal hors de la machine | `aplomb ancrer --vers /Volumes/<clé USB>` ; `verify` confronte ensuite le journal à cette copie |
 | Effacer les contenus d'une session | `aplomb effacer --session <id>` (sa clé est détruite, la chaîne reste vérifiable) |
 | Exporter un diagramme de séquence | `aplomb mermaid --session <id>` ou `--sortie diagrammes` ; `--dechiffrer` montre les ressources en clair |
+| Créer un compte technique d'agent | `aplomb agent nouveau --id ci --utilisateur alice [--jetons-par-jour 2000000]`, puis redémarrer `serve` ; `aplomb agent liste` |
+| Suivre la consommation | Aplomb Watch, onglet « Consommation » (24 h, 7 j, 30 j) |
 | Changer la phrase de passe | `aplomb phrase changer` |
 | Rejouer les scénarios du hook | `APLOMB_DEPOT=<racine du mandat> APLOMB_INSTANCE=~/aplomb-instance scripts/scenarios.sh` |
+
+### Suivre la consommation du modèle
+
+Le proxy LLM relève chaque appel au modèle : le compte technique, l'utilisateur, le prompt, la session d'agent et les jetons.
+
+- **Compte technique** : `aplomb agent nouveau --id ci --utilisateur alice` affiche une seule fois une clé `aplomb-agent-ci-…`.
+  - L'agent la présente au proxy à la place d'une clé d'API : `ANTHROPIC_AUTH_TOKEN` (conteneur : `APLOMB_CLE_AGENT` dans `conteneur/.env`). Ce n'est pas le jeton du modèle, qu'Aplomb garde et injecte.
+  - `agents.yaml` ne garde que l'empreinte des clés. Dès qu'un compte existe, une clé inconnue est refusée (401).
+  - Sans aucun compte, tout est imputé à « anonyme », pour l'utilisateur qui lance `serve`.
+- **Quota** : `--jetons-par-jour N` compte l'entrée (cache compris) et la sortie, par jour UTC. Le quota atteint, le proxy répond 429 jusqu'au lendemain.
+- **Prompt** : le dernier message de l'utilisateur, sans les résultats d'outils ni les rappels système. Tous les appels qu'une demande entraîne s'y rattachent.
+  - Au journal, il est scellé avec les autres contenus de la session : extrait de 100 caractères, secrets masqués.
+  - `aplomb effacer --session modele` l'efface ; les jetons restent comptés.
+- **Contexte** : les jetons d'entrée d'un appel, cache compris. Une chute de plus de 40 % d'un appel au suivant compte comme une compaction.
+- **Où le voir** : Aplomb Watch, onglet « Consommation », ou `GET /admin/consommation?heures=24` (session requise). Au redémarrage, `serve` relit la consommation passée dans le journal.
 
 ### Ports
 
@@ -351,7 +370,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 107 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 110 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -364,6 +383,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Scellement | Toutes les 60 s (`--scellement`) et à l'arrêt : racine de Merkle des sessions, signée et chaînée ; troncature, suppression et réécriture détectées ; ancrage hors ligne (EF-I1, EF-I2) |
 | Aplomb Gate (passerelle sortante) | `127.0.0.1:7702` pour `HTTPS_PROXY` : domaines du mandat, adresses internes refusées (ressource réelle), envoi plafonné à 1 Mio par connexion, une revue attend la réponse d'un humain dans Aplomb Watch ; tout est journalisé (EF-C1, EF-C4, EF-B4) |
 | Proxy LLM (niveau 2) | `127.0.0.1:7703` pour `ANTHROPIC_BASE_URL` : amont = `domaines_modele` du mandat ; seuls les appels de conversation passent ; clé de l'agent retirée, jeton d'Aplomb injecté (`aplomb modele jeton`, chiffré) ; appels, jetons et outils demandés journalisés ; coupé par le gel |
+| Consommation | Comptes techniques des agents (`aplomb agent`, empreintes seules), quota de jetons par jour (429) ; jetons d'entrée, de cache et de sortie par utilisateur, compte, prompt, session et modèle ; contexte et compactions par session ; onglet d'Aplomb Watch ; relu du journal au redémarrage |
 | Passerelle MCP (niveau 2) | `127.0.0.1:7704/mcp/<nom>` : serveurs du mandat (`serveurs_mcp`) lancés par Aplomb ; chaque appel d'outil jugé et journalisé ; définitions d'outils épinglées (une description qui change = outil refusé) |
 | File de revue | Une action des passerelles (Gate, MCP) en revue attend 2 min la réponse d'un opérateur ou d'un approbateur dans Aplomb Watch (Approuver / Refuser) ; sans réponse, refus ; l'issue et le compte sont journalisés |
 | Moniteurs (J5, lot 1) | Secrets détectés dans les actions (revue, gel s'ils sortent) et masqués dans les requêtes au modèle (EF-D1) ; juge enfichable compatible OpenAI ou API Messages, en cascade : actions sensibles et échantillon, budget par session, délai, revue si indisponible ; saisine structurée, données de l'agent enveloppées (EF-E1, EF-E5, EF-E6) ; mesure dans Aplomb Watch |

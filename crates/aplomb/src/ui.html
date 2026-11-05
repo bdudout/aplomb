@@ -46,6 +46,14 @@
   .id { font-family:ui-monospace, monospace; font-size:12px; color:var(--doux); }
   .ecart { color:var(--deny); font-weight:600; }
   .ecarts { border-color:var(--deny); }
+  .tuiles { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  .tuiles .compteur { min-width:110px; }
+  .conso h2 { font-size:13px; margin:16px 0 6px; color:var(--doux); }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .jauge { height:6px; background:var(--ligne); border-radius:3px; min-width:80px; }
+  .jauge i { display:block; height:100%; border-radius:3px; background:var(--allow); }
+  .jauge i.haut { background:var(--deny); }
+  .table-defile { overflow-x:auto; }
   @media (max-width:700px) { .compteurs { margin-left:0; } td.res { max-width:160px; } }
 </style>
 </head>
@@ -76,7 +84,19 @@
   <div class="onglets" role="tablist">
     <button role="tab" id="o-flux" aria-selected="true">Flux en direct</button>
     <button role="tab" id="o-chaine" aria-selected="false">Vue chaînée</button>
+    <button role="tab" id="o-conso" aria-selected="false">Consommation</button>
   </div>
+  <section id="v-conso" class="conso" hidden>
+    <div class="barre">
+      <select id="periode">
+        <option value="24">24 dernières heures</option>
+        <option value="168">7 derniers jours</option>
+        <option value="720">30 derniers jours</option>
+      </select>
+      <button id="recharger-conso">Actualiser</button>
+    </div>
+    <div id="conso"></div>
+  </section>
   <section id="v-chaine" hidden>
     <div class="barre">
       <select id="sessions"></select>
@@ -203,11 +223,63 @@ const court = (id) => id ? "…" + id.slice(-8) : "sans id";
 const heure = (t) => t ? new Date(t).toLocaleTimeString("fr-FR") : "—";
 
 function onglet(nom) {
-  $("o-flux").setAttribute("aria-selected", nom === "flux");
-  $("o-chaine").setAttribute("aria-selected", nom === "chaine");
-  $("v-flux").hidden = nom !== "flux";
-  $("v-chaine").hidden = nom !== "chaine";
+  for (const n of ["flux", "chaine", "conso"]) {
+    $("o-" + n).setAttribute("aria-selected", nom === n);
+    $("v-" + n).hidden = nom !== n;
+  }
   if (nom === "chaine" && !$("sessions").options.length) chargerSessions();
+  if (nom === "conso") chargerConso();
+}
+
+const nombre = (n) => (n ?? 0).toLocaleString("fr-FR");
+const part = (a, b) => b ? Math.round(100 * a / b) + " %" : "—";
+
+function tableau(titre, colonnes, lignes) {
+  const zone = el("div");
+  zone.appendChild(el("h2", "", titre));
+  if (!lignes.length) { zone.appendChild(el("p", "doux", "Rien sur la période.")); return zone; }
+  const d = el("div", "table-defile"), t = el("table"), th = el("tr");
+  colonnes.forEach(([nom, , num]) => th.appendChild(el("th", num ? "n" : "", nom)));
+  t.appendChild(el("thead")).appendChild(th);
+  const tb = el("tbody");
+  for (const l of lignes) {
+    const tr = el("tr");
+    colonnes.forEach(([, f, num]) => { const td = el("td", num ? "n" : ""); const v = f(l); td.append(v instanceof Node ? v : String(v ?? "—")); tr.appendChild(td); });
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb); d.appendChild(t); zone.appendChild(d);
+  return zone;
+}
+
+function jauge(fait, quota) {
+  if (!quota) return "sans quota";
+  const r = Math.min(1, fait / quota), b = el("div", "jauge"), i = el("i", r >= 0.9 ? "haut" : "");
+  i.style.width = (100 * r) + "%"; b.appendChild(i); b.title = `${nombre(fait)} / ${nombre(quota)}`;
+  const s = el("span"); s.append(b, `${nombre(fait)} / ${nombre(quota)}`); return s;
+}
+
+async function chargerConso() {
+  const r = await fetch("/admin/consommation?heures=" + $("periode").value);
+  const c = await r.json(), zone = $("conso");
+  zone.replaceChildren();
+  if (!r.ok) { zone.appendChild(el("p", "ecart", c.erreur || r.status)); return; }
+  const t = c.total, tuiles = el("div", "tuiles");
+  for (const [v, nom] of [[nombre(t.total), "jetons"], [nombre(t.appels), "appels"], [nombre(t.entree), "entrée (contexte)"],
+                          [nombre(t.sortie), "sortie"], [part(t.cache_lu, t.entree), "lu du cache"], [nombre(t.contexte_max), "plus grand contexte"]]) {
+    const b = el("div", "compteur"); b.append(el("b", "", v), nom); tuiles.appendChild(b);
+  }
+  zone.appendChild(tuiles);
+  const communes = [["Appels", l => nombre(l.appels), 1], ["Entrée", l => nombre(l.entree), 1], ["Sortie", l => nombre(l.sortie), 1],
+                    ["Total", l => nombre(l.total), 1], ["Cache", l => part(l.cache_lu, l.entree), 1]];
+  zone.appendChild(tableau("Par utilisateur", [["Utilisateur", l => l.utilisateur], ...communes], c.par_utilisateur));
+  zone.appendChild(tableau("Par compte technique", [["Compte", l => l.compte], ["Utilisateur", l => l.utilisateur], ...communes,
+    ["Aujourd'hui (UTC)", l => jauge(l.aujourd_hui, l.jetons_par_jour)]], c.par_compte));
+  zone.appendChild(tableau("Par prompt (les 50 plus coûteux)", [["Début", l => heure(l.debut)], ["Prompt", l => el("span", "res", l.extrait || "(scellé ou effacé)")],
+    ["Compte", l => l.compte], ...communes, ["Contexte max", l => nombre(l.contexte_max), 1]], c.par_prompt));
+  zone.appendChild(tableau("Contexte par session d'agent", [["Session", l => el("span", "id", court(l.session_agent))], ["Compte", l => l.compte],
+    ["Appels", l => nombre(l.appels), 1], ["Contexte actuel", l => nombre(l.contexte_dernier), 1], ["Contexte max", l => nombre(l.contexte_max), 1],
+    ["Compactions", l => l.compactions, 1], ["Total", l => nombre(l.total), 1]], c.par_session));
+  zone.appendChild(tableau("Par modèle", [["Modèle", l => l.modele || "?"], ...communes], c.par_modele));
 }
 
 async function chargerSessions() {
@@ -280,6 +352,9 @@ async function chargerChaine() {
 
 $("o-flux").onclick = () => onglet("flux");
 $("o-chaine").onclick = () => onglet("chaine");
+$("o-conso").onclick = () => onglet("conso");
+$("periode").onchange = chargerConso;
+$("recharger-conso").onclick = chargerConso;
 $("sessions").onchange = chargerChaine;
 $("recharger").onclick = chargerSessions;
 

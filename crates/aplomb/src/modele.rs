@@ -12,6 +12,10 @@
 //!    fournisseur du modèle (moniteur « secrets », EF-D1). Le journal dit lesquels, jamais
 //!    leur valeur.
 //!
+//! 6. Consommation : la clé présentée par l'agent désigne son compte technique
+//!    (`aplomb agent`) ; clé inconnue : 401, quota du jour atteint : 429. Chaque bilan dit
+//!    le compte, l'utilisateur, le prompt (scellé au journal) et les jetons, cache compris.
+//!
 //! La réponse est relayée au fil de l'eau (flux SSE compris) et lue au passage.
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +25,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use aplomb_core::action::{EvenementOutil, Phase};
+use aplomb_core::consommation::{cle_presentee, empreinte_prompt, extrait, prompt, Releve};
 use aplomb_core::modele::{analyser_reponse, chemin_permis, entetes_amont, Annonce};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -28,7 +33,7 @@ use serde_json::{json, Value};
 use crate::serveur::{constater, Etat};
 
 /// Session du journal pour les échanges avec le modèle.
-const SESSION: &str = "modele";
+pub(crate) const SESSION: &str = "modele";
 const OUTIL: &str = "Modele";
 /// Taille maximale d'une requête (contexte long, images).
 const REQUETE_MAX: usize = 64 * 1024 * 1024;
@@ -113,6 +118,23 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
     if etat.gele(SESSION) {
         return refus(StatusCode::FORBIDDEN, "superviseur gelé : plus aucun appel au modèle");
     }
+    let entrants: Vec<(String, String)> = entetes
+        .iter()
+        .filter_map(|(n, v)| v.to_str().ok().map(|v| (n.as_str().to_string(), v.to_string())))
+        .collect();
+    let imputation = match etat.imputer(cle_presentee(&entrants).as_deref()) {
+        Ok(i) => i,
+        Err((statut, motif)) => {
+            let _ = journaliser(base, json!({"refus": motif}));
+            return refus(statut, &motif);
+        }
+    };
+    let base = {
+        let mut b = base;
+        b["compte"] = json!(imputation.compte);
+        b["utilisateur"] = json!(imputation.utilisateur);
+        b
+    };
     let (Some(amont), Some(jeton)) = (&r.amont, &r.jeton) else {
         let motif = if r.amont.is_none() {
             "aucun modèle dans le mandat (perimetre.domaines_modele)"
@@ -126,10 +148,10 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
         Ok((texte, sortes)) if !sortes.is_empty() => (Bytes::from(texte), sortes),
         _ => (corps, Vec::new()),
     };
-    let modele = serde_json::from_slice::<Value>(&corps)
-        .ok()
-        .and_then(|v| v.get("model").and_then(Value::as_str).map(String::from))
-        .unwrap_or_default();
+    let requete_json = serde_json::from_slice::<Value>(&corps).ok();
+    let modele = requete_json.as_ref().and_then(|v| v.get("model").and_then(Value::as_str).map(String::from)).unwrap_or_default();
+    // Prompt de l'utilisateur, secrets déjà masqués ; seuls les appels de conversation comptent.
+    let prompt = requete_json.as_ref().filter(|_| chemin == "/v1/messages").and_then(prompt);
     // Journalisé avant tout envoi : sans journal, rien ne part.
     let mut envoi = json!({"modele": modele, "envoye": corps.len()});
     if !masques.is_empty() {
@@ -139,10 +161,6 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
         return refus(StatusCode::SERVICE_UNAVAILABLE, &format!("{e} — fail-closed"));
     }
 
-    let entrants: Vec<(String, String)> = entetes
-        .iter()
-        .filter_map(|(n, v)| v.to_str().ok().map(|v| (n.as_str().to_string(), v.to_string())))
-        .collect();
     let mut requete = client().request(methode.clone(), format!("{amont}{}", uri.path_and_query().map_or(chemin, |p| p.as_str())));
     for (n, v) in entetes_amont(&entrants, jeton) {
         requete = requete.header(n, v);
@@ -165,7 +183,20 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
         }
     }
     // Bilan journalisé quand le flux se termine (ou que l'agent coupe).
-    let bilan = Arc::new(Mutex::new(Bilan { etat: etat.clone(), evt: evt.clone(), base, statut: statut.as_u16(), lu: Vec::new(), recu: 0 }));
+    let releve = (chemin == "/v1/messages").then(|| Releve {
+        horodatage: 0,
+        compte: imputation.compte,
+        utilisateur: imputation.utilisateur,
+        session_agent: session_agent.clone(),
+        prompt: prompt.as_deref().map(empreinte_prompt),
+        extrait: prompt.as_deref().map(extrait),
+        modele,
+        entree: 0,
+        cache_lu: 0,
+        cache_ecrit: 0,
+        sortie: 0,
+    });
+    let bilan = Arc::new(Mutex::new(Bilan { etat: etat.clone(), evt: evt.clone(), base, statut: statut.as_u16(), lu: Vec::new(), recu: 0, releve }));
     let annonce = Annonce { echange, session_agent };
     let flux = reponse.bytes_stream().map(move |morceau| {
         if let Ok(m) = &morceau {
@@ -194,6 +225,8 @@ struct Bilan {
     statut: u16,
     lu: Vec<u8>,
     recu: u64,
+    /// Relevé de consommation à compléter par les jetons de la réponse.
+    releve: Option<Releve>,
 }
 
 impl Drop for Bilan {
@@ -209,7 +242,53 @@ impl Drop for Bilan {
             d.insert("outils".into(), json!(a.outils));
             d.insert("jetons_entree".into(), json!(a.jetons_entree));
             d.insert("jetons_sortie".into(), json!(a.jetons_sortie));
+            d.insert("cache_lu".into(), json!(a.cache_lu));
+            d.insert("cache_ecrit".into(), json!(a.cache_ecrit));
+        }
+        let releve = self.releve.take().filter(|_| a.jetons_entree.is_some() || a.jetons_sortie.is_some()).map(|mut r| {
+            r.horodatage = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            r.entree = a.jetons_entree.unwrap_or(0);
+            r.sortie = a.jetons_sortie.unwrap_or(0);
+            r.cache_lu = a.cache_lu.unwrap_or(0);
+            r.cache_ecrit = a.cache_ecrit.unwrap_or(0);
+            r
+        });
+        if let (Some(r), Some(d)) = (&releve, detail.as_object_mut()) {
+            d.insert("modele".into(), json!(r.modele));
+            // Scellé au journal (champ sensible) : extrait masqué et empreinte de regroupement.
+            if r.prompt.is_some() {
+                d.insert("prompt".into(), json!({"extrait": r.extrait, "empreinte": r.prompt}));
+            }
         }
         let _ = constater(&self.etat, &self.evt, detail);
+        if let Some(r) = releve {
+            self.etat.relever(r);
+        }
     }
+}
+
+/// Relevé de consommation d'un bilan du journal (contenu déchiffré, ou scellé : sans prompt).
+pub(crate) fn releve_du_journal(horodatage: u64, c: &Value) -> Option<Releve> {
+    if c.get("ressource").and_then(Value::as_str).is_some_and(|r| r != "/v1/messages") {
+        return None;
+    }
+    let n = |k: &str| c.get(k).and_then(Value::as_u64);
+    let (entree, sortie) = (n("jetons_entree"), n("jetons_sortie"));
+    if entree.is_none() && sortie.is_none() {
+        return None;
+    }
+    let s = |k: &str| c.get(k).and_then(Value::as_str).map(String::from);
+    Some(Releve {
+        horodatage,
+        compte: s("compte").unwrap_or_else(|| "anonyme".into()),
+        utilisateur: s("utilisateur").unwrap_or_else(|| "?".into()),
+        session_agent: s("session_agent"),
+        prompt: c.pointer("/prompt/empreinte").and_then(Value::as_str).map(String::from),
+        extrait: c.pointer("/prompt/extrait").and_then(Value::as_str).map(String::from),
+        modele: s("modele").unwrap_or_default(),
+        entree: entree.unwrap_or(0),
+        cache_lu: n("cache_lu").unwrap_or(0),
+        cache_ecrit: n("cache_ecrit").unwrap_or(0),
+        sortie: sortie.unwrap_or(0),
+    })
 }

@@ -32,7 +32,7 @@ use sha2::Sha256;
 use crate::journal::nom_fichier;
 
 /// Champs de premier niveau qui portent un contenu venant de l'agent.
-const CHAMPS_SENSIBLES: &[&str] = &["ressource"];
+const CHAMPS_SENSIBLES: &[&str] = &["ressource", "prompt"];
 
 /// Clés de session, une par fichier.
 pub struct Coffre {

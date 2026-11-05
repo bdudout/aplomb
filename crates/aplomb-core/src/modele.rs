@@ -83,9 +83,12 @@ pub struct OutilDemande {
 pub struct Bilan {
     /// Outils demandés par le modèle, dans l'ordre.
     pub outils: Vec<OutilDemande>,
-    /// Jetons d'entrée, cache compris (lus et écrits).
+    /// Jetons d'entrée, cache compris (lus et écrits) : la taille du contexte envoyé.
     pub jetons_entree: Option<u64>,
     pub jetons_sortie: Option<u64>,
+    /// Part de l'entrée lue dans le cache, et écrite dans le cache.
+    pub cache_lu: Option<u64>,
+    pub cache_ecrit: Option<u64>,
 }
 
 /// Jetons d'entrée d'un bloc `usage` : directs, plus ceux lus ou écrits dans le cache.
@@ -112,17 +115,22 @@ pub fn analyser_reponse(corps: &[u8]) -> Bilan {
     let mut lire = |v: &Value| {
         let sortie = |v: &Value| v.get("usage").and_then(|u| u.get("output_tokens")).and_then(Value::as_u64);
         let entree = |v: &Value| v.get("usage").and_then(entree_totale);
+        let cache = |v: &Value, k: &str| v.get("usage").and_then(|u| u.get(k)).and_then(Value::as_u64);
         match v.get("type").and_then(Value::as_str) {
             // Réponse complète.
             Some("message") => {
                 b.outils.extend(v.get("content").and_then(Value::as_array).into_iter().flatten().filter_map(outil_demande));
                 b.jetons_entree = entree(v).or(b.jetons_entree);
                 b.jetons_sortie = sortie(v).or(b.jetons_sortie);
+                b.cache_lu = cache(v, "cache_read_input_tokens").or(b.cache_lu);
+                b.cache_ecrit = cache(v, "cache_creation_input_tokens").or(b.cache_ecrit);
             }
             // Flux.
             Some("message_start") => {
                 if let Some(m) = v.get("message") {
                     b.jetons_entree = entree(m).or(b.jetons_entree);
+                    b.cache_lu = cache(m, "cache_read_input_tokens").or(b.cache_lu);
+                    b.cache_ecrit = cache(m, "cache_creation_input_tokens").or(b.cache_ecrit);
                 }
             }
             Some("content_block_start") => b.outils.extend(v.get("content_block").and_then(outil_demande)),
@@ -244,7 +252,7 @@ mod tests {
         let o = |nom: &str, id: &str| OutilDemande { nom: nom.into(), id: id.into() };
         assert_eq!(
             analyser_reponse(json),
-            Bilan { outils: vec![o("Bash", "toolu_1")], jetons_entree: Some(12), jetons_sortie: Some(7) }
+            Bilan { outils: vec![o("Bash", "toolu_1")], jetons_entree: Some(12), jetons_sortie: Some(7), ..Default::default() }
         );
         let sse = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":2,\"cache_read_input_tokens\":20,\"cache_creation_input_tokens\":8}}}\n\n\
 event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"Read\"}}\n\n\
@@ -252,7 +260,7 @@ event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_bl
 event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":44}}\n\n";
         assert_eq!(
             analyser_reponse(sse),
-            Bilan { outils: vec![o("Read", "toolu_2"), o("Edit", "toolu_3")], jetons_entree: Some(30), jetons_sortie: Some(44) }
+            Bilan { outils: vec![o("Read", "toolu_2"), o("Edit", "toolu_3")], jetons_entree: Some(30), jetons_sortie: Some(44), cache_lu: Some(20), cache_ecrit: Some(8) }
         );
         assert_eq!(analyser_reponse(b"pas du json"), Bilan::default());
     }
