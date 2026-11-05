@@ -41,7 +41,7 @@ services:
     working_dir: "${APLOMB_DEPOT:?APLOMB_DEPOT absent, voir .env.exemple}"
     volumes:
       - ${APLOMB_DEPOT}:${APLOMB_DEPOT}
-      - ../cles/reponses.pub:/etc/aplomb/reponses.pub:ro
+      - ${APLOMB_INSTANCE:-..}/cles/reponses.pub:/etc/aplomb/reponses.pub:ro
     read_only: true
     tmpfs: [/tmp, "/home/agent:uid=1001,gid=1001"]
     cap_drop: [ALL]

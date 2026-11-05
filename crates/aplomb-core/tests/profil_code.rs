@@ -250,16 +250,20 @@ fn gel_global_par_l_operateur() {
     assert_eq!(s.decider(&evt("s", "Read", json!({"file_path": "/depot/a"}))).1.verdict, Verdict::Allow);
 }
 
-/// Le mandat réel du dépôt reste valide quand le format du mandat gagne un champ facultatif
-/// (ici `domaines_modele`) : un champ vide n'entre pas dans le texte signé.
+/// Un mandat cosigné reste valide quand le format du mandat gagne un champ facultatif :
+/// un champ vide n'entre pas dans le texte signé. Mandat figé dans `tests/donnees/`, avec
+/// sa confiance : seules les signatures sont vérifiées (pas les empreintes des règles, qui
+/// suivent les `.cedar`).
 #[test]
-fn mandat_reel_toujours_cosigne() {
-    let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+fn mandat_cosigne_fige_toujours_valide() {
+    let donnees = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/donnees");
     let confiance = aplomb_core::gouvernance::Confiance::depuis_yaml(
-        &std::fs::read_to_string(racine.join("cles/confiance.yaml")).unwrap(),
+        &std::fs::read_to_string(donnees.join("confiance.yaml")).unwrap(),
     )
     .unwrap();
-    let (_, signataires) = aplomb_core::mandat::charger_cosigne(&racine.join("mandats/bac-a-sable.yaml"), &confiance).unwrap();
+    let mandat: aplomb_core::mandat::Mandat =
+        serde_yaml::from_str(&std::fs::read_to_string(donnees.join("mandat-cosigne.yaml")).unwrap()).unwrap();
+    let signataires = confiance.verifier(&mandat.octets_signes(), &mandat.signatures).unwrap();
     assert!(signataires.len() >= 2);
 }
 

@@ -124,16 +124,19 @@ Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance
 
 ### 2. Créer son instance
 
-L'instance est le dossier où vivent vos mandats, vos comptes, vos clés publiques et le journal. Créez-la **hors du clone** : le clone contient l'instance de démonstration de l'auteur (`mandats/bac-a-sable.yaml`, `comptes.yaml`, `cles/confiance.yaml`, signés par ses clés), et `aplomb init` garderait son fichier de confiance.
+L'instance est le dossier où vivent vos mandats, vos comptes, vos clés publiques et le journal. Le clone n'en contient aucune : `mandats/`, `comptes.yaml` et `cles/` sont propres à chaque poste et ne sont jamais versionnés. Un dossier à part est conseillé : un `git pull` ne s'y mêle pas, et le code reste séparé de ce qui est signé.
 
 ```sh
 mkdir -p ~/aplomb-instance/mandats && cd ~/aplomb-instance
 cp -R <chemin du clone>/profils .
+cp <chemin du clone>/exemples/mandat.yaml mandats/mon-projet.yaml
 ```
+
+Le faire directement dans le clone marche aussi.
 
 ### 3. Écrire le mandat
 
-Le mandat dit ce que l'agent a le droit de faire, pour un projet. Exemple à adapter, `mandats/mon-projet.yaml` :
+Le mandat dit ce que l'agent a le droit de faire, pour un projet. Adapter `mandats/mon-projet.yaml`, copié du modèle commenté [`exemples/mandat.yaml`](exemples/mandat.yaml) :
 
 ```yaml
 id: mon-projet
@@ -290,7 +293,7 @@ flowchart LR
 | Effacer les contenus d'une session | `aplomb effacer --session <id>` (sa clé est détruite, la chaîne reste vérifiable) |
 | Exporter un diagramme de séquence | `aplomb mermaid --session <id>` ou `--sortie diagrammes` ; `--dechiffrer` montre les ressources en clair |
 | Changer la phrase de passe | `aplomb phrase changer` |
-| Rejouer les scénarios du hook | `scripts/scenarios.sh` |
+| Rejouer les scénarios du hook | `APLOMB_DEPOT=<racine du mandat> APLOMB_INSTANCE=~/aplomb-instance scripts/scenarios.sh` |
 
 ### Ports
 
@@ -310,7 +313,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 |---|---|
 | Toutes les actions sont refusées, « superviseur injoignable » | `aplomb serve` n'est pas lancé, ou il écoute sur un autre port. C'est le fail-closed attendu. |
 | `serve` refuse de démarrer : signature manquante | Un mandat, une règle `.cedar` ou `comptes.yaml` a changé : recosigner. |
-| `init` échoue à la cosignature (clé de compte absente) | Lancé dans le clone, qui contient l'instance de démonstration : utiliser un dossier d'instance à vous (étape 2). |
+| `init` échoue à la cosignature (clé de compte absente) | `comptes.yaml` ou `cles/confiance.yaml` viennent d'une autre instance, dont les clés privées ne sont pas sur ce poste : repartir d'un dossier d'instance vide (étape 2). |
 | « réponse non signée » dans Claude Code | `--cle-serveur` ne pointe pas sur le `cles/reponses.pub` de l'instance lancée. |
 | Une session est gelée | Une borne est atteinte ou un point protégé a été touché : voir Aplomb Watch, puis dégeler à quatre yeux. |
 | Le hook s'exécute deux fois | Il est déclaré à la fois en paramètres gérés et dans `.claude/settings.json` du projet : retirer celui du projet. |

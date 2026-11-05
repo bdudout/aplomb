@@ -1,6 +1,6 @@
 # Installer le hook hors de portée de l'agent (niveau 1 renforcé)
 
-Dans le dépôt, le hook est déclaré dans `bac-a-sable/.claude/settings.json`, un fichier
+Dans le dépôt supervisé, le hook est déclaré dans `.claude/settings.json`, un fichier
 que l'agent peut modifier. Aplomb gèle déjà toute tentative (règle `point-protege`), mais
 la configuration reste à portée de main. Les **paramètres gérés** de Claude Code
 corrigent cela (EF-C5, principe 9 de l'expression de besoin) :
@@ -15,12 +15,13 @@ corrigent cela (EF-C5, principe 9 de l'expression de besoin) :
 ```sh
 sudo install -d -o root -g wheel -m 755 /usr/local/libexec/aplomb
 sudo install -o root -g wheel -m 755 target/debug/aplomb /usr/local/libexec/aplomb/aplomb
-sudo install -o root -g wheel -m 644 cles/reponses.pub /usr/local/libexec/aplomb/reponses.pub
+sudo install -o root -g wheel -m 644 ~/aplomb-instance/cles/reponses.pub /usr/local/libexec/aplomb/reponses.pub
 sudo install -d -o root -g wheel -m 755 "/Library/Application Support/ClaudeCode"
 sudo install -o root -g wheel -m 644 deploiement/managed-settings.json "/Library/Application Support/ClaudeCode/managed-settings.json"
 ```
 
-Ensuite, retire le hook du dépôt (`bac-a-sable/.claude/settings.json`), sinon il
+Avant la dernière commande, remplace dans `deploiement/managed-settings.json` le dossier `--perimetre` par celui de ton projet
+(l'option se répète). Ensuite, retire le hook du dépôt (`.claude/settings.json`), sinon il
 s'exécute deux fois. Dans une session Claude Code, `/status` doit afficher les
 paramètres gérés dans la ligne `Setting sources`.
 

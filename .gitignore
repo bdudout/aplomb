@@ -8,3 +8,9 @@ bac-a-sable/.sal/journal/
 
 # Jeton et chemins locaux du conteneur de l'agent
 conteneur/.env
+
+# Instance locale (mandats, comptes, confiance, clés publiques) : propre à chaque poste,
+# créée par `aplomb init`. Modèle de mandat : exemples/mandat.yaml.
+/mandats/
+/comptes.yaml
+/cles/

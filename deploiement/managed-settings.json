@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/libexec/aplomb/aplomb hook --cle-serveur /usr/local/libexec/aplomb/reponses.pub --perimetre /Users/bdudout/Documents/alignment-supervisor/bac-a-sable",
+            "command": "/usr/local/libexec/aplomb/aplomb hook --cle-serveur /usr/local/libexec/aplomb/reponses.pub --perimetre /Users/moi/code/mon-projet",
             "timeout": 10
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/libexec/aplomb/aplomb hook --cle-serveur /usr/local/libexec/aplomb/reponses.pub --perimetre /Users/bdudout/Documents/alignment-supervisor/bac-a-sable",
+            "command": "/usr/local/libexec/aplomb/aplomb hook --cle-serveur /usr/local/libexec/aplomb/reponses.pub --perimetre /Users/moi/code/mon-projet",
             "timeout": 10
           }
         ]

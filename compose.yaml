@@ -7,7 +7,7 @@ services:
     build: .
     command:
       - serve
-      - --mandat=/etc/aplomb/mandats/bac-a-sable.yaml
+      - --mandat=/etc/aplomb/mandats/${APLOMB_MANDAT:?APLOMB_MANDAT absent : nom du mandat, sans .yaml}.yaml
       - --confiance=/etc/aplomb/cles/confiance.yaml
       - --journal=/var/lib/aplomb/journal
       - --coffre=/var/lib/aplomb-cles
@@ -18,10 +18,10 @@ services:
       - "127.0.0.1:7700:7700"
       - "127.0.0.1:7701:7701"
     volumes:
-      - ./mandats:/etc/aplomb/mandats:ro
-      - ./profils:/etc/aplomb/profils:ro
-      - ./cles/confiance.yaml:/etc/aplomb/cles/confiance.yaml:ro
-      - ./comptes.yaml:/etc/aplomb/comptes.yaml:ro
+      - ${APLOMB_INSTANCE:-.}/mandats:/etc/aplomb/mandats:ro
+      - ${APLOMB_INSTANCE:-.}/profils:/etc/aplomb/profils:ro
+      - ${APLOMB_INSTANCE:-.}/cles/confiance.yaml:/etc/aplomb/cles/confiance.yaml:ro
+      - ${APLOMB_INSTANCE:-.}/comptes.yaml:/etc/aplomb/comptes.yaml:ro
       - journal:/var/lib/aplomb/journal
       - cles:/var/lib/aplomb-cles
     read_only: true

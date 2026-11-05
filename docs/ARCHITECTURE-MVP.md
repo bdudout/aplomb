@@ -61,7 +61,7 @@ aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
 | `crates/aplomb-core/src/delegation.rs` | Inclusion d'un mandat de sous-agent dans son parent (EF-B6) |
 | `crates/aplomb/src/ui.html` | Vue technique minimale (flux temps réel) |
 | `profils/code/` | Règles Cedar et mandat type du profil C |
-| `bac-a-sable/` | Dépôt de test où le hook est activé |
+| `exemples/mandat.yaml` | Modèle de mandat (l'instance — mandats, comptes, confiance — n'est pas versionnée) |
 
 ## Ce que J1 ne fait pas (jalons suivants)
 

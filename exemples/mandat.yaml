@@ -1,0 +1,25 @@
+# Modèle de mandat : le copier dans mandats/ de votre instance, l'adapter, puis le faire
+# cosigner (`aplomb init` la première fois, `aplomb cosigner` ensuite). Les empreintes des
+# règles et les signatures sont ajoutées par la cosignature.
+id: mon-projet
+version: 1
+profil: code
+agent: claude-code
+intention: Développer et tester mon-projet, sans rien toucher en dehors du dépôt.
+perimetre:
+  # Chemin absolu et réel du dépôt où travaille l'agent.
+  racine: /Users/moi/code/mon-projet
+  # Tout domaine absent de la liste est refusé.
+  domaines_autorises: [pypi.org, files.pythonhosted.org]
+  branches_protegees: [main, master]
+  # Modèle de l'agent, joint par le proxy LLM. Modèle local : ["http://127.0.0.1:11434"].
+  domaines_modele: [api.anthropic.com]
+  # Serveurs MCP lancés par Aplomb ; seuls les outils listés passent sans revue.
+  # serveurs_mcp:
+  # - {nom: notes, commande: [npx, -y, "@exemple/serveur-notes"], outils: [chercher]}
+politique:
+  # Chemins relatifs à ce fichier : l'instance contient une copie de profils/.
+  regles: ../profils/code/regles.cedar
+  revue: ../profils/code/revue.cedar
+# Au-delà, la session est gelée.
+bornes: {refus: 5, revues: 20, domaines: 10, envois: 3, actions: 2000}
