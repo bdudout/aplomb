@@ -149,7 +149,9 @@ async function rafraichir() {
   $("compte").textContent = `connecté : ${e.compte} (${e.roles.join(", ")})`;
   const j = e.juge;
   const juge = j ? ` · juge ${j.modele} : ${j.consultations} consultation(s), ${j.durcies} durcie(s), ${j.indisponible} indisponible(s), ${j.latence_moyenne_ms} ms en moyenne` : "";
-  $("mandat").textContent = `Mandat ${e.mandat.id} v${e.mandat.version} · profil ${e.mandat.profil} · ${e.mandat.racine}${juge}`;
+  const p = e.protocole;
+  const protocole = p ? ` · protocole ${p.mode} : ${p.examinees} réponse(s) examinée(s), ${p.suspectes} suspecte(s), ${p.remplacees} remplacée(s), ${p.incriminations} incrimination(s)${p.fiable_indisponible ? `, modèle de confiance indisponible ${p.fiable_indisponible} fois` : ""}, ${p.examinees ? Math.round(p.latence_ms / p.examinees) : 0} ms ajoutées en moyenne` : "";
+  $("mandat").textContent = `Mandat ${e.mandat.id} v${e.mandat.version} · profil ${e.mandat.profil} · ${e.mandat.racine}${juge}${protocole}`;
   for (const k of ["allow", "review", "deny", "gel"]) $("c-" + k).textContent = e.compteurs[k];
   $("bandeau").style.display = e.gel_global ? "block" : "none";
   const gelees = e.sessions_gelees.length ? `${e.sessions_gelees.length} session(s) gelée(s)` : "";

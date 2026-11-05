@@ -29,6 +29,7 @@ mod mcp;
 mod presence;
 mod modele;
 mod passerelle;
+mod protocole;
 mod serveur;
 
 use std::path::PathBuf;

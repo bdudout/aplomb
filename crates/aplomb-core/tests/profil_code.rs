@@ -357,6 +357,8 @@ fn cascade_des_moniteurs() {
             appels_max: 1,
             niveau_max: Niveau::Suspect,
         }),
+        protocole: None,
+        raisonnement: true,
     });
     let mut s = Superviseur::nouveau(charge(m)).unwrap();
     let bash = evt("s", "Bash", json!({"command": "cargo build"}));

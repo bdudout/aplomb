@@ -150,12 +150,99 @@ pub fn analyser_reponse(corps: &[u8]) -> Bilan {
     b
 }
 
+/// Contenu d'une réponse du modèle, reconstitué (flux compris) : de quoi examiner les
+/// appels d'outils avant que l'agent les reçoive (EF-E2) et lire le raisonnement (EF-E3).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Contenu {
+    pub texte: String,
+    /// Raisonnement explicite (blocs `thinking`), s'il est produit.
+    pub raisonnement: String,
+    /// Appels d'outils : identifiant, nom, paramètres.
+    pub outils: Vec<(String, String, serde_json::Value)>,
+}
+
+/// Reconstitue le contenu d'une réponse de l'API Messages, en JSON ou en flux (SSE : les
+/// paramètres d'un outil arrivent par morceaux, `input_json_delta`).
+pub fn reconstituer(corps: &[u8]) -> Contenu {
+    use serde_json::Value;
+    #[derive(Default)]
+    struct Bloc {
+        genre: String,
+        texte: String,
+        id: String,
+        nom: String,
+        entree: Option<Value>,
+        json: String,
+    }
+    let mut blocs: Vec<Bloc> = Vec::new();
+    let depuis_bloc = |b: &Value| Bloc {
+        genre: b["type"].as_str().unwrap_or_default().to_string(),
+        texte: b["text"].as_str().or(b["thinking"].as_str()).unwrap_or_default().to_string(),
+        id: b["id"].as_str().unwrap_or_default().to_string(),
+        nom: b["name"].as_str().unwrap_or_default().to_string(),
+        entree: b.get("input").filter(|i| i.as_object().is_some_and(|o| !o.is_empty())).cloned(),
+        json: String::new(),
+    };
+    let texte = String::from_utf8_lossy(corps);
+    if let Ok(v) = serde_json::from_str::<Value>(&texte) {
+        blocs.extend(v["content"].as_array().into_iter().flatten().map(depuis_bloc));
+    } else {
+        for ligne in texte.lines() {
+            let Some(Ok(v)) = ligne.strip_prefix("data:").map(|d| serde_json::from_str::<Value>(d.trim())) else { continue };
+            let i = v["index"].as_u64().unwrap_or(0) as usize;
+            match v["type"].as_str() {
+                Some("content_block_start") => {
+                    while blocs.len() <= i {
+                        blocs.push(Bloc::default());
+                    }
+                    blocs[i] = depuis_bloc(&v["content_block"]);
+                }
+                Some("content_block_delta") => {
+                    let Some(b) = blocs.get_mut(i) else { continue };
+                    let d = &v["delta"];
+                    match d["type"].as_str() {
+                        Some("text_delta") => b.texte.push_str(d["text"].as_str().unwrap_or_default()),
+                        Some("thinking_delta") => b.texte.push_str(d["thinking"].as_str().unwrap_or_default()),
+                        Some("input_json_delta") => b.json.push_str(d["partial_json"].as_str().unwrap_or_default()),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut c = Contenu::default();
+    for b in blocs {
+        match b.genre.as_str() {
+            "text" => c.texte.push_str(&b.texte),
+            "thinking" => {
+                if !c.raisonnement.is_empty() {
+                    c.raisonnement.push('\n');
+                }
+                c.raisonnement.push_str(&b.texte);
+            }
+            "tool_use" => {
+                let entree = b.entree.or_else(|| serde_json::from_str(&b.json).ok()).unwrap_or_else(|| serde_json::json!({}));
+                c.outils.push((b.id, b.nom, entree));
+            }
+            _ => {}
+        }
+    }
+    c
+}
+
 /// Appel d'outil annoncé par le modèle : dans quel échange, et pour quelle session d'agent
-/// si l'agent l'a dite au proxy.
-#[derive(Debug, Clone, PartialEq)]
+/// si l'agent l'a dite au proxy. Le proxy y joint ce qu'il a vu de la réponse : le
+/// raisonnement qui précède l'appel, et les avis déjà rendus (raisonnement, juge du
+/// protocole), que la décision reprend quand l'agent présente l'action.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Annonce {
     pub echange: u64,
     pub session_agent: Option<String>,
+    pub raisonnement: Option<String>,
+    pub avis: Vec<crate::decision::Avis>,
+    /// Le juge a déjà jugé cet appel au proxy : inutile de le consulter de nouveau.
+    pub juge: bool,
 }
 
 /// Registre borné des appels d'outils annoncés par le modèle (contrôle croisé : une action
@@ -169,10 +256,12 @@ pub struct Annonces {
 impl Annonces {
     const MAX: usize = 10_000;
 
+    /// Retient un appel annoncé ; la première annonce d'un identifiant fait foi.
     pub fn annoncer(&mut self, id: &str, annonce: Annonce) {
-        if id.is_empty() || self.ids.insert(id.to_string(), annonce).is_some() {
+        if id.is_empty() || self.ids.contains_key(id) {
             return;
         }
+        self.ids.insert(id.to_string(), annonce);
         self.ordre.push_back(id.to_string());
         if self.ordre.len() > Self::MAX {
             if let Some(ancien) = self.ordre.pop_front() {
@@ -268,14 +357,44 @@ event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_toke
     #[test]
     fn registre_borne_des_annonces() {
         let mut a = Annonces::default();
-        a.annoncer("toolu_a", Annonce { echange: 1, session_agent: None });
-        a.annoncer("", Annonce { echange: 1, session_agent: None });
+        a.annoncer("toolu_a", Annonce { echange: 1, ..Default::default() });
+        a.annoncer("", Annonce { echange: 1, ..Default::default() });
         assert_eq!(a.trouver("toolu_a").map(|x| x.echange), Some(1));
         assert!(a.trouver("").is_none());
         for i in 0..Annonces::MAX {
-            a.annoncer(&format!("x{i}"), Annonce { echange: 2, session_agent: None });
+            a.annoncer(&format!("x{i}"), Annonce { echange: 2, ..Default::default() });
         }
         assert!(a.trouver("toolu_a").is_none(), "le plus ancien sort du registre");
         assert!(a.trouver("x0").is_some());
+    }
+
+    #[test]
+    fn reconstitution_du_flux() {
+        let ev = |v: serde_json::Value| format!("event: x\ndata: {v}\n\n");
+        let flux = [
+            ev(serde_json::json!({"type": "message_start", "message": {"usage": {"input_tokens": 3}}})),
+            ev(serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}})),
+            ev(serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "je vais "}})),
+            ev(serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "tester"}})),
+            ev(serde_json::json!({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}})),
+            ev(serde_json::json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"command\": \"cargo"}})),
+            ev(serde_json::json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": " test\"}"}})),
+        ]
+        .concat();
+        let c = reconstituer(flux.as_bytes());
+        assert_eq!(c.raisonnement, "je vais tester");
+        assert_eq!(c.outils, vec![("toolu_1".into(), "Bash".into(), serde_json::json!({"command": "cargo test"}))]);
+        let complet = serde_json::json!({"type": "message", "content": [{"type": "text", "text": "ok"},
+            {"type": "tool_use", "id": "t2", "name": "Read", "input": {"file_path": "/a"}}]});
+        let c = reconstituer(complet.to_string().as_bytes());
+        assert_eq!((c.texte.as_str(), c.outils[0].2["file_path"].as_str()), ("ok", Some("/a")));
+    }
+
+    #[test]
+    fn premiere_annonce_fait_foi() {
+        let mut a = Annonces::default();
+        a.annoncer("t", Annonce { echange: 1, juge: true, ..Default::default() });
+        a.annoncer("t", Annonce { echange: 2, ..Default::default() });
+        assert!(a.trouver("t").unwrap().juge);
     }
 }

@@ -12,7 +12,11 @@
 //!    fournisseur du modèle (moniteur « secrets », EF-D1). Le journal dit lesquels, jamais
 //!    leur valeur.
 //!
-//! 6. Consommation : la clé présentée par l'agent désigne son compte technique
+//! 6. Protocoles (EF-E2) et raisonnement (EF-E3) : voir `crate::protocole`. En
+//!    surveillance, le raisonnement lu au fil de l'eau accompagne chaque appel d'outil
+//!    annoncé jusqu'à la décision ; en `report` ou `reechantillonnage`, la réponse est
+//!    retenue, examinée, et remplacée si elle est suspecte.
+//! 7. Consommation : la clé présentée par l'agent désigne son compte technique
 //!    (`aplomb agent`) ; clé inconnue : 401, quota du jour atteint : 429. Chaque bilan dit
 //!    le compte, l'utilisateur, le prompt (scellé au journal) et les jetons, cache compris.
 //!
@@ -27,6 +31,7 @@ use axum::Router;
 use aplomb_core::action::{EvenementOutil, Phase};
 use aplomb_core::consommation::{cle_presentee, empreinte_prompt, extrait, prompt, Releve};
 use aplomb_core::modele::{analyser_reponse, chemin_permis, entetes_amont, Annonce};
+use aplomb_core::moniteurs::ModeProtocole;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
@@ -47,6 +52,7 @@ pub struct Reglages {
     /// Amont, ex. `https://api.anthropic.com` ; `None` si le mandat ne déclare aucun modèle.
     pub amont: Option<String>,
     pub jeton: Option<String>,
+    pub protocole: crate::protocole::Reglages,
 }
 
 type Partage = (Etat, Arc<Reglages>);
@@ -161,28 +167,14 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
         return refus(StatusCode::SERVICE_UNAVAILABLE, &format!("{e} — fail-closed"));
     }
 
-    let mut requete = client().request(methode.clone(), format!("{amont}{}", uri.path_and_query().map_or(chemin, |p| p.as_str())));
-    for (n, v) in entetes_amont(&entrants, jeton) {
-        requete = requete.header(n, v);
-    }
-    let reponse = match requete.body(corps).send().await {
+    let cible = uri.path_and_query().map_or(chemin, |p| p.as_str()).to_string();
+    let reponse = match envoyer(amont, &cible, &methode, &entrants, jeton, corps.clone()).await {
         Ok(r) => r,
         Err(e) => {
             let _ = journaliser(base, json!({"erreur": "amont injoignable"}));
             return refus(StatusCode::BAD_GATEWAY, &format!("modèle injoignable : {e}"));
         }
     };
-
-    let statut = reponse.status();
-    let mut sortie = Response::builder().status(statut.as_u16());
-    for (n, v) in reponse.headers() {
-        if !matches!(n.as_str(), "connection" | "keep-alive" | "transfer-encoding" | "content-length") {
-            if let (Ok(n), Ok(v)) = (HeaderName::from_bytes(n.as_str().as_bytes()), HeaderValue::from_bytes(v.as_bytes())) {
-                sortie = sortie.header(n, v);
-            }
-        }
-    }
-    // Bilan journalisé quand le flux se termine (ou que l'agent coupe).
     let releve = (chemin == "/v1/messages").then(|| Releve {
         horodatage: 0,
         compte: imputation.compte,
@@ -196,8 +188,133 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
         cache_ecrit: 0,
         sortie: 0,
     });
+    let annonce = Annonce { echange, session_agent: session_agent.clone(), ..Default::default() };
+
+    // Protocole : la réponse est retenue et examinée avant que l'agent la reçoive (EF-E2).
+    if let Some(p) = r.protocole.protocole.as_ref().filter(|_| chemin == "/v1/messages" && reponse.status().is_success()) {
+        let session = session_agent.clone().unwrap_or_else(|| SESSION.into());
+        let debut = std::time::Instant::now();
+        let Some(mut retenue) = lire(reponse).await else { return refus(StatusCode::BAD_GATEWAY, "réponse du modèle interrompue") };
+        let mut examen = crate::protocole::examiner(&etat, &r.protocole, p, &session, &retenue.2).await;
+        let mut ecartees: Vec<Bytes> = Vec::new();
+        let mut issue = Value::Null;
+        if examen.suspect {
+            let motifs = examen.motifs.clone();
+            match p.mode {
+                ModeProtocole::Report => {
+                    let fiable = p.fiable.as_ref().zip(r.protocole.fiable.as_ref());
+                    let corps_fiable = fiable.and_then(|(f, _)| crate::protocole::requete_fiable(&corps, &f.modele));
+                    let reponse_fiable = match (fiable, corps_fiable) {
+                        (Some((_, hote)), Some(c)) => match envoyer(hote, &cible, &methode, &entrants, jeton, Bytes::from(c)).await {
+                            Ok(rf) if rf.status().is_success() => lire(rf).await,
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    match reponse_fiable {
+                        Some(f) => {
+                            // Le modèle de confiance n'est pas soumis au protocole ; ses actions
+                            // passent par le hook comme toutes les autres.
+                            let (raisonnement, avis_r) = r.protocole.lire_raisonnement(&f.2);
+                            ecartees.push(std::mem::replace(&mut retenue, f).2);
+                            examen = crate::protocole::Examen { raisonnement, ..Default::default() };
+                            if let Some(a) = avis_r {
+                                for (id, _, _) in aplomb_core::modele::reconstituer(&retenue.2).outils {
+                                    examen.par_outil.insert(id, (vec![a.clone()], false));
+                                }
+                            }
+                            issue = json!({"protocole": "report", "suspecte": motifs, "issue": "remplacée par la réponse du modèle de confiance"});
+                            etat.noter_protocole(|s| s.remplacees += 1);
+                        }
+                        None => {
+                            let motif = "réponse suspecte, modèle de confiance indisponible : revue";
+                            for (avis, _) in examen.par_outil.values_mut() {
+                                avis.push(crate::protocole::avis_non_remplacee(motif));
+                            }
+                            issue = json!({"protocole": "report", "suspecte": motifs, "issue": motif});
+                            etat.noter_protocole(|s| s.fiable_indisponible += 1);
+                        }
+                    }
+                }
+                ModeProtocole::Reechantillonnage => {
+                    let mut retenu = None;
+                    for k in 1..=p.echantillons {
+                        etat.noter_protocole(|s| s.reechantillonnages += 1);
+                        let Ok(rk) = envoyer(amont, &cible, &methode, &entrants, jeton, corps.clone()).await else { break };
+                        if !rk.status().is_success() {
+                            break;
+                        }
+                        let Some(ek) = lire(rk).await else { break };
+                        let examen_k = crate::protocole::examiner(&etat, &r.protocole, p, &session, &ek.2).await;
+                        if !examen_k.suspect {
+                            ecartees.push(std::mem::replace(&mut retenue, ek).2);
+                            examen = examen_k;
+                            retenu = Some(k);
+                            break;
+                        }
+                        ecartees.push(ek.2);
+                    }
+                    issue = match retenu {
+                        Some(k) => json!({"protocole": "reechantillonnage", "suspecte": motifs, "issue": format!("échantillon {k} retenu, non suspect")}),
+                        None => {
+                            let n = ecartees.len() + 1;
+                            let motif = format!("rééchantillonnage : {n} échantillon(s) suspect(s) sur {n} — incrimination, revue");
+                            for (avis, _) in examen.par_outil.values_mut() {
+                                avis.push(crate::protocole::avis_non_remplacee(&motif));
+                            }
+                            etat.noter_protocole(|s| s.incriminations += 1);
+                            json!({"protocole": "reechantillonnage", "suspecte": motifs, "issue": motif})
+                        }
+                    };
+                }
+                ModeProtocole::Surveillance => {}
+            }
+        }
+        let latence = debut.elapsed().as_millis() as u64;
+        let suspecte = !issue.is_null();
+        etat.noter_protocole(|s| {
+            s.examinees += 1;
+            s.suspectes += u64::from(suspecte);
+            s.latence_ms += latence;
+        });
+        if suspecte {
+            issue["latence_ms"] = json!(latence);
+            let _ = journaliser(base.clone(), issue);
+        }
+        for (id, (avis, juge)) in examen.par_outil {
+            etat.annoncer(&id, Annonce { raisonnement: examen.raisonnement.clone(), avis, juge, ..annonce.clone() });
+        }
+        // Réponses écartées : payées, donc comptées.
+        if let Some(rl) = &releve {
+            for e in &ecartees {
+                let a = analyser_reponse(e);
+                etat.relever(Releve {
+                    horodatage: maintenant(),
+                    entree: a.jetons_entree.unwrap_or(0),
+                    sortie: a.jetons_sortie.unwrap_or(0),
+                    cache_lu: a.cache_lu.unwrap_or(0),
+                    cache_ecrit: a.cache_ecrit.unwrap_or(0),
+                    ..rl.clone()
+                });
+            }
+        }
+        let (statut, entetes_r, octets) = retenue;
+        let mut sortie = Response::builder().status(statut);
+        for (n, v) in entetes_r {
+            sortie = sortie.header(n, v);
+        }
+        drop(Bilan { etat: etat.clone(), evt: evt.clone(), base, statut, recu: octets.len() as u64, lu: octets.to_vec(), releve });
+        return sortie.body(Body::from(octets)).unwrap_or_else(|_| refus(StatusCode::BAD_GATEWAY, "réponse du modèle illisible"));
+    }
+
+    let statut = reponse.status();
+    let mut sortie = Response::builder().status(statut.as_u16());
+    for (n, v) in entetes_relayes(reponse.headers()) {
+        sortie = sortie.header(n, v);
+    }
+    // Bilan journalisé quand le flux se termine (ou que l'agent coupe).
     let bilan = Arc::new(Mutex::new(Bilan { etat: etat.clone(), evt: evt.clone(), base, statut: statut.as_u16(), lu: Vec::new(), recu: 0, releve }));
-    let annonce = Annonce { echange, session_agent };
+    let protocole = Arc::clone(&r);
     let flux = reponse.bytes_stream().map(move |morceau| {
         if let Ok(m) = &morceau {
             let mut b = bilan.lock().expect("verrou");
@@ -206,16 +323,56 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
                 b.lu.extend_from_slice(m);
             }
             // Annonce au fil de l'eau : l'agent peut exécuter l'outil dès la fin du flux,
-            // avant même que le bilan soit écrit.
+            // avant même que le bilan soit écrit. Le raisonnement précède l'appel dans le
+            // flux : il est déjà là (EF-E3).
             if m.windows(8).any(|f| f == b"tool_use") {
+                let (raisonnement, avis_r) = protocole.protocole.lire_raisonnement(&b.lu);
                 for o in analyser_reponse(&b.lu).outils {
-                    b.etat.annoncer(&o.id, annonce.clone());
+                    let a = Annonce { raisonnement: raisonnement.clone(), avis: avis_r.clone().into_iter().collect(), ..annonce.clone() };
+                    b.etat.annoncer(&o.id, a);
                 }
             }
         }
         morceau
     });
     sortie.body(Body::from_stream(flux)).unwrap_or_else(|_| refus(StatusCode::BAD_GATEWAY, "réponse du modèle illisible"))
+}
+
+fn maintenant() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Envoie la requête de l'agent à un amont (modèle de l'agent, ou modèle de confiance).
+async fn envoyer(
+    amont: &str,
+    cible: &str,
+    methode: &Method,
+    entrants: &[(String, String)],
+    jeton: &str,
+    corps: Bytes,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let mut requete = client().request(methode.clone(), format!("{amont}{cible}"));
+    for (n, v) in entetes_amont(entrants, jeton) {
+        requete = requete.header(n, v);
+    }
+    requete.body(corps).send().await
+}
+
+/// En-têtes de la réponse à relayer à l'agent (sans ceux de saut à saut).
+fn entetes_relayes(entetes: &reqwest::header::HeaderMap) -> Vec<(HeaderName, HeaderValue)> {
+    entetes
+        .iter()
+        .filter(|(n, _)| !matches!(n.as_str(), "connection" | "keep-alive" | "transfer-encoding" | "content-length"))
+        .filter_map(|(n, v)| Some((HeaderName::from_bytes(n.as_str().as_bytes()).ok()?, HeaderValue::from_bytes(v.as_bytes()).ok()?)))
+        .collect()
+}
+
+/// Lit une réponse entière (protocole) : statut, en-têtes à relayer, corps.
+async fn lire(reponse: reqwest::Response) -> Option<(u16, Vec<(HeaderName, HeaderValue)>, Bytes)> {
+    let statut = reponse.status().as_u16();
+    let entetes = entetes_relayes(reponse.headers());
+    let octets = reponse.bytes().await.ok()?;
+    (octets.len() <= REPONSE_LUE_MAX).then_some((statut, entetes, octets))
 }
 
 struct Bilan {
@@ -237,7 +394,8 @@ impl Drop for Bilan {
             d.insert("statut".into(), json!(self.statut));
             d.insert("recu".into(), json!(self.recu));
             for o in &a.outils {
-                self.etat.annoncer(&o.id, Annonce { echange: d["echange"].as_u64().unwrap_or(0), session_agent: d["session_agent"].as_str().map(String::from) });
+                let annonce = Annonce { echange: d["echange"].as_u64().unwrap_or(0), session_agent: d["session_agent"].as_str().map(String::from), ..Default::default() };
+                self.etat.annoncer(&o.id, annonce);
             }
             d.insert("outils".into(), json!(a.outils));
             d.insert("jetons_entree".into(), json!(a.jetons_entree));
@@ -246,7 +404,7 @@ impl Drop for Bilan {
             d.insert("cache_ecrit".into(), json!(a.cache_ecrit));
         }
         let releve = self.releve.take().filter(|_| a.jetons_entree.is_some() || a.jetons_sortie.is_some()).map(|mut r| {
-            r.horodatage = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            r.horodatage = maintenant();
             r.entree = a.jetons_entree.unwrap_or(0);
             r.sortie = a.jetons_sortie.unwrap_or(0);
             r.cache_lu = a.cache_lu.unwrap_or(0);

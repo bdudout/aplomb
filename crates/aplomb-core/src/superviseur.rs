@@ -114,17 +114,30 @@ impl Superviseur {
     /// consulte le juge hors verrou, puis appelle [`Self::decider_avec`]. `tirage` est
     /// uniforme dans `[0, 1)` (échantillon), `nonce` imprévisible (enveloppe des données).
     pub fn preparer(&self, evt: &EvenementOutil, tirage: f64, nonce: &str) -> Option<Consultation> {
-        let cfg = self.juge()?;
+        self.preparer_avec(evt, tirage, nonce, None)
+    }
+
+    /// Verdict des moniteurs déterministes (politique, secrets, provenance), sans effet sur
+    /// l'état : ce que deviendrait l'action si l'agent la présentait maintenant.
+    pub fn examiner(&self, evt: &EvenementOutil) -> (Action, Verdict) {
         let mut action = self.normaliser(evt);
         if moniteurs::code_a_risque(evt, &action) {
             action.contexte.insert("code_a_risque".into(), serde_json::json!(true));
         }
         let politique = if evt.agent != self.mandat.mandat.agent { Verdict::Deny } else { self.politique.evaluer(&action).verdict };
-        // Un secret ou la provenance décident déjà : inutile de payer le juge.
         let mut verdict = moniteurs::avis_secrets(evt, &action).map_or(politique, |a| politique.max(a.niveau.plancher()));
         if !self.influences(&evt.session).is_empty() && profils::code::sensible_a_l_influence(&action) {
             verdict = verdict.max(Verdict::Review);
         }
+        (action, verdict)
+    }
+
+    /// Comme [`Self::preparer`], avec le raisonnement du modèle qui a demandé l'action,
+    /// quand le proxy LLM l'a vu (EF-E3) : le juge le reçoit, enveloppé comme donnée.
+    pub fn preparer_avec(&self, evt: &EvenementOutil, tirage: f64, nonce: &str, raisonnement: Option<&str>) -> Option<Consultation> {
+        let cfg = self.juge()?;
+        // Un secret ou la provenance décident déjà : inutile de payer le juge.
+        let (action, verdict) = self.examiner(evt);
         let appels = self.appels_juge.get(&evt.session).copied().unwrap_or(0);
         match moniteurs::saisir(cfg, &action, verdict, appels, tirage) {
             Saisir::Non => None,
@@ -132,7 +145,7 @@ impl Superviseur {
             Saisir::Oui(raison) => {
                 let historique: Vec<Trace> = self.traces.get(&evt.session).map(|t| t.iter().cloned().collect()).unwrap_or_default();
                 let (consigne, message) =
-                    moniteurs::saisine(&self.mandat.mandat.intention, evt, &action, &historique, self.influences(&evt.session), nonce);
+                    moniteurs::saisine(&self.mandat.mandat.intention, evt, &action, &historique, self.influences(&evt.session), raisonnement, nonce);
                 Some(Consultation::Juge { raison, consigne, message })
             }
         }

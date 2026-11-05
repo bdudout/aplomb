@@ -95,6 +95,9 @@ aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
   (`aplomb-core/src/moniteurs.rs`) et juge enfichable (`crates/aplomb/src/juge.rs`) en
   cascade, saisine enveloppée, budget et mesure. Lot 2 fait : banc rouge/bleu
   (`aplomb-core/src/evaluation.rs`, `profils/code/evaluation.yaml`, `aplomb evaluer`),
-  non-régression à la cosignature, injections visant le juge dans le jeu. Reste pour J5 :
-  protocoles *defer to trusted* et rééchantillonnage (EF-E2), surveillance du raisonnement
-  (EF-E3), mesure avec un vrai juge local.
+  non-régression à la cosignature, injections visant le juge dans le jeu. Lot 3 fait :
+  raisonnement lu au proxy LLM (EF-E3) et protocoles `report` et `reechantillonnage`
+  (EF-E2, `crates/aplomb/src/protocole.rs`). Reste pour J5 : mesurer les protocoles dans
+  `aplomb evaluer` (il juge des actions, pas des réponses du modèle), juger un
+  enchaînement d'actions (EF-E4), essai avec de vrais modèles locaux (juge et modèle de
+  confiance).

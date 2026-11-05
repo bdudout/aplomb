@@ -27,3 +27,8 @@ bornes: {refus: 5, revues: 20, domaines: 10, envois: 3, actions: 2000}
 # moniteurs:
 #   juge: {api: openai, url: "http://127.0.0.1:11434", modele: "qwen2.5:3b", delai_ms: 4000,
 #          echantillon: 0.05, appels_max: 500, niveau_max: suspect}
+#   # Protocole AI control au proxy LLM (niveaux 2 et 3) ; défaut : surveillance.
+#   # report : une réponse suspecte est remplacée par celle du modèle de confiance (API Messages).
+#   protocole: {mode: report, seuil: 0.5, fiable: {url: "http://127.0.0.1:11434", modele: "qwen2.5-coder:7b"}}
+#   # ou : protocole: {mode: reechantillonnage, echantillons: 2}
+#   # raisonnement: false   # ne pas lire le raisonnement explicite du modèle (lu par défaut)

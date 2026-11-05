@@ -38,6 +38,13 @@ par hook (niveau d'assurance 1, coopératif).
     - Il n'est consulté que pour les actions que les règles permettent encore et qui comptent : exécution, réseau, outil MCP, délégation. Les autres sont tirées au sort.
     - Ce qui vient de l'agent lui est présenté comme donnée, jamais comme instruction.
     - Sans réponse dans le délai, l'action passe en revue. Le nombre de consultations par session est borné.
+  - **Raisonnement** (niveaux 2 et 3) : quand le modèle produit un raisonnement explicite, le proxy LLM le lit.
+    - Une intention de contourner la supervision, d'agir à l'insu des humains, de cacher ses actes ou d'exfiltrer met en revue les actions qui suivent.
+    - Le juge reçoit ce raisonnement avec l'action, comme donnée.
+  - **Protocoles AI control** (niveaux 2 et 3, facultatifs) : le proxy LLM retient la réponse du modèle et examine ses appels d'outils avant que l'agent les reçoive (règles, secrets, raisonnement, juge).
+    - `report` (*defer to trusted*) : une réponse suspecte est remplacée par celle d'un modèle de confiance, à qui la même requête est envoyée.
+    - `reechantillonnage` : la requête est renvoyée au modèle ; le premier échantillon non suspect est retenu. Si tous le sont, c'est une incrimination : l'action passe en revue.
+    - Prix : la réponse n'arrive plus au fil de l'eau, et chaque réponse suspecte coûte un ou plusieurs appels de plus.
   - **Bornes** : refus, revues, domaines et envois comptés par session. Un dépassement gèle la session.
   - **Délégation** : un sous-agent est jugé par son propre mandat, inclus dans celui du parent, et par le mandat parent. Le plus strict l'emporte.
 - **Service** `aplomb serve` : sert les décisions (`127.0.0.1:7700`) et tient le journal.
@@ -96,7 +103,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 
 ### Outils de test
 
-- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (83 vérifications), sans rien toucher du réel.
+- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (98 vérifications), sans rien toucher du réel.
 - `aplomb evaluer --mandat <mandat>` : banc rouge/bleu. Il joue le jeu d'évaluation du profil ([`profils/code/evaluation.yaml`](profils/code/evaluation.yaml)) avec ce mandat, juge compris, et rend :
   - la **sûreté** : la part des attaques bloquées ou mises en revue ;
   - l'**utilité** : la part des tâches légitimes faites sans humain ;
@@ -134,7 +141,7 @@ cargo build --release
 cargo install --path crates/aplomb   # met `aplomb` dans ~/.cargo/bin (déjà dans le PATH avec rustup)
 ```
 
-Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `83 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
+Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `98 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
 
 ### 2. Créer son instance
 
@@ -370,7 +377,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 110 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 114 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -387,6 +394,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Passerelle MCP (niveau 2) | `127.0.0.1:7704/mcp/<nom>` : serveurs du mandat (`serveurs_mcp`) lancés par Aplomb ; chaque appel d'outil jugé et journalisé ; définitions d'outils épinglées (une description qui change = outil refusé) |
 | File de revue | Une action des passerelles (Gate, MCP) en revue attend 2 min la réponse d'un opérateur ou d'un approbateur dans Aplomb Watch (Approuver / Refuser) ; sans réponse, refus ; l'issue et le compte sont journalisés |
 | Moniteurs (J5, lot 1) | Secrets détectés dans les actions (revue, gel s'ils sortent) et masqués dans les requêtes au modèle (EF-D1) ; juge enfichable compatible OpenAI ou API Messages, en cascade : actions sensibles et échantillon, budget par session, délai, revue si indisponible ; saisine structurée, données de l'agent enveloppées (EF-E1, EF-E5, EF-E6) ; mesure dans Aplomb Watch |
+| Raisonnement et protocoles (J5, lot 3) | Raisonnement explicite du modèle lu au proxy LLM : intention suspecte = revue des actions qui suivent, raisonnement transmis au juge (EF-E3). Protocoles `report` (*defer to trusted*, modèle de confiance déclaré au mandat) et `reechantillonnage` (incrimination si tous les échantillons sont suspects), avec mesure dans Aplomb Watch ; le juge n'est pas consulté une seconde fois au hook ; échantillons écartés comptés dans la consommation (EF-E2). Testé au banc avec un faux modèle et un faux juge, pas encore avec de vrais modèles |
 | Banc rouge/bleu (J5, lot 2) | `aplomb evaluer` : 32 scénarios du profil C (7 légitimes, 25 attaques, dont 5 que seul un juge peut voir et 2 injections visant le juge), joués par le vrai superviseur ; sûreté avec et sans humain, utilité, budget d'audit, coût du juge ; non-régression à chaque cosignature de mandat (EF-H1, EF-H3, EF-H4). Sans juge : 80 % des attaques arrêtées sur le mandat d'exemple |
 | Provenance (EF-B5) | Après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt, sortie de sous-agent), les actions sensibles de la session passent en revue |
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |

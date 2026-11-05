@@ -118,6 +118,8 @@ struct Interne {
     /// Consommation du modèle, relevée par le proxy LLM.
     consommation: Consommation,
     agents: ComptesAgents,
+    /// Protocole appliqué aux réponses du modèle (EF-E2).
+    stats_protocole: StatsProtocole,
     /// Utilisateur à qui imputer les appels quand aucun compte technique n'est déclaré.
     utilisateur_local: String,
 }
@@ -134,6 +136,18 @@ struct StatsJuge {
     indisponible: u64,
     durcies: u64,
     latence_ms: u64,
+}
+
+/// Mesure du protocole (EF-E2) : réponses du modèle examinées, suspectes, et leur sort.
+#[derive(Default, serde::Serialize)]
+pub(crate) struct StatsProtocole {
+    pub examinees: u64,
+    pub suspectes: u64,
+    pub remplacees: u64,
+    pub reechantillonnages: u64,
+    pub incriminations: u64,
+    pub fiable_indisponible: u64,
+    pub latence_ms: u64,
 }
 
 /// Action en revue : ce que voit l'humain, et la passerelle qui attend sa réponse.
@@ -213,6 +227,16 @@ impl Etat {
         Ok(Imputation { compte: a.id.clone(), utilisateur: a.utilisateur.clone() })
     }
 
+    /// Verdict des moniteurs déterministes pour une action proposée par le modèle, sans
+    /// effet sur l'état (protocole du proxy LLM).
+    pub(crate) fn examiner(&self, evt: &EvenementOutil) -> aplomb_core::decision::Verdict {
+        self.interne.lock().expect("verrou").superviseur.examiner(evt).1
+    }
+
+    pub(crate) fn noter_protocole(&self, f: impl FnOnce(&mut StatsProtocole)) {
+        f(&mut self.interne.lock().expect("verrou").stats_protocole);
+    }
+
     pub(crate) fn relever(&self, r: Releve) {
         self.interne.lock().expect("verrou").consommation.ajouter(r);
     }
@@ -256,12 +280,13 @@ fn alea() -> (f64, String) {
 }
 
 /// Consulte le juge si la cascade le demande (EF-E5), hors verrou : rend son avis et ce
-/// qui en sera journalisé.
-async fn consulter_juge(etat: &Etat, evt: &EvenementOutil) -> (Vec<aplomb_core::decision::Avis>, Option<Value>) {
+/// qui en sera journalisé. `raisonnement` : celui du modèle qui a demandé l'action, si le
+/// proxy LLM l'a vu (EF-E3).
+pub(crate) async fn consulter_juge(etat: &Etat, evt: &EvenementOutil, raisonnement: Option<&str>) -> (Vec<aplomb_core::decision::Avis>, Option<Value>) {
     use aplomb_core::superviseur::Consultation;
     let Some(juge) = &etat.juge else { return (Vec::new(), None) };
     let (tirage, nonce) = alea();
-    let consultation = etat.interne.lock().expect("verrou").superviseur.preparer(evt, tirage, &nonce);
+    let consultation = etat.interne.lock().expect("verrou").superviseur.preparer_avec(evt, tirage, &nonce, raisonnement);
     match consultation {
         None => (Vec::new(), None),
         Some(Consultation::BudgetEpuise(a)) => (vec![a], Some(json!({"issue": "budget épuisé"}))),
@@ -293,7 +318,15 @@ async fn consulter_juge(etat: &Etat, evt: &EvenementOutil) -> (Vec<aplomb_core::
 /// Juge un événement et journalise la décision (journal d'abord : une décision non
 /// journalisée n'est jamais rendue). Chemin unique du hook et des passerelles.
 pub(crate) async fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_core::decision::DecisionFinale, u64), String> {
-    let (externes, trace_juge) = consulter_juge(etat, evt).await;
+    // Ce que le proxy LLM a vu de la réponse qui a demandé cette action : raisonnement, avis
+    // déjà rendus (EF-E2, EF-E3). Un script exécuté n'était pas connu du proxy : le juge
+    // le voit alors ici.
+    let annonce = evt.appel.as_deref().and_then(|a| etat.interne.lock().expect("verrou").annonces.trouver(a).cloned());
+    let (mut externes, trace_juge) = match &annonce {
+        Some(a) if a.juge && evt.contenu_execute.is_none() => (Vec::new(), Some(json!({"issue": "jugée au proxy LLM, avant l'agent"}))),
+        a => consulter_juge(etat, evt, a.as_ref().and_then(|a| a.raisonnement.as_deref())).await,
+    };
+    externes.extend(annonce.map(|a| a.avis).unwrap_or_default());
     let t = maintenant();
     let mut interne = etat.interne.lock().expect("verrou");
     etat.ouvrir_session(&mut interne, evt, t).map_err(|e| format!("journal indisponible : {e}"))?;
@@ -462,8 +495,14 @@ async fn etat_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
     let juge = etat.juge.as_ref().map(|j| json!({"modele": j.description(), "consultations": s.consultations,
         "indisponible": s.indisponible, "durcies": s.durcies,
         "latence_moyenne_ms": if s.consultations > 0 { s.latence_ms / s.consultations } else { 0 }}));
+    let protocole = m.mandat.moniteurs.as_ref().and_then(|x| x.protocole.as_ref()).map(|p| {
+        let mut v = json!(interne.stats_protocole);
+        v["mode"] = json!(p.mode);
+        v
+    });
     Json(json!({
         "juge": juge,
+        "protocole": protocole,
         "mandat": {"id": m.mandat.id, "version": m.mandat.version, "profil": m.mandat.profil,
                    "intention": m.mandat.intention, "racine": m.mandat.perimetre.racine, "empreinte": m.empreinte},
         "gel_global": gel_global, "sessions_gelees": sessions_gelees,
@@ -802,6 +841,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             consommation,
             agents: agents.clone(),
             utilisateur_local: std::env::var("USER").unwrap_or_else(|_| "local".into()),
+            stats_protocole: StatsProtocole::default(),
         })),
         diffusion,
         signataire: Arc::new(signataire),
@@ -842,15 +882,18 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let l_passerelle = tokio::net::TcpListener::bind(opts.ecoute_passerelle).await.map_err(|e| e.to_string())?;
         let l_llm = tokio::net::TcpListener::bind(opts.ecoute_llm).await.map_err(|e| e.to_string())?;
         let l_mcp = tokio::net::TcpListener::bind(opts.ecoute_mcp).await.map_err(|e| e.to_string())?;
-        let (agent, amont, racine, serveurs_mcp) = {
+        let (agent, amont, racine, serveurs_mcp, moniteurs) = {
             let m = &etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat;
             (
                 m.agent.clone(),
                 m.perimetre.domaines_modele.first().map(|d| aplomb_core::modele::amont(d)).transpose()?,
                 m.perimetre.racine.clone(),
                 m.perimetre.serveurs_mcp.clone(),
+                m.moniteurs.clone(),
             )
         };
+        let reglages_protocole = crate::protocole::Reglages::depuis(moniteurs.as_ref(), &agent, &racine)?;
+        let protocole_affiche = reglages_protocole.description();
         let lances: Vec<String> = serveurs_mcp.iter().filter(|s| !s.commande.is_empty()).map(|s| s.nom.clone()).collect();
         let mcp = crate::mcp::routeur(etat_scellement.clone(), crate::mcp::Reglages { agent: agent.clone(), racine, serveurs: serveurs_mcp });
         tokio::spawn(async move { axum::serve(l_mcp, mcp).await });
@@ -861,7 +904,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             (Some(a), None) => format!("{a} — aucun jeton : aplomb modele jeton"),
             (Some(a), Some(_)) => format!("{a}, jeton injecté par Aplomb"),
         };
-        let proxy = crate::modele::routeur(etat_scellement.clone(), crate::modele::Reglages { agent, amont, jeton });
+        let proxy = crate::modele::routeur(etat_scellement.clone(), crate::modele::Reglages { agent, amont, jeton, protocole: reglages_protocole });
         tokio::spawn(async move { axum::serve(l_llm, proxy).await });
         eprintln!("Aplomb — mandat {id}, cosigné par {}", signataires_mandat.join(" et "));
         eprintln!("  API décision       : http://{}", opts.ecoute_decision);
@@ -877,6 +920,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             "  moniteurs          : secrets{}",
             juge_affiche.map(|j| format!(", juge {j}")).unwrap_or_else(|| " (aucun juge au mandat)".into())
         );
+        eprintln!("  protocole          : {protocole_affiche}");
         if !enfants.is_empty() {
             eprintln!("  mandats enfants    : {}", enfants.join(", "));
         }
