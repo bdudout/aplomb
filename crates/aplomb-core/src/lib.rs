@@ -14,6 +14,7 @@ pub mod bornes;
 pub mod chaine;
 pub mod confidentiel;
 pub mod delegation;
+pub mod evaluation;
 pub mod decision;
 pub mod gouvernance;
 pub mod journal;

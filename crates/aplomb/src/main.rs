@@ -4,6 +4,7 @@
 //! - `aplomb hook`   — adaptateur hook Claude Code (niveau d'assurance 1), fail-closed ;
 //! - `aplomb init` — parcours guidé : comptes, confiance, cosignatures (une commande) ;
 //! - `aplomb cosigner` — ajoute sa signature à un mandat ou au fichier de comptes (EF-S2) ;
+//! - `aplomb evaluer` — banc rouge/bleu : sûreté, utilité et coût d'un mandat (EF-H1, EF-H4) ;
 //! - `aplomb verify` — vérifie le journal : chaînes, scellés, ancre (EF-I1, EF-I2) ;
 //! - `aplomb ancrer` — copie la chaîne de scellés hors de la machine ;
 //! - `aplomb mermaid` — exporte les sessions en diagrammes de séquence Mermaid ;
@@ -16,6 +17,7 @@
 mod admin;
 mod cle_maitresse;
 mod gouverner;
+mod evaluer;
 mod hook;
 mod juge;
 #[allow(unsafe_code)]
@@ -96,6 +98,31 @@ enum Commande {
         cle: Option<PathBuf>,
         #[arg(long, default_value = gouverner::CONFIANCE)]
         confiance: PathBuf,
+        /// Cosigner un mandat même s'il laisse passer des attaques que la version précédente
+        /// arrêtait (EF-H4). Décision à assumer : elle est affichée.
+        #[arg(long)]
+        accepter_regression: bool,
+    },
+    /// Banc rouge/bleu : joue le jeu d'évaluation du profil avec ce mandat (signé ou non)
+    /// et rend sûreté, utilité, budget d'audit et coût du juge (EF-H1, EF-H4).
+    Evaluer {
+        #[arg(long)]
+        mandat: PathBuf,
+        /// Jeu d'évaluation (défaut : evaluation.yaml à côté des règles du mandat).
+        #[arg(long)]
+        jeu: Option<PathBuf>,
+        /// Ne pas consulter le juge du mandat (évaluation déterministe).
+        #[arg(long)]
+        sans_juge: bool,
+        /// Part des actions qu'un humain peut revoir.
+        #[arg(long, default_value_t = 0.1)]
+        budget_audit: f64,
+        /// Rapport précédent : échec si une attaque passe moins bien (non-régression).
+        #[arg(long)]
+        reference: Option<PathBuf>,
+        /// Écrit le rapport (JSON), réutilisable comme référence.
+        #[arg(long)]
+        sortie: Option<PathBuf>,
     },
     /// Vérifie le journal : chaînes, scellés signés, et copie d'ancrage si fournie.
     Verify {
@@ -249,12 +276,15 @@ fn main() -> ExitCode {
             let mandats = if mandats.is_empty() { mandats_par_defaut() } else { mandats };
             gouverner::init(&membres, &comptes, &mandats, &confiance)
         }
-        Commande::Cosigner { fichier, comptes, cle, confiance } => {
+        Commande::Cosigner { fichier, comptes, cle, confiance, accepter_regression } => {
             if cle.is_some() && comptes.len() > 1 {
                 Err("--cle ne vaut que pour un seul --compte".into())
             } else {
-                comptes.iter().try_for_each(|c| gouverner::cosigner(&fichier, c, cle.as_deref(), &confiance))
+                comptes.iter().try_for_each(|c| gouverner::cosigner(&fichier, c, cle.as_deref(), &confiance, accepter_regression))
             }
+        }
+        Commande::Evaluer { mandat, jeu, sans_juge, budget_audit, reference, sortie } => {
+            evaluer::lancer(evaluer::Options { mandat, jeu, sans_juge, budget_audit, reference, sortie })
         }
         Commande::Verify { journal, ancre, cle_serveur } => verifier(&journal, ancre.as_deref(), &cle_serveur),
         Commande::Ancrer { vers, journal } => ancrer(&journal, &vers),

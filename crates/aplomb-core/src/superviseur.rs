@@ -115,7 +115,10 @@ impl Superviseur {
     /// uniforme dans `[0, 1)` (échantillon), `nonce` imprévisible (enveloppe des données).
     pub fn preparer(&self, evt: &EvenementOutil, tirage: f64, nonce: &str) -> Option<Consultation> {
         let cfg = self.juge()?;
-        let action = self.normaliser(evt);
+        let mut action = self.normaliser(evt);
+        if moniteurs::code_a_risque(evt, &action) {
+            action.contexte.insert("code_a_risque".into(), serde_json::json!(true));
+        }
         let politique = if evt.agent != self.mandat.mandat.agent { Verdict::Deny } else { self.politique.evaluer(&action).verdict };
         // Un secret ou la provenance décident déjà : inutile de payer le juge.
         let mut verdict = moniteurs::avis_secrets(evt, &action).map_or(politique, |a| politique.max(a.niveau.plancher()));

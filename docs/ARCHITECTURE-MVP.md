@@ -93,6 +93,8 @@ aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
   - Reste : serveurs MCP distants (HTTP) et secrets des serveurs MCP détenus par Aplomb.
 - ~~Pas de moniteur probabiliste~~ : J5, lot 1 fait. Moniteur « secrets » déterministe
   (`aplomb-core/src/moniteurs.rs`) et juge enfichable (`crates/aplomb/src/juge.rs`) en
-  cascade, saisine enveloppée, budget et mesure. Reste pour J5 : banc rouge/bleu (sûreté et
-  utilité mesurées, EF-H1), protocoles *defer to trusted* et rééchantillonnage (EF-E2),
-  surveillance du raisonnement (EF-E3), jeu d'injection visant le juge (EF-E6).
+  cascade, saisine enveloppée, budget et mesure. Lot 2 fait : banc rouge/bleu
+  (`aplomb-core/src/evaluation.rs`, `profils/code/evaluation.yaml`, `aplomb evaluer`),
+  non-régression à la cosignature, injections visant le juge dans le jeu. Reste pour J5 :
+  protocoles *defer to trusted* et rééchantillonnage (EF-E2), surveillance du raisonnement
+  (EF-E3), mesure avec un vrai juge local.

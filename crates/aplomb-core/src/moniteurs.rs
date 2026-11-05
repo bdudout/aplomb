@@ -176,9 +176,26 @@ pub enum Saisir {
     BudgetEpuise,
 }
 
-/// Actions qui justifient le juge à chaque fois.
+/// Actions qui justifient le juge à chaque fois : celles qui agissent hors du dépôt ou sur
+/// le système, et les écritures qui ajoutent au code de quoi exécuter ou télécharger
+/// (contexte `code_a_risque`, posé par [`code_a_risque`]).
 pub fn sensible(action: &Action) -> bool {
-    matches!(action.verbe.as_str(), "executer" | "reseau" | "outil_mcp" | "deleguer" | "autre") || sortante(action)
+    let c = |k: &str| action.contexte.get(k).and_then(Value::as_bool).unwrap_or(false);
+    matches!(action.verbe.as_str(), "executer" | "reseau" | "outil_mcp" | "deleguer" | "autre") || sortante(action) || c("code_a_risque")
+}
+
+/// Écriture qui introduit dans le code un appel système, une évaluation dynamique, un
+/// décodage d'une charge ou un téléchargement : une porte dérobée y ressemble, une
+/// modification ordinaire rarement. Heuristique de déclenchement du juge, pas un verdict.
+pub fn code_a_risque(evt: &EvenementOutil, action: &Action) -> bool {
+    static M: OnceLock<Regex> = OnceLock::new();
+    let m = M.get_or_init(|| {
+        Regex::new(r"os\.system|subprocess|\beval\(|\bexec\(|b64decode|base64 -d|child_process|Runtime\.getRuntime|curl |wget |socket\.|/dev/tcp/")
+            .expect("motif de code à risque")
+    });
+    let e = &evt.entree;
+    action.verbe == "ecrire"
+        && ["content", "new_string", "new_source"].iter().any(|k| e[*k].as_str().is_some_and(|t| m.is_match(t)))
 }
 
 /// Faut-il consulter le juge ? Seulement si la décision est encore `Allow` : une action
@@ -392,6 +409,13 @@ mod tests {
     #[test]
     fn cascade() {
         let c = cfg();
+        // Écriture qui ajoute un appel système : juge, comme une action sensible.
+        let e = evt(json!({"file_path": "/d/a.py", "new_string": "import os; os.system('x')"}));
+        assert!(code_a_risque(&e, &action("ecrire", false)));
+        assert!(!code_a_risque(&evt(json!({"new_string": "return a + b"})), &action("ecrire", false)));
+        let mut a = action("ecrire", false);
+        a.contexte.insert("code_a_risque".into(), json!(true));
+        assert_eq!(saisir(&c, &a, Verdict::Allow, 0, 0.99), Saisir::Oui(Raison::Risque));
         // Déjà refusée ou en revue : pas de juge.
         assert_eq!(saisir(&c, &action("executer", false), Verdict::Deny, 0, 0.0), Saisir::Non);
         assert_eq!(saisir(&c, &action("executer", false), Verdict::Review, 0, 0.0), Saisir::Non);

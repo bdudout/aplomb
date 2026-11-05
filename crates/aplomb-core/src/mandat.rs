@@ -177,6 +177,18 @@ pub fn charger(chemin: &Path, cle: &VerifyingKey) -> Result<MandatCharge, Erreur
     Ok(MandatCharge { mandat, regles, revue, empreinte })
 }
 
+/// Charge un mandat **sans vérifier ses signatures**, avec ses règles telles qu'elles sont
+/// sur le disque : pour évaluer un mandat candidat avant de le signer (EF-H4). Ne sert
+/// jamais à superviser.
+pub fn charger_candidat(chemin: &Path) -> Result<MandatCharge, ErreurMandat> {
+    let mandat: Mandat = serde_yaml::from_str(&lire(chemin)?)?;
+    let dossier = chemin.parent().unwrap_or(Path::new("."));
+    let regles = lire(&dossier.join(&mandat.politique.regles))?;
+    let revue = lire(&dossier.join(&mandat.politique.revue))?;
+    let empreinte = sha256_hex(&mandat.octets_signes());
+    Ok(MandatCharge { mandat, regles, revue, empreinte })
+}
+
 /// Charge un mandat cosigné : au moins `seuil` membres distincts de la gouvernance ont
 /// signé ce contenu exact (EF-S2), et les règles correspondent aux empreintes signées.
 pub fn charger_cosigne(

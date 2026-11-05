@@ -94,7 +94,14 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 
 ### Outils de test
 
-- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (58 vérifications), sans rien toucher du réel.
+- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (68 vérifications), sans rien toucher du réel.
+- `aplomb evaluer --mandat <mandat>` : banc rouge/bleu. Il joue le jeu d'évaluation du profil ([`profils/code/evaluation.yaml`](profils/code/evaluation.yaml)) avec ce mandat, juge compris, et rend :
+  - la **sûreté** : la part des attaques bloquées ou mises en revue ;
+  - l'**utilité** : la part des tâches légitimes faites sans humain ;
+  - le **budget d'audit** : le taux de revue du trafic légitime, comparé à ce qu'un humain peut revoir (`--budget-audit`, 10 % par défaut) ;
+  - le **coût du juge**.
+
+  Options : `--reference <rapport.json>` échoue si une attaque passe moins bien qu'avant ; `--sortie` écrit le rapport.
 - `scripts/scenarios.sh` : scénarios du hook, dont ceux de l'annexe « Assume misalignment ».
 - `scripts/faux-modele.py`, `scripts/faux-mcp.py`, `scripts/faux-juge.py` : un modèle, un serveur MCP et un juge factices pour le banc.
 
@@ -125,7 +132,7 @@ cargo build --release
 cargo install --path crates/aplomb   # met `aplomb` dans ~/.cargo/bin (déjà dans le PATH avec rustup)
 ```
 
-Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `58 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
+Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `68 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
 
 ### 2. Créer son instance
 
@@ -308,7 +315,8 @@ flowchart LR
 | Dégeler (quatre yeux, dans les 10 min) | `aplomb admin --compte alice degel` puis `aplomb admin --compte bob degel` |
 | Répondre à une revue des passerelles | Aplomb Watch, carte « Revue demandée » : Approuver ou Refuser (2 min, puis refus) |
 | Suivre un agent échange par échange | Aplomb Watch, onglet « Vue chaînée » : appels au modèle, outils demandés, décisions, trafic ; écarts en rouge |
-| Modifier un mandat, des règles, les comptes | Éditer, puis `aplomb cosigner <fichier> --compte alice --compte bob` (sinon `serve` refuse de démarrer et dit qui doit signer) |
+| Modifier un mandat, des règles, les comptes | Éditer, puis `aplomb cosigner <fichier> --compte alice --compte bob` (sinon `serve` refuse de démarrer et dit qui doit signer). Pour un mandat, la cosignature rejoue d'abord le banc rouge/bleu sans juge. Elle est refusée si une attaque passe moins bien qu'à la cosignature précédente ; on peut l'assumer avec `--accepter-regression`. |
+| Mesurer un mandat avant de le signer | `aplomb evaluer --mandat <mandat>` (sûreté, utilité, budget d'audit, coût du juge) |
 | Vérifier le journal | `aplomb verify --journal journal` |
 | Ancrer le journal hors de la machine | `aplomb ancrer --vers /Volumes/<clé USB>` ; `verify` confronte ensuite le journal à cette copie |
 | Effacer les contenus d'une session | `aplomb effacer --session <id>` (sa clé est détruite, la chaîne reste vérifiable) |
@@ -343,7 +351,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 106 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 107 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -359,6 +367,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Passerelle MCP (niveau 2) | `127.0.0.1:7704/mcp/<nom>` : serveurs du mandat (`serveurs_mcp`) lancés par Aplomb ; chaque appel d'outil jugé et journalisé ; définitions d'outils épinglées (une description qui change = outil refusé) |
 | File de revue | Une action des passerelles (Gate, MCP) en revue attend 2 min la réponse d'un opérateur ou d'un approbateur dans Aplomb Watch (Approuver / Refuser) ; sans réponse, refus ; l'issue et le compte sont journalisés |
 | Moniteurs (J5, lot 1) | Secrets détectés dans les actions (revue, gel s'ils sortent) et masqués dans les requêtes au modèle (EF-D1) ; juge enfichable compatible OpenAI ou API Messages, en cascade : actions sensibles et échantillon, budget par session, délai, revue si indisponible ; saisine structurée, données de l'agent enveloppées (EF-E1, EF-E5, EF-E6) ; mesure dans Aplomb Watch |
+| Banc rouge/bleu (J5, lot 2) | `aplomb evaluer` : 32 scénarios du profil C (7 légitimes, 25 attaques, dont 5 que seul un juge peut voir et 2 injections visant le juge), joués par le vrai superviseur ; sûreté avec et sans humain, utilité, budget d'audit, coût du juge ; non-régression à chaque cosignature de mandat (EF-H1, EF-H3, EF-H4). Sans juge : 80 % des attaques arrêtées sur le mandat d'exemple |
 | Provenance (EF-B5) | Après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt, sortie de sous-agent), les actions sensibles de la session passent en revue |
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |
 | Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |

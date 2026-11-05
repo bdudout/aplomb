@@ -56,7 +56,7 @@ fn charger_confiance(chemin: &Path) -> Result<Option<(Confiance, Vec<String>)>, 
 }
 
 /// Ajoute la signature du compte à un mandat ou au fichier de comptes.
-pub fn cosigner(fichier: &Path, compte: &str, cle: Option<&Path>, confiance: &Path) -> Result<(), String> {
+pub fn cosigner(fichier: &Path, compte: &str, cle: Option<&Path>, confiance: &Path, accepter_regression: bool) -> Result<(), String> {
     let chemin_cle = cle.map(Path::to_path_buf).unwrap_or_else(|| admin::dossier_cles().join(format!("{compte}.cle")));
     let privee = crate::cle_maitresse::lire_cle_privee(&chemin_cle, &format!("compte:{compte}"))?;
     let conf = charger_confiance(confiance)?;
@@ -77,6 +77,8 @@ pub fn cosigner(fichier: &Path, compte: &str, cle: Option<&Path>, confiance: &Pa
         format!("comptes cosignés par {compte} — {}", etat(c, &membres, &o, &f.signatures))
     } else {
         let mut m: Mandat = serde_yaml::from_value(valeur).map_err(|e| e.to_string())?;
+        // Non-régression avant de signer (EF-H4) : le jeu du profil, sans juge.
+        let evaluation = crate::evaluer::controler_avant_cosignature(fichier, accepter_regression)?;
         let dossier = fichier.parent().unwrap_or(Path::new("."));
         if actualiser_empreintes(&mut m, dossier)? {
             println!("règles modifiées depuis la dernière signature : les signatures précédentes sont retirées");
@@ -85,6 +87,9 @@ pub fn cosigner(fichier: &Path, compte: &str, cle: Option<&Path>, confiance: &Pa
         let o = m.octets_signes();
         poser(&mut m.signatures, signer(compte, &privee, &o));
         ecrire_yaml(fichier, &m)?;
+        if let Some(r) = &evaluation {
+            crate::evaluer::enregistrer_reference(fichier, r)?;
+        }
         format!("mandat {} v{} cosigné par {compte} — {}", m.id, m.version, etat(c, &membres, &o, &m.signatures))
     };
     println!("{statut}");
@@ -134,9 +139,9 @@ pub fn init(membres: &[String], comptes: &Path, mandats: &[PathBuf], confiance: 
     }
     // 3. Cosignatures : comptes et mandats, par les deux membres.
     for id in membres.iter().take(2) {
-        cosigner(comptes, id, None, confiance)?;
+        cosigner(comptes, id, None, confiance, false)?;
         for m in mandats {
-            cosigner(m, id, None, confiance)?;
+            cosigner(m, id, None, confiance, false)?;
         }
     }
     println!();
