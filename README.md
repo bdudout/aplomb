@@ -14,6 +14,7 @@ par hook (niveau d'assurance 1, coopératif).
 | **Aplomb Watch** | Journal scellé, vue technique, export Mermaid, puis indicateurs pour le management | journal, flux en direct, vue chaînée et file de revue faits |
 | **Aplomb Pentest** | Profil dédié aux tests d'intrusion supervisés | à venir |
 
+- Installer : [Installation](#installation) ; où placer chaque pièce : [Architectures de déploiement](docs/DEPLOIEMENTS.md)
 - Architecture du MVP : [`docs/ARCHITECTURE-MVP.md`](docs/ARCHITECTURE-MVP.md)
 - Décision : [`docs/adr/0001-coeur-reseau-et-modes-de-branchement.md`](docs/adr/0001-coeur-reseau-et-modes-de-branchement.md)
 
@@ -96,87 +97,225 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 
 Profil dédié aux tests d'intrusion supervisés : périmètre d'audit au mandat et preuves au journal.
 
-## Licence
+## Installation
 
-- `crates/aplomb-core` (bibliothèque) : [Apache-2.0](crates/aplomb-core/LICENSE).
-- Tout le reste (binaire `aplomb`, profils, scripts, documentation) : [EUPL-1.2](LICENSE),
-  licence de l'Union européenne, valable en français comme dans les autres langues de l'UE.
+Comptez 15 minutes pour superviser un premier projet au niveau 1 (hook). Le confinement (niveau 3) se met en place ensuite, quand le niveau 1 marche.
 
-Les contributions sont les bienvenues : voir [`CONTRIBUTING.md`](CONTRIBUTING.md).
+### Prérequis
 
-## Démarrage
+| | Requis | Pour quoi |
+|---|---|---|
+| macOS ou Linux | oui | Windows : non testé, la phrase est redemandée à chaque commande |
+| [Rust](https://rustup.rs) 1.80 ou plus | oui | construire `aplomb` |
+| [Claude Code](https://docs.claude.com/claude-code) | oui | l'agent supervisé |
+| Docker Desktop (ou Docker Engine) | niveau 3 | confiner l'agent |
+| `python3` | banc d'essai | le faux modèle et le faux serveur MCP du banc |
+
+### 1. Construire
 
 ```sh
-cargo build
-./target/debug/aplomb init --membre alice --membre bob     # une fois : phrase de passe, comptes, confiance, cosignatures
-./target/debug/aplomb serve --mandat mandats/bac-a-sable.yaml
+git clone https://github.com/bdudout/aplomb.git
+cd aplomb
+cargo build --release
+cargo install --path crates/aplomb   # met `aplomb` dans ~/.cargo/bin (déjà dans le PATH avec rustup)
 ```
 
-Toutes les clés d'Aplomb sont chiffrées par une clé maîtresse, elle-même protégée par ta
-**phrase de passe** (Argon2id, `~/.config/aplomb/cle-maitresse.yaml`). La phrase est demandée,
-sans affichage, une fois par commande qui en a besoin (`serve`, `admin`, `cosigner`…).
-Changer de phrase : `aplomb phrase changer`. Sans la phrase, les clés sont perdues.
+Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `43 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
 
-Pour ne pas la retaper : `aplomb deverrouiller` (8 h par défaut, `--duree 2h`). La phrase est
-demandée une fois, puis `serve` et `admin … gel` ne demandent plus rien ; les opérations
-sensibles (cosigner, dégeler, se connecter à Aplomb Watch, déchiffrer) demandent Touch ID sur
-macOS, la phrase ailleurs. La fenêtre de Touch ID montre la commande exacte, lue par Aplomb
-auprès du système : un agent ne peut pas la déguiser. `aplomb verrouiller` met fin au
-déverrouillage. macOS et Linux ; Windows : phrase à chaque commande pour l'instant.
+### 2. Créer son instance
 
-- Confier le jeton du modèle au proxy LLM : `./target/debug/aplomb modele jeton` (saisi sans
-  affichage, chiffré), puis redémarrer `aplomb serve`. L'agent confiné n'a ainsi aucun jeton.
-- Vue technique (Aplomb Watch) : `./target/debug/aplomb admin --compte alice connexion` affiche un lien de
-  connexion à usage unique (2 minutes), qui ouvre une session de navigateur de 8 heures.
-  Onglet « Vue chaînée » : pour une session d'agent, chaque appel au modèle, les outils qu'il
-  demande (identifiant `toolu_…`), la décision d'Aplomb sur chacun, puis le trafic d'Aplomb Gate ;
-  les écarts du contrôle croisé (action sans demande du modèle, outil demandé jamais présenté)
-  sont en rouge.
-- Administration signée : `aplomb admin --compte alice gel [--session <id>]` (effet immédiat) ;
-  `aplomb admin --compte alice degel` puis `aplomb admin --compte bob degel` (quatre yeux : deux
-  comptes distincts, dans les 10 minutes). Les clés privées sont dans `~/.config/aplomb/comptes/`.
-- Dépôt de test supervisé : `../bac-a-sable` (hook dans `.claude/settings.json`)
-- Rejouer des scénarios sans Claude Code : `scripts/scenarios.sh`
-- Banc d'essai autonome : `scripts/banc.sh` monte une instance jetable (phrase, comptes,
-  mandat, jeton et journal à elle, dans un dossier temporaire) et un faux modèle, puis rejoue
-  le parcours d'un agent confiné : proxy LLM, hook avec identifiant d'appel, contrôle croisé,
-  vue chaînée, passerelle MCP, provenance, délégation, file de revue, déverrouillage (43 vérifications). Rien n'est
-  demandé, rien du réel n'est touché.
-- Modèle local (Ollama, vLLM, llama.cpp) : `domaines_modele: ["http://127.0.0.1:11434"]` ;
-  HTTP en clair n'est accepté que vers la machine elle-même.
-- Vérifier le journal : `./target/debug/aplomb verify --journal journal`
-- Effacer les contenus d'une session (la chaîne reste vérifiable) : `./target/debug/aplomb effacer --session <id>`
-- Suivre les requêtes d'un agent en diagramme de séquence Mermaid (rendu par Pele ou tout outil Mermaid) :
-  `./target/debug/aplomb mermaid --session <id>` (sortie standard), ou
-  `./target/debug/aplomb mermaid --sortie diagrammes` pour un fichier `.mmd` par session.
-  Seule une chaîne vérifiée est exportée. Par défaut, les ressources n'apparaissent que
-  par leur référence ; `--dechiffrer` les montre en clair à l'aide des clés de session.
+L'instance est le dossier où vivent vos mandats, vos comptes, vos clés publiques et le journal. Créez-la **hors du clone** : le clone contient l'instance de démonstration de l'auteur (`mandats/bac-a-sable.yaml`, `comptes.yaml`, `cles/confiance.yaml`, signés par ses clés), et `aplomb init` garderait son fichier de confiance.
 
-Serveurs MCP et sous-agents se déclarent au mandat :
+```sh
+mkdir -p ~/aplomb-instance/mandats && cd ~/aplomb-instance
+cp -R <chemin du clone>/profils .
+```
+
+### 3. Écrire le mandat
+
+Le mandat dit ce que l'agent a le droit de faire, pour un projet. Exemple à adapter, `mandats/mon-projet.yaml` :
 
 ```yaml
+id: mon-projet
+version: 1
+profil: code
+agent: claude-code
+intention: Développer et tester mon-projet, sans rien toucher en dehors du dépôt.
 perimetre:
-  serveurs_mcp:
-  - {nom: notes, commande: [npx, -y, "@exemple/serveur-notes"], outils: [chercher]}
+  racine: /Users/moi/code/mon-projet        # chemin absolu et réel du dépôt
+  domaines_autorises: [pypi.org, files.pythonhosted.org]
+  branches_protegees: [main]
+  domaines_modele: [api.anthropic.com]      # modèle local : ["http://127.0.0.1:11434"]
+politique:
+  regles: ../profils/code/regles.cedar
+  revue: ../profils/code/revue.cedar
+bornes: {refus: 5, revues: 20, domaines: 10, envois: 3, actions: 2000}
 ```
 
-puis `claude mcp add --transport http notes http://127.0.0.1:7704/mcp/notes`. Un mandat de
-sous-agent porte `agent: claude-code/<type de sous-agent>` et `parent: <id du mandat>` ; on le
-charge par `aplomb serve --mandat <parent> --mandat-enfant <enfant>`.
+- **Domaines** : tout domaine absent de la liste est refusé.
+- **Bornes** : nombre de refus, de revues, de domaines différents, d'envois et d'actions qu'une session peut atteindre avant d'être gelée.
+- **Empreintes** : les empreintes des règles (`regles_sha256`, `revue_sha256`) sont ajoutées à la cosignature. Toute modification ultérieure des règles impose une nouvelle cosignature.
 
-Toute modification d'un mandat, de ses règles `profils/code/*.cedar` ou de `comptes.yaml`
-impose deux signatures : `aplomb cosigner <fichier> --compte alice --compte bob` quand les
-deux clés sont sur ce poste ; sinon chacun signe chez soi avec son `--compte`.
-Sinon `aplomb serve` refuse de démarrer et dit qui doit signer.
+### 4. Initialiser la gouvernance
 
-- Ancrer le journal hors de la machine : `./target/debug/aplomb ancrer --vers /Volumes/<clé USB>`
-  (copie des scellés, et témoin à noter ailleurs). `aplomb verify` confronte ensuite le
-  journal à cette copie.
+```sh
+aplomb init --membre alice --membre bob
+```
 
-En conteneur : `docker compose up --build` (image non encore construite ni testée sur ce
-poste).
+En une commande :
+- la phrase de passe est choisie, une fois : elle protège toutes les clés, et sans elle, elles sont perdues ;
+- deux comptes sont créés, alice opératrice et bob approbateur ;
+- le fichier de confiance est écrit (seuil 2) ;
+- les comptes et tous les mandats de `mandats/` sont cosignés.
 
-## État (J1)
+Prenez de vrais noms. Les deux clés privées sont sur ce poste (`~/.config/aplomb/comptes/`). Pour de vrais quatre yeux, chaque personne garde la sienne sur son poste et signe de chez elle avec `aplomb cosigner <fichier> --compte <id>`.
+
+### 5. Lancer le superviseur
+
+```sh
+aplomb deverrouiller                         # facultatif : la phrase une fois pour 8 h (--duree 2h)
+aplomb serve --mandat mandats/mon-projet.yaml
+```
+
+- **Au démarrage**, `serve` vérifie les signatures et crée `cles/reponses.pub` (la clé qui signe ses réponses). Il affiche ensuite ses ports.
+- **Arrêté**, le superviseur bloque toute action dans le périmètre (fail-closed). Hors du périmètre, rien ne change.
+- **Déverrouillé**, `serve` et le gel ne demandent plus rien. Les opérations sensibles (cosigner, dégeler, se connecter à Aplomb Watch, déchiffrer) demandent Touch ID sur macOS, la phrase ailleurs.
+- **Touch ID** : sa fenêtre montre la commande exacte, lue auprès du système ; un agent ne peut pas la déguiser. `aplomb verrouiller` met fin au déverrouillage.
+
+### 6. Brancher Claude Code sur le projet
+
+Dans le dépôt supervisé, `.claude/settings.json` (chemins absolus) :
+
+```json
+{
+  "hooks": {
+    "PreToolUse":  [{"matcher": "*", "hooks": [{"type": "command", "timeout": 10,
+      "command": "/Users/moi/.cargo/bin/aplomb hook --cle-serveur /Users/moi/aplomb-instance/cles/reponses.pub"}]}],
+    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "timeout": 10,
+      "command": "/Users/moi/.cargo/bin/aplomb hook --cle-serveur /Users/moi/aplomb-instance/cles/reponses.pub"}]}]
+  }
+}
+```
+
+- **PreToolUse** demande la décision avant chaque action.
+- **PostToolUse** journalise le résultat.
+- **Signature** : le hook refuse toute réponse non signée par `reponses.pub`.
+- **Cas où le hook refuse** : si le superviseur ne répond pas ou si la signature est fausse, le hook refuse (fail-closed).
+- **Ce fichier reste modifiable par l'agent.** Aplomb gèle la session qui y touche. Pour le mettre hors de portée, installez le hook en paramètres gérés, propriété de root : voir [`deploiement/`](deploiement/README.md).
+
+### 7. Vérifier que tout marche
+
+1. **Lancer** `claude` dans le dépôt et demander de lancer les tests : l'action passe.
+2. **Demander** `curl https://example.com` : refusé par la règle `reseau-non-autorise`.
+3. **Ouvrir Aplomb Watch** : `aplomb admin --compte alice connexion` affiche un lien à usage unique, valable 2 minutes. Les deux décisions apparaissent dans le flux en direct.
+4. **Vérifier le journal** : `aplomb verify --journal journal`.
+
+### 8. Aller plus loin
+
+- **Confiner l'agent (niveau 3, recommandé)** : voir [`conteneur/`](conteneur/README.md).
+  - Claude Code tourne dans un conteneur sans route vers l'extérieur.
+  - Il ne sort que par Aplomb Gate et le proxy LLM.
+  - Le jeton du modèle reste chez Aplomb : `aplomb modele jeton`, puis redémarrer `serve`.
+- **Modèle local** :
+  - mettre `domaines_modele: ["http://127.0.0.1:11434"]` (Ollama récent, ou tout serveur qui expose l'API Messages `POST /v1/messages`) ;
+  - HTTP en clair n'est accepté que vers la machine elle-même ;
+  - voir [les architectures](docs/DEPLOIEMENTS.md#5-modèle-local-ou-distant).
+- **Serveurs MCP** : les déclarer au mandat. Aplomb les lance lui-même et juge chaque appel d'outil :
+
+  ```yaml
+  perimetre:
+    serveurs_mcp:
+    - {nom: notes, commande: [npx, -y, "@exemple/serveur-notes"], outils: [chercher]}
+  ```
+
+  Ensuite : `claude mcp add --transport http notes http://127.0.0.1:7704/mcp/notes`. Tout outil non listé dans `outils` passe en revue.
+- **Sous-agents** :
+  - un mandat enfant porte `agent: claude-code/<type de sous-agent>` et `parent: <id du mandat parent>` ;
+  - il doit être inclus dans le parent ;
+  - il se charge avec `aplomb serve --mandat <parent> --mandat-enfant <enfant>`.
+
+## Architectures de déploiement
+
+Aplomb se déploie de plusieurs façons. Chacune dépend de trois choix : où tourne l'agent, où tourne le modèle, et ce qui empêche l'agent de contourner le superviseur. Le détail, avec un schéma par cas, est dans [`docs/DEPLOIEMENTS.md`](docs/DEPLOIEMENTS.md).
+
+```mermaid
+flowchart LR
+  subgraph poste["Poste de travail"]
+    subgraph iso["Conteneur sans route vers l'extérieur"]
+      agent["Claude Code<br/>+ hook (root)"]
+    end
+    subgraph sup["aplomb serve (hôte)"]
+      dec["Décision :7700"]
+      gate["Aplomb Gate :7702"]
+      llm["Proxy LLM :7703"]
+      mcp["Passerelle MCP :7704"]
+      watch["Aplomb Watch :7701"]
+    end
+    local["Modèle local<br/>(Ollama…)"]
+  end
+  humain(["Opérateur"])
+  web["Domaines du mandat"]
+  api["API du modèle distant"]
+  agent -- "chaque action" --> dec
+  agent -- "HTTPS_PROXY" --> gate
+  agent -- "ANTHROPIC_BASE_URL" --> llm
+  agent -- "outils MCP" --> mcp
+  gate --> web
+  llm --> api
+  llm -.-> local
+  humain -- "revue, gel" --> watch
+```
+
+| Cas | Ce qui retient l'agent | Recommandé pour | État |
+|---|---|---|---|
+| 1. Hook seul, même poste | La bonne volonté de l'agent : un script peut sortir sans être vu | Découvrir, démontrer | testé |
+| 2. Hook en paramètres gérés | Configuration propriété de root | Poste personnel sans Docker | prêt, à installer soi-même |
+| 3. Passerelles sans conteneur | Variables d'environnement, contournables | Observer le trafic du modèle | testé au banc |
+| **4. Conteneur isolé, même poste** | **Réseau Docker interne : seules sorties, les passerelles** | **Usage courant, recommandé** | isolement vérifié (`verifier.sh`), recette réelle en cours |
+| 5. + modèle local | Rien ne quitte la machine | Données sensibles, hors ligne | mécanisme testé au banc, pas avec un vrai modèle |
+| 6. Zones cloisonnées (VM, hôtes séparés) | Pare-feu entre zones | Environnement régulé, équipe | cible : pas encore de TLS entre zones |
+| 7. Sans virtualisation | Compte système dédié et pare-feu de l'OS | Machines sans Docker ni VM | possible, non outillé |
+
+## Utilisation au quotidien
+
+| Pour | Commande |
+|---|---|
+| Geler tout de suite (une session ou tout) | `aplomb admin --compte alice gel [--session <id>]` ou le bouton dans Aplomb Watch |
+| Dégeler (quatre yeux, dans les 10 min) | `aplomb admin --compte alice degel` puis `aplomb admin --compte bob degel` |
+| Répondre à une revue des passerelles | Aplomb Watch, carte « Revue demandée » : Approuver ou Refuser (2 min, puis refus) |
+| Suivre un agent échange par échange | Aplomb Watch, onglet « Vue chaînée » : appels au modèle, outils demandés, décisions, trafic ; écarts en rouge |
+| Modifier un mandat, des règles, les comptes | Éditer, puis `aplomb cosigner <fichier> --compte alice --compte bob` (sinon `serve` refuse de démarrer et dit qui doit signer) |
+| Vérifier le journal | `aplomb verify --journal journal` |
+| Ancrer le journal hors de la machine | `aplomb ancrer --vers /Volumes/<clé USB>` ; `verify` confronte ensuite le journal à cette copie |
+| Effacer les contenus d'une session | `aplomb effacer --session <id>` (sa clé est détruite, la chaîne reste vérifiable) |
+| Exporter un diagramme de séquence | `aplomb mermaid --session <id>` ou `--sortie diagrammes` ; `--dechiffrer` montre les ressources en clair |
+| Changer la phrase de passe | `aplomb phrase changer` |
+| Rejouer les scénarios du hook | `scripts/scenarios.sh` |
+
+### Ports
+
+Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une option `--ecoute-…` de `serve`.
+
+| Port | Service | Qui le joint |
+|---|---|---|
+| 7700 | Décision | le hook |
+| 7701 | Administration, Aplomb Watch | les humains seulement, jamais l'agent |
+| 7702 | Aplomb Gate (`HTTPS_PROXY`) | l'agent |
+| 7703 | Proxy LLM (`ANTHROPIC_BASE_URL`) | l'agent |
+| 7704 | Passerelle MCP | l'agent |
+
+### Dépannage
+
+| Symptôme | Cause probable |
+|---|---|
+| Toutes les actions sont refusées, « superviseur injoignable » | `aplomb serve` n'est pas lancé, ou il écoute sur un autre port. C'est le fail-closed attendu. |
+| `serve` refuse de démarrer : signature manquante | Un mandat, une règle `.cedar` ou `comptes.yaml` a changé : recosigner. |
+| `init` échoue à la cosignature (clé de compte absente) | Lancé dans le clone, qui contient l'instance de démonstration : utiliser un dossier d'instance à vous (étape 2). |
+| « réponse non signée » dans Claude Code | `--cle-serveur` ne pointe pas sur le `cles/reponses.pub` de l'instance lancée. |
+| Une session est gelée | Une borne est atteinte ou un point protégé a été touché : voir Aplomb Watch, puis dégeler à quatre yeux. |
+| Le hook s'exécute deux fois | Il est déclaré à la fois en paramètres gérés et dans `.claude/settings.json` du projet : retirer celui du projet. |
+
+## État du MVP
 
 | | |
 |---|---|
@@ -202,4 +341,12 @@ poste).
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |
 
-Limites connues : voir « Ce que J1 ne fait pas » dans l'architecture.
+Limites connues : voir « Ce que J1 ne fait pas » dans [l'architecture](docs/ARCHITECTURE-MVP.md) et les limites du [conteneur](conteneur/README.md#limites-connues).
+
+## Licence
+
+- `crates/aplomb-core` (bibliothèque) : [Apache-2.0](crates/aplomb-core/LICENSE).
+- Tout le reste (binaire `aplomb`, profils, scripts, documentation) : [EUPL-1.2](LICENSE),
+  licence de l'Union européenne, valable en français comme dans les autres langues de l'UE.
+
+Les contributions sont les bienvenues : voir [`CONTRIBUTING.md`](CONTRIBUTING.md).
