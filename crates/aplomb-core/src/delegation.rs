@@ -93,6 +93,7 @@ mod tests {
             },
             politique: FichiersPolitique { regles: "r".into(), revue: "v".into(), regles_sha256: String::new(), revue_sha256: String::new() },
             bornes: None,
+            moniteurs: None,
             signature: None,
             signatures: vec![],
         }

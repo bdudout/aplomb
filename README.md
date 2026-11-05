@@ -32,7 +32,12 @@ par hook (niveau d'assurance 1, coopératif).
 - **Superviseur** (`aplomb-core`, bibliothèque pure, sans code `unsafe`) : combine mandat, règles, moniteurs, bornes et gel. Une décision ne peut que se durcir (Allow < Review < Deny < Gel).
   - **Moniteurs déterministes** :
     - provenance : après un contenu non fiable, les actions sensibles passent en revue ;
-    - contrôle croisé : une action qui ne correspond à aucun appel demandé par le modèle est signalée.
+    - contrôle croisé : une action qui ne correspond à aucun appel demandé par le modèle est signalée ;
+    - secrets : une clé privée ou un jeton d'API dans une action la met en revue, ou gèle la session s'il part hors de la machine. Dans ce que le proxy LLM envoie au modèle, les secrets sont masqués.
+  - **Juge** (facultatif, déclaré au mandat) : un modèle, local de préférence, juge l'écart entre l'action et l'intention du mandat signé.
+    - Il n'est consulté que pour les actions que les règles permettent encore et qui comptent : exécution, réseau, outil MCP, délégation. Les autres sont tirées au sort.
+    - Ce qui vient de l'agent lui est présenté comme donnée, jamais comme instruction.
+    - Sans réponse dans le délai, l'action passe en revue. Le nombre de consultations par session est borné.
   - **Bornes** : refus, revues, domaines et envois comptés par session. Un dépassement gèle la session.
   - **Délégation** : un sous-agent est jugé par son propre mandat, inclus dans celui du parent, et par le mandat parent. Le plus strict l'emporte.
 - **Service** `aplomb serve` : sert les décisions (`127.0.0.1:7700`) et tient le journal.
@@ -89,9 +94,9 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 
 ### Outils de test
 
-- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (43 vérifications), sans rien toucher du réel.
+- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (58 vérifications), sans rien toucher du réel.
 - `scripts/scenarios.sh` : scénarios du hook, dont ceux de l'annexe « Assume misalignment ».
-- `scripts/faux-modele.py`, `scripts/faux-mcp.py` : un modèle et un serveur MCP factices pour le banc.
+- `scripts/faux-modele.py`, `scripts/faux-mcp.py`, `scripts/faux-juge.py` : un modèle, un serveur MCP et un juge factices pour le banc.
 
 ### Aplomb Pentest (à venir)
 
@@ -120,7 +125,7 @@ cargo build --release
 cargo install --path crates/aplomb   # met `aplomb` dans ~/.cargo/bin (déjà dans le PATH avec rustup)
 ```
 
-Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `43 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
+Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `58 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
 
 ### 2. Créer son instance
 
@@ -232,6 +237,22 @@ Dans le dépôt supervisé, `.claude/settings.json` (chemins absolus) :
   ```
 
   Ensuite : `claude mcp add --transport http notes http://127.0.0.1:7704/mcp/notes`. Tout outil non listé dans `outils` passe en revue.
+- **Juge** (J5) : déclarer au mandat un modèle qui juge les actions sensibles au regard de l'intention :
+
+  ```yaml
+  moniteurs:
+    juge:
+      api: openai                      # Ollama, vLLM, llama.cpp ; ou anthropic (jeton confié à Aplomb)
+      url: http://127.0.0.1:11434
+      modele: qwen2.5:3b
+      delai_ms: 4000                   # 6000 au plus ; au-delà, l'action passe en revue
+      echantillon: 0.05                # part des lectures et écritures soumises au juge
+      appels_max: 500                  # consultations par session, puis revue
+      niveau_max: suspect              # le juge met en revue ; « critique » l'autorise à geler
+  ```
+
+  - **Latence** : chaque action sensible attend l'avis du juge. Avec un petit modèle local, comptez une à quelques secondes.
+  - **Mesure** : Aplomb Watch affiche le nombre de consultations, d'actions durcies et d'indisponibilités, et la latence moyenne.
 - **Sous-agents** :
   - un mandat enfant porte `agent: claude-code/<type de sous-agent>` et `parent: <id du mandat parent>` ;
   - il doit être inclus dans le parent ;
@@ -322,7 +343,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 99 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle) |
+| Tests | 106 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -337,6 +358,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Proxy LLM (niveau 2) | `127.0.0.1:7703` pour `ANTHROPIC_BASE_URL` : amont = `domaines_modele` du mandat ; seuls les appels de conversation passent ; clé de l'agent retirée, jeton d'Aplomb injecté (`aplomb modele jeton`, chiffré) ; appels, jetons et outils demandés journalisés ; coupé par le gel |
 | Passerelle MCP (niveau 2) | `127.0.0.1:7704/mcp/<nom>` : serveurs du mandat (`serveurs_mcp`) lancés par Aplomb ; chaque appel d'outil jugé et journalisé ; définitions d'outils épinglées (une description qui change = outil refusé) |
 | File de revue | Une action des passerelles (Gate, MCP) en revue attend 2 min la réponse d'un opérateur ou d'un approbateur dans Aplomb Watch (Approuver / Refuser) ; sans réponse, refus ; l'issue et le compte sont journalisés |
+| Moniteurs (J5, lot 1) | Secrets détectés dans les actions (revue, gel s'ils sortent) et masqués dans les requêtes au modèle (EF-D1) ; juge enfichable compatible OpenAI ou API Messages, en cascade : actions sensibles et échantillon, budget par session, délai, revue si indisponible ; saisine structurée, données de l'agent enveloppées (EF-E1, EF-E5, EF-E6) ; mesure dans Aplomb Watch |
 | Provenance (EF-B5) | Après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt, sortie de sous-agent), les actions sensibles de la session passent en revue |
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |
 | Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |

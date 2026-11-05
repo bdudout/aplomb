@@ -8,12 +8,16 @@
 //!   au moins en revue : un contenu non fiable ne déclenche jamais seul une action Allow.
 //! - **Délégation** (EF-B6) : l'action d'un sous-agent qui a un mandat enfant est jugée par
 //!   l'enfant **et** par le parent ; le verdict le plus sévère l'emporte.
-use std::collections::{HashMap, HashSet};
+//! - **Moniteurs** (EF-E) : secrets, puis juge si le mandat en déclare un. Le juge fait de
+//!   l'I/O : [`Superviseur::preparer`] dit s'il faut le consulter et rédige la saisine,
+//!   l'appelant l'interroge hors verrou, puis [`Superviseur::decider_avec`] combine son avis.
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::action::{Action, EvenementOutil};
 use crate::bornes::Suivi;
 use crate::decision::{combiner, Avis, Decision, DecisionFinale, Niveau, Verdict};
 use crate::mandat::MandatCharge;
+use crate::moniteurs::{self, ConfigJuge, Raison, Saisir, Trace};
 use crate::politique::{ErreurPolitique, Politique};
 use crate::profils;
 
@@ -27,6 +31,21 @@ pub struct Superviseur {
     influences: HashMap<String, Vec<String>>,
     /// Mandats enfants, par type de sous-agent.
     enfants: HashMap<String, Superviseur>,
+    /// Dernières actions de chaque session, montrées au juge (EF-E4).
+    traces: HashMap<String, VecDeque<Trace>>,
+    /// Consultations du juge par session (budget, EF-E5).
+    appels_juge: HashMap<String, u32>,
+}
+
+/// Actions passées montrées au juge.
+const TRACES_MAX: usize = 20;
+
+/// Consultation du juge à faire pour une action.
+#[derive(Debug, Clone)]
+pub enum Consultation {
+    Juge { raison: Raison, consigne: String, message: String },
+    /// Action sensible, budget épuisé : avis de revue sans appel.
+    BudgetEpuise(Avis),
 }
 
 impl Superviseur {
@@ -41,6 +60,8 @@ impl Superviseur {
             suivi,
             influences: HashMap::new(),
             enfants: HashMap::new(),
+            traces: HashMap::new(),
+            appels_juge: HashMap::new(),
         })
     }
 
@@ -84,8 +105,50 @@ impl Superviseur {
         profils::code::normaliser(evt, &self.mandat.mandat)
     }
 
+    /// Juge déclaré au mandat.
+    pub fn juge(&self) -> Option<&ConfigJuge> {
+        self.mandat.mandat.moniteurs.as_ref().and_then(|m| m.juge.as_ref())
+    }
+
+    /// Faut-il consulter le juge pour cette action ? Sans effet sur l'état : l'appelant
+    /// consulte le juge hors verrou, puis appelle [`Self::decider_avec`]. `tirage` est
+    /// uniforme dans `[0, 1)` (échantillon), `nonce` imprévisible (enveloppe des données).
+    pub fn preparer(&self, evt: &EvenementOutil, tirage: f64, nonce: &str) -> Option<Consultation> {
+        let cfg = self.juge()?;
+        let action = self.normaliser(evt);
+        let politique = if evt.agent != self.mandat.mandat.agent { Verdict::Deny } else { self.politique.evaluer(&action).verdict };
+        // Un secret ou la provenance décident déjà : inutile de payer le juge.
+        let mut verdict = moniteurs::avis_secrets(evt, &action).map_or(politique, |a| politique.max(a.niveau.plancher()));
+        if !self.influences(&evt.session).is_empty() && profils::code::sensible_a_l_influence(&action) {
+            verdict = verdict.max(Verdict::Review);
+        }
+        let appels = self.appels_juge.get(&evt.session).copied().unwrap_or(0);
+        match moniteurs::saisir(cfg, &action, verdict, appels, tirage) {
+            Saisir::Non => None,
+            Saisir::BudgetEpuise => Some(Consultation::BudgetEpuise(moniteurs::avis_budget(cfg))),
+            Saisir::Oui(raison) => {
+                let historique: Vec<Trace> = self.traces.get(&evt.session).map(|t| t.iter().cloned().collect()).unwrap_or_default();
+                let (consigne, message) =
+                    moniteurs::saisine(&self.mandat.mandat.intention, evt, &action, &historique, self.influences(&evt.session), nonce);
+                Some(Consultation::Juge { raison, consigne, message })
+            }
+        }
+    }
+
+    /// Compte une consultation du juge dans le budget de la session.
+    pub fn noter_appel_juge(&mut self, session: &str) -> u32 {
+        let n = self.appels_juge.entry(session.to_string()).or_default();
+        *n += 1;
+        *n
+    }
+
     /// Décide d'une action. Un verdict `Gel` gèle la session pour la suite (EF-J4).
     pub fn decider(&mut self, evt: &EvenementOutil) -> (Action, DecisionFinale) {
+        self.decider_avec(evt, Vec::new())
+    }
+
+    /// Décide d'une action, avec les avis de moniteurs extérieurs (juge).
+    pub fn decider_avec(&mut self, evt: &EvenementOutil, externes: Vec<Avis>) -> (Action, DecisionFinale) {
         let mut action = self.normaliser(evt);
         let sources = self.influences(&evt.session).to_vec();
         action.contexte.insert("influence_externe".into(), serde_json::json!(!sources.is_empty()));
@@ -123,9 +186,17 @@ impl Superviseur {
                 motif: format!("session influencée par un contenu non fiable ({})", sources.join(", ")),
             });
         }
+        // Secrets : moniteur déterministe (EF-D1).
+        avis.extend(moniteurs::avis_secrets(evt, &action));
+        avis.extend(externes);
         let finale = combiner(politique, avis, gele);
         if finale.verdict == Verdict::Gel {
             self.sessions_gelees.insert(evt.session.clone());
+        }
+        let traces = self.traces.entry(evt.session.clone()).or_default();
+        traces.push_back(Trace { verbe: action.verbe.clone(), ressource: action.ressource.clone(), verdict: finale.verdict });
+        if traces.len() > TRACES_MAX {
+            traces.pop_front();
         }
         (action, finale)
     }
@@ -141,6 +212,12 @@ impl Superviseur {
 
     pub fn degeler(&mut self, session: Option<&str>) {
         self.suivi.reinitialiser(session);
+        match session {
+            Some(s) => {
+                self.appels_juge.remove(s);
+            }
+            None => self.appels_juge.clear(),
+        }
         match session {
             Some(s) => {
                 self.sessions_gelees.remove(s);

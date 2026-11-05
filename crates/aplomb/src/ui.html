@@ -127,7 +127,9 @@ async function rafraichir() {
   if (r.status === 401) { nonConnecte(); return false; }
   const e = await r.json();
   $("compte").textContent = `connecté : ${e.compte} (${e.roles.join(", ")})`;
-  $("mandat").textContent = `Mandat ${e.mandat.id} v${e.mandat.version} · profil ${e.mandat.profil} · ${e.mandat.racine}`;
+  const j = e.juge;
+  const juge = j ? ` · juge ${j.modele} : ${j.consultations} consultation(s), ${j.durcies} durcie(s), ${j.indisponible} indisponible(s), ${j.latence_moyenne_ms} ms en moyenne` : "";
+  $("mandat").textContent = `Mandat ${e.mandat.id} v${e.mandat.version} · profil ${e.mandat.profil} · ${e.mandat.racine}${juge}`;
   for (const k of ["allow", "review", "deny", "gel"]) $("c-" + k).textContent = e.compteurs[k];
   $("bandeau").style.display = e.gel_global ? "block" : "none";
   const gelees = e.sessions_gelees.length ? `${e.sessions_gelees.length} session(s) gelée(s)` : "";

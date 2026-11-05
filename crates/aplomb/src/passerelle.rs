@@ -81,7 +81,7 @@ async fn traiter(mut client: TcpStream, etat: Etat, reglages: &Reglages) -> std:
 
     // 1. Décision, journalisée avant toute connexion (fail-closed). Le modèle de l'agent ne
     // passe pas par ici mais par le proxy LLM, qui y injecte le jeton d'Aplomb.
-    let decision = match juger(&etat, &evt) {
+    let decision = match juger(&etat, &evt).await {
         Ok((d, _)) => d,
         Err(e) => return refuser(&mut client, "503 Service Unavailable", &format!("{e} — fail-closed")).await,
     };

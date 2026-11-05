@@ -96,6 +96,9 @@ pub struct Mandat {
     /// Bornes cumulées par session (EF-A6) ; absentes : valeurs par défaut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bornes: Option<crate::bornes::Bornes>,
+    /// Moniteurs (EF-E) : juge et ses réglages. Absents : règles et secrets seulement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moniteurs: Option<crate::moniteurs::Moniteurs>,
     /// Signature ed25519 (hex) du mandat sans ce champ (ancien format, un seul signataire).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
@@ -257,6 +260,7 @@ mod tests {
                 revue_sha256: String::new(),
             },
             bornes: None,
+            moniteurs: None,
             signature: None,
             signatures: Vec::new(),
         }

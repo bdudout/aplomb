@@ -23,3 +23,7 @@ politique:
   revue: ../profils/code/revue.cedar
 # Au-delà, la session est gelée.
 bornes: {refus: 5, revues: 20, domaines: 10, envois: 3, actions: 2000}
+# Juge (facultatif) : un modèle juge les actions sensibles au regard de l'intention.
+# moniteurs:
+#   juge: {api: openai, url: "http://127.0.0.1:11434", modele: "qwen2.5:3b", delai_ms: 4000,
+#          echantillon: 0.05, appels_max: 500, niveau_max: suspect}

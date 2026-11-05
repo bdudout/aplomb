@@ -7,6 +7,10 @@
 //!    volumes, jetons, outils demandés par le modèle.
 //! 4. La clé de l'agent est retirée, celle d'Aplomb injectée : le canal modèle ne peut pas
 //!    servir à exfiltrer vers un autre compte.
+//! 5. Les secrets de la requête (clés privées, jetons d'API…) sont masqués avant envoi :
+//!    lus par l'agent dans un fichier ou une sortie de commande, ils ne partent pas chez le
+//!    fournisseur du modèle (moniteur « secrets », EF-D1). Le journal dit lesquels, jamais
+//!    leur valeur.
 //!
 //! La réponse est relayée au fil de l'eau (flux SSE compris) et lue au passage.
 use std::sync::{Arc, Mutex};
@@ -117,12 +121,21 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
         };
         return refus(StatusCode::SERVICE_UNAVAILABLE, motif);
     };
+    // Secrets masqués avant tout envoi ; la marque garde le JSON valide.
+    let (corps, masques) = match std::str::from_utf8(&corps).map(aplomb_core::moniteurs::masquer) {
+        Ok((texte, sortes)) if !sortes.is_empty() => (Bytes::from(texte), sortes),
+        _ => (corps, Vec::new()),
+    };
     let modele = serde_json::from_slice::<Value>(&corps)
         .ok()
         .and_then(|v| v.get("model").and_then(Value::as_str).map(String::from))
         .unwrap_or_default();
     // Journalisé avant tout envoi : sans journal, rien ne part.
-    if let Err(e) = journaliser(base.clone(), json!({"modele": modele, "envoye": corps.len()})) {
+    let mut envoi = json!({"modele": modele, "envoye": corps.len()});
+    if !masques.is_empty() {
+        envoi["secrets_masques"] = json!(masques);
+    }
+    if let Err(e) = journaliser(base.clone(), envoi) {
         return refus(StatusCode::SERVICE_UNAVAILABLE, &format!("{e} — fail-closed"));
     }
 

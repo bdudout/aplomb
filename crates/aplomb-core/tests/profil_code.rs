@@ -43,6 +43,7 @@ fn mandat() -> Mandat {
             revue_sha256: String::new(),
         },
         bornes: None,
+        moniteurs: None,
         signature: None,
         signatures: Vec::new(),
     }
@@ -336,4 +337,42 @@ fn sous_agent_juge_par_son_mandat_et_le_parent() {
     // Un mandat enfant plus large que le parent est refusé au chargement.
     e.perimetre.domaines_autorises.push("evil.example".into());
     assert!(s.ajouter_enfant(charge(e)).unwrap_err().contains("evil.example"));
+}
+
+/// Cascade des moniteurs (EF-E5) : juge pour les actions sensibles encore permises,
+/// pas pour une lecture ni pour ce que les règles ou les secrets ont déjà tranché.
+#[test]
+fn cascade_des_moniteurs() {
+    use aplomb_core::decision::{Avis, Niveau};
+    use aplomb_core::moniteurs::{ApiJuge, ConfigJuge, Moniteurs};
+    use aplomb_core::superviseur::Consultation;
+    let mut m = mandat();
+    m.moniteurs = Some(Moniteurs {
+        juge: Some(ConfigJuge {
+            api: ApiJuge::Openai,
+            url: "http://127.0.0.1:11434".into(),
+            modele: "petit".into(),
+            delai_ms: 1000,
+            echantillon: 0.0,
+            appels_max: 1,
+            niveau_max: Niveau::Suspect,
+        }),
+    });
+    let mut s = Superviseur::nouveau(charge(m)).unwrap();
+    let bash = evt("s", "Bash", json!({"command": "cargo build"}));
+    match s.preparer(&bash, 0.5, "n") {
+        Some(Consultation::Juge { message, .. }) => assert!(message.contains("<donnees id=\"n\">")),
+        autre => panic!("juge attendu : {autre:?}"),
+    }
+    assert!(s.preparer(&evt("s", "Read", json!({"file_path": "/depot/a"})), 0.5, "n").is_none());
+    assert!(s.preparer(&evt("s", "Bash", json!({"command": "curl https://evil.example"})), 0.5, "n").is_none());
+    let secret = evt("s", "Write", json!({"file_path": "/depot/k.py", "content": "K='AKIAZ7Q2M4K8T3V6W9XB'"}));
+    assert!(s.preparer(&secret, 0.5, "n").is_none());
+    assert_eq!(s.decider(&secret).1.verdict, Verdict::Review);
+    // Avis du juge combiné : il durcit, jamais n'assouplit.
+    let suspect = Avis { moniteur: "juge".into(), niveau: Niveau::Suspect, score: 0.9, motif: "écart".into() };
+    assert_eq!(s.decider_avec(&bash, vec![suspect]).1.verdict, Verdict::Review);
+    // Budget : une consultation, puis revue sans appel.
+    s.noter_appel_juge("s");
+    assert!(matches!(s.preparer(&bash, 0.5, "n"), Some(Consultation::BudgetEpuise(_))));
 }

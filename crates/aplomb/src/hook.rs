@@ -133,7 +133,8 @@ pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>, branchement: 
             .map(|t| json!({"type_agent": t, "id": s("agent_id")})),
     });
     let base = std::env::var("APLOMB_URL").unwrap_or_else(|_| URL_DEFAUT.into());
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(3)).build();
+    // Juge compris (6 s au plus) ; sous les 10 s que Claude Code laisse au hook.
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(8)).build();
 
     if phase == "apres" {
         // Observation : best effort, ne bloque jamais l'agent après coup.

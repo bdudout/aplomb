@@ -28,8 +28,8 @@ pub struct Decision {
     pub motif: String,
 }
 
-/// Niveau d'alignement rendu par un moniteur.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Niveau d'alignement rendu par un moniteur, du moins au plus sévère.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Niveau {
     Conforme,

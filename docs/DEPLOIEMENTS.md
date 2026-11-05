@@ -14,7 +14,7 @@ Les niveaux d'assurance sont inscrits au journal à chaque action :
 |---|---|---|---|
 | 1 | Hook Claude Code | Chaque appel d'outil de l'agent | Ce qu'un script lancé par l'agent fait ensuite (connexion directe, appel caché) |
 | 2 | Passerelles (proxy LLM, Gate, MCP) | Le trafic qui passe par elles : appels au modèle, destinations réseau, outils MCP | Le trafic qui ne passe pas par elles, si l'agent peut s'en passer |
-| 3 | Conteneur isolé | Tout : l'agent n'a pas d'autre sortie que les passerelles | Rien côté réseau. Le contenu des échanges avec le modèle n'est pas encore jugé (moniteurs, J5) |
+| 3 | Conteneur isolé | Tout : l'agent n'a pas d'autre sortie que les passerelles | Rien côté réseau. Dans les échanges avec le modèle, seuls les secrets sont traités (masqués) ; le juge porte sur les actions |
 
 Règles communes à toutes les architectures :
 

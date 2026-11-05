@@ -548,6 +548,7 @@ mod tests {
                 revue_sha256: String::new(),
             },
             bornes: None,
+            moniteurs: None,
             signature: None,
             signatures: Vec::new(),
         }

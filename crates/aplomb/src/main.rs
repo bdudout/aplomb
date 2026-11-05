@@ -17,6 +17,7 @@ mod admin;
 mod cle_maitresse;
 mod gouverner;
 mod hook;
+mod juge;
 #[allow(unsafe_code)]
 mod deverrouillage;
 mod mcp;

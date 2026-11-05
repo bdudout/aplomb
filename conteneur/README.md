@@ -62,10 +62,11 @@ Arrêter les relais : `docker compose down`.
 
 ## Limites connues
 
-- **Contenu des échanges avec le modèle** : le proxy relève les outils demandés, mais ne
-  juge pas encore le contenu des requêtes (ce que l'agent envoie au modèle) ; c'est le rôle
-  des moniteurs (J5). Un script de l'agent peut appeler le proxy : il paie avec le compte
-  d'Aplomb et tout est journalisé, mais ne peut rien envoyer ailleurs.
+- **Contenu des échanges avec le modèle** : le proxy relève les outils demandés et masque
+  les secrets reconnus (clés, jetons) avant l'envoi. Il ne juge pas le reste du contenu des
+  requêtes ; le juge, lui, porte sur les actions. Un script de l'agent peut appeler le
+  proxy : il paie avec le compte d'Aplomb et tout est journalisé, mais ne peut rien envoyer
+  ailleurs.
 - **mTLS entre hook et superviseur** : non fait, volontairement. Le hook tourne sous le
   même utilisateur que l'agent : un certificat client lisible par le hook l'est aussi par
   l'agent, et ne prouverait donc rien. L'usurpation du superviseur est déjà empêchée par

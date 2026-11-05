@@ -91,4 +91,8 @@ aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
     mandat enfant suit le mandat parent. Le journal garde la chaîne (type et identifiant
     du sous-agent, mandat enfant appliqué).
   - Reste : serveurs MCP distants (HTTP) et secrets des serveurs MCP détenus par Aplomb.
-- Pas de moniteur probabiliste (juge, guard model) : J5.
+- ~~Pas de moniteur probabiliste~~ : J5, lot 1 fait. Moniteur « secrets » déterministe
+  (`aplomb-core/src/moniteurs.rs`) et juge enfichable (`crates/aplomb/src/juge.rs`) en
+  cascade, saisine enveloppée, budget et mesure. Reste pour J5 : banc rouge/bleu (sûreté et
+  utilité mesurées, EF-H1), protocoles *defer to trusted* et rééchantillonnage (EF-E2),
+  surveillance du raisonnement (EF-E3), jeu d'injection visant le juge (EF-E6).

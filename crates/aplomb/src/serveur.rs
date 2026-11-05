@@ -106,6 +106,16 @@ struct Interne {
     /// Actions des passerelles en attente d'une réponse humaine, par numéro.
     revues: HashMap<u64, Revue>,
     revue_suivante: u64,
+    /// Mesure du juge (EF-E5) : consultations, échecs, latence cumulée.
+    stats_juge: StatsJuge,
+}
+
+#[derive(Default)]
+struct StatsJuge {
+    consultations: u64,
+    indisponible: u64,
+    durcies: u64,
+    latence_ms: u64,
 }
 
 /// Action en revue : ce que voit l'humain, et la passerelle qui attend sa réponse.
@@ -122,6 +132,8 @@ pub(crate) struct Etat {
     interne: Arc<Mutex<Interne>>,
     diffusion: broadcast::Sender<String>,
     signataire: Arc<ed25519_dalek::SigningKey>,
+    /// Juge déclaré au mandat, consulté hors verrou.
+    juge: Option<Arc<crate::juge::Juge>>,
 }
 
 /// Session globale du journal pour les actions d'administration sans session visée.
@@ -193,18 +205,65 @@ impl Etat {
     }
 }
 
+/// Tirage uniforme dans `[0, 1)` et nonce, pour la cascade et l'enveloppe du juge.
+fn alea() -> (f64, String) {
+    let mut o = [0u8; 16];
+    let _ = getrandom::getrandom(&mut o);
+    let tirage = u64::from_le_bytes(o[..8].try_into().expect("8 octets")) as f64 / (u64::MAX as f64 + 1.0);
+    (tirage, hex::encode(&o[8..]))
+}
+
+/// Consulte le juge si la cascade le demande (EF-E5), hors verrou : rend son avis et ce
+/// qui en sera journalisé.
+async fn consulter_juge(etat: &Etat, evt: &EvenementOutil) -> (Vec<aplomb_core::decision::Avis>, Option<Value>) {
+    use aplomb_core::superviseur::Consultation;
+    let Some(juge) = &etat.juge else { return (Vec::new(), None) };
+    let (tirage, nonce) = alea();
+    let consultation = etat.interne.lock().expect("verrou").superviseur.preparer(evt, tirage, &nonce);
+    match consultation {
+        None => (Vec::new(), None),
+        Some(Consultation::BudgetEpuise(a)) => (vec![a], Some(json!({"issue": "budget épuisé"}))),
+        Some(Consultation::Juge { raison, consigne, message }) => {
+            let (issue, latence) = juge.consulter(&consigne, &message).await;
+            let mut interne = etat.interne.lock().expect("verrou");
+            let appels = interne.superviseur.noter_appel_juge(&evt.session);
+            interne.stats_juge.consultations += 1;
+            interne.stats_juge.latence_ms += latence;
+            let (avis, trace) = match issue {
+                Ok(a) => {
+                    if a.niveau > aplomb_core::decision::Niveau::Conforme {
+                        interne.stats_juge.durcies += 1;
+                    }
+                    let t = json!({"raison": raison, "latence_ms": latence, "appels": appels, "niveau": a.niveau});
+                    (a, t)
+                }
+                Err(e) => {
+                    interne.stats_juge.indisponible += 1;
+                    let t = json!({"raison": raison, "latence_ms": latence, "appels": appels, "issue": "indisponible", "cause": e});
+                    (aplomb_core::moniteurs::avis_indisponible(&e), t)
+                }
+            };
+            (vec![avis], Some(trace))
+        }
+    }
+}
+
 /// Juge un événement et journalise la décision (journal d'abord : une décision non
-/// journalisée n'est jamais rendue). Chemin unique du hook et de la passerelle.
-pub(crate) fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_core::decision::DecisionFinale, u64), String> {
+/// journalisée n'est jamais rendue). Chemin unique du hook et des passerelles.
+pub(crate) async fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_core::decision::DecisionFinale, u64), String> {
+    let (externes, trace_juge) = consulter_juge(etat, evt).await;
     let t = maintenant();
     let mut interne = etat.interne.lock().expect("verrou");
     etat.ouvrir_session(&mut interne, evt, t).map_err(|e| format!("journal indisponible : {e}"))?;
-    let (action, d) = interne.superviseur.decider(evt);
+    let (action, d) = interne.superviseur.decider_avec(evt, externes);
     let mut contenu = json!({
         "outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource,
         "contexte": action.contexte, "verdict": d.verdict, "regle": d.politique.regle,
         "motif": d.motif, "durci": d.durci, "avis": d.avis, "appel": evt.appel,
     });
+    if let Some(j) = trace_juge {
+        contenu["juge"] = j;
+    }
     // Provenance (EF-B5) : contenus non fiables reçus par la session avant cette action.
     let sources = interne.superviseur.influences(&evt.session);
     if !sources.is_empty() {
@@ -295,7 +354,7 @@ async fn decider(State(etat): State<Etat>, Json(evt): Json<EvenementOutil>) -> i
     if evt.phase != Phase::Avant {
         return erreur(StatusCode::BAD_REQUEST, "phase « avant » attendue");
     }
-    let (d, seq) = match juger(&etat, &evt) {
+    let (d, seq) = match juger(&etat, &evt).await {
         Ok(r) => r,
         Err(e) => return erreur(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
@@ -357,7 +416,12 @@ async fn etat_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
     let m = &interne.superviseur.mandat;
     let (gel_global, sessions_gelees) = interne.superviseur.etat_gel();
     let c = interne.compteurs;
+    let s = &interne.stats_juge;
+    let juge = etat.juge.as_ref().map(|j| json!({"modele": j.description(), "consultations": s.consultations,
+        "indisponible": s.indisponible, "durcies": s.durcies,
+        "latence_moyenne_ms": if s.consultations > 0 { s.latence_ms / s.consultations } else { 0 }}));
     Json(json!({
+        "juge": juge,
         "mandat": {"id": m.mandat.id, "version": m.mandat.version, "profil": m.mandat.profil,
                    "intention": m.mandat.intention, "racine": m.mandat.perimetre.racine, "empreinte": m.empreinte},
         "gel_global": gel_global, "sessions_gelees": sessions_gelees,
@@ -641,6 +705,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?.avec_maitre(maitre);
     let signataire = cle_reponses(&opts.cle_reponses)?;
     let jeton = crate::cle_maitresse::jeton_modele()?;
+    let juge = superviseur.juge().cloned().map(|cfg| crate::juge::Juge::nouveau(cfg, jeton.clone()).map(Arc::new)).transpose()?;
     let texte_comptes = std::fs::read_to_string(&opts.comptes)
         .map_err(|e| format!("comptes {} : {e} (créer un compte : aplomb compte nouveau)", opts.comptes.display()))?;
     let (autorite, signataires_comptes) = Autorite::depuis_yaml_cosigne(&texte_comptes, &confiance).map_err(|e| {
@@ -660,9 +725,11 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             annonces: Default::default(),
             revues: HashMap::new(),
             revue_suivante: 0,
+            stats_juge: StatsJuge::default(),
         })),
         diffusion,
         signataire: Arc::new(signataire),
+        juge,
     };
 
     let api_decision = Router::new()
@@ -688,6 +755,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/revue", post(repondre_revue))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(etat.clone());
+    let juge_affiche = etat.juge.as_ref().map(|j| j.description());
     let etat_scellement = etat;
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
@@ -727,6 +795,10 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             "  passerelle MCP     : http://{}/mcp/<nom>  ({})",
             opts.ecoute_mcp,
             if lances.is_empty() { "aucun serveur MCP au mandat".to_string() } else { lances.join(", ") }
+        );
+        eprintln!(
+            "  moniteurs          : secrets{}",
+            juge_affiche.map(|j| format!(", juge {j}")).unwrap_or_else(|| " (aucun juge au mandat)".into())
         );
         if !enfants.is_empty() {
             eprintln!("  mandats enfants    : {}", enfants.join(", "));

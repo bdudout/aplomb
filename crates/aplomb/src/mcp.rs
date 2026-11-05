@@ -259,7 +259,7 @@ async fn traiter(p: &Partage, serveur: &ServeurMcp, processus: &Processus, m: Va
         return refus(&id, &format!("{outil} refusé : sa définition a changé depuis sa première présentation"));
     }
     let evt = evenement(&p.reglages, outil.clone(), appel.arguments.clone(), appel.appel.clone(), Phase::Avant);
-    let d = match juger(&p.etat, &evt) {
+    let d = match juger(&p.etat, &evt).await {
         Ok((d, _)) => d,
         Err(e) => return refus(&id, &format!("{e} — fail-closed")),
     };

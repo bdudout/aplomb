@@ -21,6 +21,7 @@ pub mod mandat;
 pub mod mcp;
 pub mod mermaid;
 pub mod modele;
+pub mod moniteurs;
 pub mod passerelle;
 pub mod politique;
 pub mod profils;
