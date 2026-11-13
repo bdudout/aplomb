@@ -105,6 +105,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 - **Clés** : une clé maîtresse protégée par phrase de passe (Argon2id) enveloppe toutes les autres.
   - `aplomb deverrouiller` garde la clé disponible pour une durée, dans un service réservé au binaire `aplomb`.
   - Sur macOS, les opérations sensibles demandent Touch ID ; sous Linux, la phrase de passe.
+- **Dossier de preuves AI Act** (`aplomb preuves`, J6) : pour un système (un mandat cosigné), un dossier signé qui rassemble les preuves et dit, article par article, ce qui est couvert. Voir [Dossier de preuves AI Act](#dossier-de-preuves-ai-act).
 - **Vue gouvernance** (`aplomb gouvernance`, J6) : indicateurs agrégés du journal, sans rien de nominatif, signés par l'instance et additionnables entre instances (fédération). Voir [Vue gouvernance et fédération](#vue-gouvernance-et-fédération).
 
 ### Outils de test
@@ -347,6 +348,8 @@ flowchart LR
 | Suivre la consommation | Aplomb Watch, onglet « Consommation » (24 h, 7 j, 30 j) |
 | Voir les indicateurs de gouvernance | Aplomb Watch, onglet « Gouvernance » ; ou `aplomb gouvernance indicateurs [--heures 720] [--systeme <mandat>]`, ou `GET /admin/gouvernance?heures=24` |
 | Fédérer plusieurs instances | Chaque instance : `aplomb gouvernance indicateurs --signer --sortie agregat.json` ; puis `aplomb gouvernance federer *.json --instances federation.yaml` |
+| Produire le dossier de preuves AI Act d'un système | `aplomb preuves exporter --mandat mandats/<mandat>.yaml --sortie preuves-<date>` (phrase ou déverrouillage : le dossier est signé) |
+| Vérifier un dossier de preuves (auditeur) | `aplomb preuves verifier preuves-<date> --cle-pub cles/reponses.pub` |
 | Changer la phrase de passe | `aplomb phrase changer` |
 | Rejouer les scénarios du hook | `APLOMB_DEPOT=<racine du mandat> APLOMB_INSTANCE=~/aplomb-instance scripts/scenarios.sh` |
 
@@ -382,6 +385,26 @@ La vue gouvernance s'adresse à ceux qui pilotent le système d'IA (RSSI, DPO, c
 - **Fédération** (EF-P6) : `federation.yaml` liste les instances et leurs clés publiques (`aplomb gouvernance instance` donne la ligne de chacune). `aplomb gouvernance federer` vérifie chaque agrégat et les additionne. Il refuse un agrégat modifié, une instance inconnue et deux agrégats d'une même instance sur des périodes qui se recouvrent (double compte).
 - `federation.yaml` est une ancre de confiance, comme `cles/confiance.yaml` : il se gère hors bande.
 
+### Dossier de preuves AI Act
+
+`aplomb preuves exporter --mandat <mandat> --sortie <dossier>` produit, pour un système d'IA (un mandat cosigné ; un mandat non cosigné est refusé), un dossier qu'on peut remettre à un auditeur :
+
+| Pièce | Contenu |
+|---|---|
+| `LISEZMOI.md` | Le système, son mandat, et un tableau article par article : statut, constat sur l'instance, ce qui reste à l'organisation, pièces |
+| `correspondance.json` | Les constats mesurés, le statut de chaque article de l'AI Act (9 à 15, 17, 19, 26, 72, 73) et la correspondance des familles d'exigences avec le NIST AI RMF, l'ISO/IEC 42001, l'OWASP (LLM 2025, Agentic 2026), l'ANSSI et le CRA |
+| `mandat/` | Le mandat tel que cosigné, et ses règles |
+| `gouvernance/` | Clés publiques et seuil de la gouvernance ; comptes d'administration et leurs rôles, sans clé |
+| `evaluation.json` | Le banc rouge/bleu rejoué sans juge au moment de l'export |
+| `indicateurs.json` | Les indicateurs agrégés du système, signés, sans rien de nominatif |
+| `journal.json` | Intégrité du journal, scellés, ancre, plus ancienne et plus récente entrée (conservation de six mois) |
+| `manifeste.json` | Empreinte SHA-256 de chaque pièce, signé par la clé de l'instance |
+
+- **Statuts constatés** : « couvert », « partiel » ou « hors périmètre » se déduisent de ce qui est mesuré à l'export, jamais d'une déclaration. Exemples : l'art. 12 n'est couvert que si le journal est intact et scellé, l'art. 14 que si le mandat et les comptes sont cosignés à quatre yeux, l'art. 19 que si le journal couvre six mois.
+- **Ce qu'il ne contient pas** : aucun contenu d'agent, aucun identifiant de session (la chaîne de scellés n'est pas jointe : son témoin, dans `journal.json`, se confronte à l'ancre). Il contient le mandat, avec ses chemins, et les identifiants des personnes chargées du contrôle humain.
+- **Vérification** : `aplomb preuves verifier <dossier> --cle-pub <clé publique de l'instance>` contrôle la signature puis chaque pièce (présente, inchangée, aucune en trop). Sans Aplomb, il suffit de recalculer les SHA-256.
+- Les correspondances sont indicatives : à vérifier article par article avant usage réglementaire. Aplomb apporte des mesures techniques et leurs preuves ; gestion des risques, qualité et procédures restent à l'organisation.
+
 ### Ports
 
 Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une option `--ecoute-…` de `serve`.
@@ -409,7 +432,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 121 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 123 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -432,6 +455,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Provenance (EF-B5) | Après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt, sortie de sous-agent), les actions sensibles de la session passent en revue |
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |
 | Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |
+| Preuves AI Act (J6, lot 2) | `aplomb preuves exporter` : dossier signé par système (mandat, gouvernance, banc rouge/bleu, indicateurs, intégrité du journal), statut constaté par article de l'AI Act et correspondance NIST AI RMF, ISO/IEC 42001, OWASP, ANSSI, CRA ; `aplomb preuves verifier` pour l'auditeur. J6 terminé |
 | Vue gouvernance (J6, lots 1 et 3) | Onglet « Gouvernance » d'Aplomb Watch (export de l'agrégat signé), `aplomb gouvernance` et `GET /admin/gouvernance` : indicateurs agrégés sans rien de nominatif, seuil de publication k, sessions rompues écartées (EF-P3) ; agrégats signés par l'instance, fédération vérifiée (instance connue, signature, pas de double compte) (EF-P6) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |

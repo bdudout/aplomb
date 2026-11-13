@@ -402,6 +402,29 @@ head -3 federation.yaml > federation-seule.yaml
 verifier "fédération : instance inconnue refusée" \
   '! "$APLOMB" gouvernance federer agregat-a.json agregat-b.json --instances federation-seule.yaml 2> federe-inconnue.log && grep -q "inconnue" federe-inconnue.log'
 verifier "agrégat signé sans champ nominatif" '[ "$(python3 -c "$INTERDITS" agregat-a.json)" = aucun ]'
+echo "--- Dossier de preuves AI Act (J6)"
+"$APLOMB" preuves exporter --mandat mandats/banc.yaml --sortie preuves > preuves.log 2>&1
+verifier "dossier exporté et signé" '[ -f preuves/manifeste.json ] && grep -q "pièce(s) signée(s)" preuves.log'
+verifier "pièces attendues" 'for f in LISEZMOI.md correspondance.json evaluation.json indicateurs.json journal.json gouvernance/confiance.yaml gouvernance/comptes.json mandat/banc.yaml mandat/regles.cedar; do [ -f "preuves/$f" ] || exit 1; done'
+lp() { python3 -c "import json; c=json.load(open('preuves/correspondance.json')); a={x['article']: x for x in c['ai_act']}; print($1)"; }
+verifier "art. 14 couvert : mandat et comptes cosignés à quatre yeux" '[ "$(lp "a[\"Art. 14\"][\"statut\"]")" = couvert ]'
+verifier "art. 10 hors périmètre" '[ "$(lp "a[\"Art. 10\"][\"statut\"]")" = hors_perimetre ]'
+verifier "art. 19 partiel : journal de moins de six mois" '[ "$(lp "a[\"Art. 19, art. 26 § 6\"][\"statut\"]")" = partiel ]'
+verifier "constats mesurés (évaluation, décisions)" '[ "$(lp "c[\"constats\"][\"evaluation\"][0] > 0 and c[\"constats\"][\"decisions\"] > 0")" = True ]'
+verifier "correspondance des référentiels (10 familles)" '[ "$(lp "len(c[\"familles\"])")" = 10 ]'
+verifier "aucun contenu ni identifiant de session d'agent" '! grep -rq -e "$S" -e "$SECRET" preuves'
+verifier "indicateurs du dossier sans champ nominatif" '[ "$(python3 -c "$INTERDITS" preuves/indicateurs.json)" = aucun ]'
+verifier "vérification du dossier" '"$APLOMB" preuves verifier preuves --cle-pub cles/reponses.pub > preuves-verif.log 2>&1 && grep -q "dossier intact" preuves-verif.log'
+cp -R preuves preuves-modifie
+python3 -c "import json; p='preuves-modifie/evaluation.json'; r=json.load(open(p)); r['surete']=1.0; json.dump(r, open(p,'w'))"
+verifier "pièce modifiée détectée" '! "$APLOMB" preuves verifier preuves-modifie 2> preuves-modifie.log && grep -q "modifiée : evaluation.json" preuves-modifie.log'
+cp -R preuves preuves-ajout; echo x > preuves-ajout/ajout.txt
+verifier "pièce ajoutée détectée" '! "$APLOMB" preuves verifier preuves-ajout 2> preuves-ajout.log && grep -q "ajoutée" preuves-ajout.log'
+printf '%064d' 0 > autre.pub
+verifier "autre clé d'instance refusée" '! "$APLOMB" preuves verifier preuves --cle-pub autre.pub 2> /dev/null'
+sed 's/^intention: .*/intention: Mandat retouché sans cosignature./' mandats/banc.yaml > mandats/retouche.yaml
+verifier "mandat non cosigné refusé" '! "$APLOMB" preuves exporter --mandat mandats/retouche.yaml --sortie preuves-retouche 2> retouche.log && grep -q "cosigné" retouche.log'
+verifier "dossier non vide refusé" '! "$APLOMB" preuves exporter --mandat mandats/banc.yaml --sortie preuves 2> /dev/null'
 echo "--- Déverrouillage"
 SOCKET="$HOME/.config/aplomb/agent.sock"
 "$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1

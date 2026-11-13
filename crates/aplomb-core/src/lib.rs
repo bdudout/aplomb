@@ -27,6 +27,7 @@ pub mod modele;
 pub mod moniteurs;
 pub mod passerelle;
 pub mod politique;
+pub mod preuves;
 pub mod profils;
 pub mod reponse;
 pub mod scellement;

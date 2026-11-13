@@ -234,6 +234,16 @@ pub fn controler_avant_cosignature(mandat: &Path, accepter_regression: bool) -> 
     Ok(Some(r))
 }
 
+/// Banc rejoué sans juge (déterministe), pour le dossier de preuves ; rien sans jeu.
+pub fn rapport_sans_juge(mandat: &Path) -> Result<Option<Rapport>, String> {
+    let m = aplomb_core::mandat::charger_candidat(mandat).map_err(|e| e.to_string())?;
+    let chemin = chemin_jeu(mandat, &m);
+    if !chemin.exists() {
+        return Ok(None);
+    }
+    jouer(m, &lire_jeu(&chemin)?, 0.1, None).map(Some)
+}
+
 pub fn enregistrer_reference(mandat: &Path, r: &Rapport) -> Result<(), String> {
     ecrire_rapport(&chemin_reference(mandat), r)
 }

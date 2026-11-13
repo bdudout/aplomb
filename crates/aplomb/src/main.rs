@@ -11,7 +11,8 @@
 //! - `aplomb effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2) ;
 //! - `aplomb compte` / `aplomb admin` — comptes d'administration et requêtes signées (EF-S2) ;
 //! - `aplomb agent` — comptes techniques des agents : consommation et quotas du modèle ;
-//! - `aplomb gouvernance` — indicateurs agrégés, signés et fédérables (J6, EF-P3, EF-P6).
+//! - `aplomb gouvernance` — indicateurs agrégés, signés et fédérables (J6, EF-P3, EF-P6) ;
+//! - `aplomb preuves` — dossier de preuves AI Act d'un système, signé ; sa vérification (J6).
 // Pas de code `unsafe`, sauf les appels système des deux modules qui en ont besoin
 // (identité du pair d'un socket, Touch ID) ; le cœur `aplomb-core` l'interdit tout à fait.
 #![deny(unsafe_code)]
@@ -30,6 +31,7 @@ mod mcp;
 mod presence;
 mod modele;
 mod passerelle;
+mod preuves;
 mod protocole;
 mod serveur;
 mod vue_gouvernance;
@@ -211,6 +213,11 @@ enum Commande {
         #[command(subcommand)]
         commande: CommandeGouvernance,
     },
+    /// Dossier de preuves AI Act d'un système (mandat cosigné) : export signé, vérification.
+    Preuves {
+        #[command(subcommand)]
+        commande: CommandePreuves,
+    },
     /// Efface les contenus d'une session : sa clé est détruite, la chaîne reste vérifiable.
     Effacer {
         #[arg(long)]
@@ -233,6 +240,37 @@ enum CommandeCompte {
         fichier: PathBuf,
         #[arg(long)]
         dossier: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommandePreuves {
+    /// Rassemble mandat, gouvernance, banc rouge/bleu, indicateurs, intégrité du journal et
+    /// correspondance article par article, puis signe le manifeste (clé de l'instance).
+    Exporter {
+        #[arg(long)]
+        mandat: PathBuf,
+        /// Dossier à créer (vide ou absent).
+        #[arg(long)]
+        sortie: PathBuf,
+        #[arg(long, default_value = "journal")]
+        journal: PathBuf,
+        /// Indicateurs des dernières heures seulement (défaut : tout le journal).
+        #[arg(long)]
+        heures: Option<u64>,
+        #[arg(long, default_value = gouverner::CONFIANCE)]
+        confiance: PathBuf,
+        #[arg(long, default_value = "comptes.yaml")]
+        comptes: PathBuf,
+        #[arg(long, default_value = "cles/reponses.cle")]
+        cle: PathBuf,
+    },
+    /// Vérifie un dossier : signature du manifeste, puis chaque pièce.
+    Verifier {
+        dossier: PathBuf,
+        /// Clé publique attendue de l'instance (sinon : celle que déclare le manifeste).
+        #[arg(long)]
+        cle_pub: Option<PathBuf>,
     },
 }
 
@@ -404,6 +442,10 @@ fn main() -> ExitCode {
             agents::nouveau(&fichier, &id, &utilisateur, jetons_par_jour)
         }
         Commande::Agent { commande: CommandeAgent::Liste { fichier } } => agents::liste(&fichier),
+        Commande::Preuves { commande: CommandePreuves::Exporter { mandat, sortie, journal, heures, confiance, comptes, cle } } => {
+            preuves::exporter(preuves::OptionsExport { mandat, sortie, journal, heures, confiance, comptes, cle })
+        }
+        Commande::Preuves { commande: CommandePreuves::Verifier { dossier, cle_pub } } => preuves::verifier(&dossier, cle_pub.as_deref()),
         Commande::Gouvernance { commande } => match commande {
             CommandeGouvernance::Indicateurs { journal, heures, systeme, seuil_k, signer, cle, instance, sortie } => {
                 vue_gouvernance::indicateurs(vue_gouvernance::OptionsIndicateurs { journal, heures, systeme, seuil_k, signer, cle, instance, sortie })
