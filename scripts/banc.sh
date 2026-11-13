@@ -369,6 +369,7 @@ verifier "API protégée sans connexion" '[ "$(curl -s -o /dev/null -w %{http_co
 curl -s -b biscuits "$GOUV?heures=1" > gouv.json
 lg() { python3 -c "import json; g=json.load(open('gouv.json')); a=g.get('agregat', g); print($1)"; }
 verifier "décisions et sessions agrégées" '[ "$(lg "a[\"decisions\"][\"allow\"] > 0 and a[\"sessions\"] >= 1")" = True ]'
+verifier "onglet Gouvernance dans Aplomb Watch" 'curl -s "http://127.0.0.1:${P}01/" | grep -q "id=\"o-gouv\""'
 verifier "taux calculés" '[ "$(lg "0 <= g[\"taux\"][\"refus\"] <= 1")" = True ]'
 verifier "mandat et branchements déclarés" '[ "$(lg "a[\"mandats\"][0][\"id\"]")" = banc ] && grep -q "hook-claude-code/1" gouv.json'
 INTERDITS="import json,sys

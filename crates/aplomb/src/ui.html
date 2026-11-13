@@ -37,7 +37,7 @@
   .revue .quoi { flex:1 1 320px; min-width:0; }
   .revue .res { font-family:ui-monospace, monospace; font-size:12px; word-break:break-all; }
   button.ok { border-color:var(--allow); color:var(--allow); }
-  .onglets { display:flex; gap:4px; margin-bottom:12px; }
+  .onglets { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px; }
   .onglets button[aria-selected="true"] { border-color:var(--texte); font-weight:600; }
   .tour { background:var(--carte); border:1px solid var(--ligne); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
   .tour h3 { font-size:13px; margin:0 0 6px; display:flex; flex-wrap:wrap; gap:10px; }
@@ -54,6 +54,12 @@
   .jauge i { display:block; height:100%; border-radius:3px; background:var(--allow); }
   .jauge i.haut { background:var(--deny); }
   .table-defile { overflow-x:auto; }
+  .repartition { display:flex; height:10px; border-radius:5px; overflow:hidden; background:var(--ligne); margin:4px 0 6px; }
+  .repartition i { display:block; height:100%; }
+  .repartition i.allow { background:var(--allow); } .repartition i.review { background:var(--review); }
+  .repartition i.deny { background:var(--deny); } .repartition i.gel { background:var(--gel); }
+  .legende { display:flex; flex-wrap:wrap; gap:12px; font-size:12px; }
+  .alerte { border:2px solid var(--deny); border-radius:8px; padding:8px 12px; margin-bottom:12px; color:var(--deny); font-weight:600; background:var(--carte); }
   @media (max-width:700px) { .compteurs { margin-left:0; } td.res { max-width:160px; } }
 </style>
 </head>
@@ -85,7 +91,22 @@
     <button role="tab" id="o-flux" aria-selected="true">Flux en direct</button>
     <button role="tab" id="o-chaine" aria-selected="false">Vue chaînée</button>
     <button role="tab" id="o-conso" aria-selected="false">Consommation</button>
+    <button role="tab" id="o-gouv" aria-selected="false">Gouvernance</button>
   </div>
+  <section id="v-gouv" class="conso" hidden>
+    <div class="barre">
+      <select id="periode-gouv" aria-label="Période">
+        <option value="24">24 dernières heures</option>
+        <option value="168">7 derniers jours</option>
+        <option value="720" selected>30 derniers jours</option>
+        <option value="">Tout le journal</option>
+      </select>
+      <select id="systeme-gouv" aria-label="Système"><option value="">Tous les systèmes</option></select>
+      <button id="recharger-gouv">Actualiser</button>
+      <button id="exporter-gouv" title="Agrégat signé par cette instance, pour la fédération">Exporter l'agrégat signé</button>
+    </div>
+    <div id="gouv"></div>
+  </section>
   <section id="v-conso" class="conso" hidden>
     <div class="barre">
       <select id="periode">
@@ -225,12 +246,13 @@ const court = (id) => id ? "…" + id.slice(-8) : "sans id";
 const heure = (t) => t ? new Date(t).toLocaleTimeString("fr-FR") : "—";
 
 function onglet(nom) {
-  for (const n of ["flux", "chaine", "conso"]) {
+  for (const n of ["flux", "chaine", "conso", "gouv"]) {
     $("o-" + n).setAttribute("aria-selected", nom === n);
     $("v-" + n).hidden = nom !== n;
   }
   if (nom === "chaine" && !$("sessions").options.length) chargerSessions();
   if (nom === "conso") chargerConso();
+  if (nom === "gouv") chargerGouv();
 }
 
 const nombre = (n) => (n ?? 0).toLocaleString("fr-FR");
@@ -283,6 +305,77 @@ async function chargerConso() {
     ["Compactions", l => l.compactions, 1], ["Total", l => nombre(l.total), 1]], c.par_session));
   zone.appendChild(tableau("Par modèle", [["Modèle", l => l.modele || "?"], ...communes], c.par_modele));
 }
+
+// --- Gouvernance : agrégats sans rien de nominatif (J6) ---
+function paramsGouv() {
+  const p = new URLSearchParams();
+  if ($("periode-gouv").value) p.set("heures", $("periode-gouv").value);
+  if ($("systeme-gouv").value) p.set("systeme", $("systeme-gouv").value);
+  return p;
+}
+const pct = (x) => (100 * (x || 0)).toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " %";
+const entrees = (m) => Object.entries(m || {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+async function chargerGouv() {
+  const r = await fetch("/admin/gouvernance?" + paramsGouv());
+  const g = await r.json().catch(() => ({})), zone = $("gouv");
+  zone.replaceChildren();
+  if (!r.ok) { zone.appendChild(el("p", "ecart", g.erreur || r.status)); return; }
+  const a = g.agregat, t = g.taux, d = a.decisions, total = d.allow + d.review + d.deny + d.gel;
+  const sel = $("systeme-gouv");
+  for (const m of a.mandats) if (![...sel.options].some(o => o.value === m.id)) sel.appendChild(el("option", "", m.id)).value = m.id;
+  if (a.integrite.sessions_rompues)
+    zone.appendChild(el("div", "alerte", `${a.integrite.sessions_rompues} session(s) au journal ROMPU, écartée(s) des indicateurs — lancer aplomb verify`));
+  const tuiles = el("div", "tuiles");
+  for (const [v, nom, cl] of [[nombre(a.sessions), "sessions d'agents"], [nombre(total), "décisions"], [pct(t.revue), "en revue", "review"],
+                              [pct(t.refus), "refusées", "deny"], [pct(t.gel), "gels", "gel"], [pct(t.durcies), "durcies par un moniteur"]]) {
+    const b = el("div", "compteur"); b.append(el("b", cl || "", v), nom); tuiles.appendChild(b);
+  }
+  zone.appendChild(tuiles);
+  const rep = el("div", "repartition");
+  rep.setAttribute("role", "img");
+  rep.setAttribute("aria-label", `allow ${d.allow}, review ${d.review}, deny ${d.deny}, gel ${d.gel}`);
+  const leg = el("div", "legende");
+  for (const k of ["allow", "review", "deny", "gel"]) {
+    if (total && d[k]) { const i = el("i", k); i.style.width = (100 * d[k] / total) + "%"; i.title = `${k} : ${d[k]}`; rep.appendChild(i); }
+    const l = el("span"); l.append(el("b", k, k + " "), nombre(d[k])); leg.appendChild(l);
+  }
+  zone.append(el("h2", "", "Répartition des verdicts"), rep, leg);
+  const lignes = (m) => entrees(m).map(([nom, n]) => ({ nom, n }));
+  const avecPart = (base) => [["Nombre", l => nombre(l.n), 1], ["Part", l => part(l.n, base), 1]];
+  zone.appendChild(tableau("Modes de branchement (mode / niveau d'assurance)", [["Branchement", l => l.nom], ["Sessions", l => nombre(l.n), 1]], lignes(a.branchements)));
+  zone.appendChild(tableau("Règles déclenchées (hors allow)", [["Règle", l => l.nom], ...avecPart(total - d.allow)], lignes(a.regles)));
+  zone.appendChild(tableau("Avis suspects ou critiques, par moniteur", [["Moniteur", l => l.nom], ["Avis", l => nombre(l.n), 1]], lignes(a.moniteurs)));
+  zone.appendChild(tableau("Décisions par outil", [["Outil", l => l.nom], ...avecPart(total)], lignes(a.outils)));
+  const j = a.juge, rv = a.revues, nrv = rv.approuvees + rv.refusees + rv.expirees;
+  const sup = [
+    { nom: "Juge : consultations", v: nombre(j.consultations) },
+    { nom: "Juge : indisponible", v: j.consultations ? pct(t.juge_indisponible) : "—" },
+    { nom: "Juge : latence moyenne", v: j.consultations ? Math.round(j.latence_totale_ms / j.consultations) + " ms" : "—" },
+    { nom: "Revues humaines (approuvées / refusées / expirées)", v: `${rv.approuvees} / ${rv.refusees} / ${rv.expirees}` },
+    { nom: "Revues expirées sans réponse", v: nrv ? pct(t.revues_expirees) : "—" },
+    { nom: "Gels / dégels par un administrateur", v: `${a.administration.gels} / ${a.administration.degels}` },
+    { nom: "Modèle : échanges / jetons", v: `${nombre(a.echanges_modele)} / ${nombre(a.jetons)}` },
+    { nom: "Intégrité : sessions intactes / rompues", v: `${a.integrite.sessions_intactes} / ${a.integrite.sessions_rompues}` },
+  ];
+  zone.appendChild(tableau("Supervision", [["Indicateur", l => l.nom], ["Valeur", l => l.v, 1]], sup));
+  zone.appendChild(tableau("Mandats en vigueur sur la période", [["Système", l => l.id], ["Version", l => "v" + l.version, 1], ["Empreinte", l => el("span", "id", l.empreinte)]], a.mandats));
+  zone.appendChild(el("p", "doux", `Instance ${a.instance}. Aucun indicateur nominatif : ni session, ni utilisateur, ni ressource. ` +
+    `Une règle, un moniteur ou un outil vu moins de ${a.seuil_k} fois est regroupé sous « autres ». Les revues demandées par le hook se répondent dans Claude Code : elles ne sont pas comptées ici.`));
+}
+
+$("exporter-gouv").onclick = async () => {
+  const p = paramsGouv(); p.set("signer", "1");
+  const r = await fetch("/admin/gouvernance?" + p);
+  if (!r.ok) { $("info").textContent = `export refusé : ${r.status}`; return; }
+  const v = await r.json();
+  const lien = el("a");
+  lien.href = URL.createObjectURL(new Blob([JSON.stringify(v, null, 2)], { type: "application/json" }));
+  lien.download = `agregat-${v.agregat.instance}-${new Date().toISOString().slice(0, 10)}.json`;
+  lien.click();
+  URL.revokeObjectURL(lien.href);
+  $("info").textContent = "agrégat signé exporté : aplomb gouvernance federer pour l'additionner à d'autres instances";
+};
 
 async function chargerSessions() {
   const liste = await (await fetch("/admin/sessions")).json();
@@ -355,6 +448,10 @@ async function chargerChaine() {
 $("o-flux").onclick = () => onglet("flux");
 $("o-chaine").onclick = () => onglet("chaine");
 $("o-conso").onclick = () => onglet("conso");
+$("o-gouv").onclick = () => onglet("gouv");
+$("recharger-gouv").onclick = chargerGouv;
+$("periode-gouv").onchange = chargerGouv;
+$("systeme-gouv").onchange = chargerGouv;
 $("periode").onchange = chargerConso;
 $("recharger-conso").onclick = chargerConso;
 $("sessions").onchange = chargerChaine;

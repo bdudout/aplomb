@@ -90,6 +90,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
   - **Flux en direct** des décisions, avec les compteurs.
   - **File de revue** : Approuver ou Refuser une action en attente.
   - **Vue chaînée** : chaque échange avec le modèle, les outils qu'il a demandés et les actions réellement exécutées, avec les écarts.
+  - **Gouvernance** : indicateurs agrégés sur 24 h, 7 j, 30 j ou tout le journal, pour un système ou tous ; répartition des verdicts, règles, moniteurs, outils, supervision (juge, revues, gels), mandats en vigueur ; bouton d'export de l'agrégat signé. Rien de nominatif. Voir [Vue gouvernance et fédération](#vue-gouvernance-et-fédération).
   - **Consommation** : jetons (entrée, cache, sortie) par utilisateur, compte technique, prompt et modèle ; taille du contexte et compactions par session d'agent ; quotas du jour. Voir [Suivre la consommation](#suivre-la-consommation-du-modèle).
   - **Boutons** : geler, dégeler à quatre yeux, vérifier le journal.
 - **Export Mermaid** : la séquence des requêtes d'un agent sous forme de diagramme.
@@ -344,7 +345,7 @@ flowchart LR
 | Exporter un diagramme de séquence | `aplomb mermaid --session <id>` ou `--sortie diagrammes` ; `--dechiffrer` montre les ressources en clair |
 | Créer un compte technique d'agent | `aplomb agent nouveau --id ci --utilisateur alice [--jetons-par-jour 2000000]`, puis redémarrer `serve` ; `aplomb agent liste` |
 | Suivre la consommation | Aplomb Watch, onglet « Consommation » (24 h, 7 j, 30 j) |
-| Voir les indicateurs de gouvernance | `aplomb gouvernance indicateurs [--heures 720] [--systeme <mandat>]`, ou `GET /admin/gouvernance?heures=24` |
+| Voir les indicateurs de gouvernance | Aplomb Watch, onglet « Gouvernance » ; ou `aplomb gouvernance indicateurs [--heures 720] [--systeme <mandat>]`, ou `GET /admin/gouvernance?heures=24` |
 | Fédérer plusieurs instances | Chaque instance : `aplomb gouvernance indicateurs --signer --sortie agregat.json` ; puis `aplomb gouvernance federer *.json --instances federation.yaml` |
 | Changer la phrase de passe | `aplomb phrase changer` |
 | Rejouer les scénarios du hook | `APLOMB_DEPOT=<racine du mandat> APLOMB_INSTANCE=~/aplomb-instance scripts/scenarios.sh` |
@@ -431,7 +432,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Provenance (EF-B5) | Après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt, sortie de sous-agent), les actions sensibles de la session passent en revue |
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |
 | Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |
-| Vue gouvernance (J6, lot 1) | `aplomb gouvernance` et `GET /admin/gouvernance` : indicateurs agrégés sans rien de nominatif, seuil de publication k, sessions rompues écartées (EF-P3) ; agrégats signés par l'instance, fédération vérifiée (instance connue, signature, pas de double compte) (EF-P6) |
+| Vue gouvernance (J6, lots 1 et 3) | Onglet « Gouvernance » d'Aplomb Watch (export de l'agrégat signé), `aplomb gouvernance` et `GET /admin/gouvernance` : indicateurs agrégés sans rien de nominatif, seuil de publication k, sessions rompues écartées (EF-P3) ; agrégats signés par l'instance, fédération vérifiée (instance connue, signature, pas de double compte) (EF-P6) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |
