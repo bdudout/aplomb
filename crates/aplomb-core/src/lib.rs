@@ -18,6 +18,7 @@ pub mod delegation;
 pub mod evaluation;
 pub mod decision;
 pub mod gouvernance;
+pub mod indicateurs;
 pub mod journal;
 pub mod mandat;
 pub mod mcp;

@@ -12,6 +12,8 @@
 //!     en revue attend qu'un opérateur ou un approbateur l'approuve ou la refuse) ;
 //!   - `GET /admin/consommation?heures=24` : jetons et contexte par utilisateur, compte
 //!     technique, prompt et session d'agent (module `aplomb_core::consommation`) ;
+//!   - `GET /admin/gouvernance?heures=24&systeme=…&signer=1` : indicateurs agrégés, sans
+//!     rien de nominatif (J6, EF-P3) ; signés par la clé de l'instance pour la fédération ;
 //!   - `GET /` : la page de la vue technique (sans données).
 //!
 //! Geler se fait seul ; dégeler exige deux comptes distincts (quatre yeux).
@@ -531,6 +533,43 @@ async fn consommation_admin(State(etat): State<Etat>, entetes: HeaderMap, Query(
     Json(interne.consommation.synthese(depuis, t, &interne.agents)).into_response()
 }
 
+#[derive(Deserialize)]
+struct ParamGouvernance {
+    heures: Option<u64>,
+    systeme: Option<String>,
+    seuil_k: Option<u64>,
+    signer: Option<u8>,
+}
+
+/// Vue gouvernance (J6) : indicateurs agrégés du journal, avec leurs taux ; avec `signer=1`,
+/// l'agrégat signé par l'instance, prêt à fédérer.
+async fn gouvernance(State(etat): State<Etat>, entetes: HeaderMap, Query(p): Query<ParamGouvernance>) -> Response {
+    use aplomb_core::indicateurs;
+    let dossier = {
+        let mut interne = etat.interne.lock().expect("verrou");
+        if compte_web(&mut interne, &entetes).is_none() {
+            return non_connecte();
+        }
+        interne.journal.dossier().to_path_buf()
+    };
+    let instance = indicateurs::identifiant_instance(&etat.signataire.verifying_key());
+    let calcul = indicateurs::Calcul {
+        instance: &instance,
+        systeme: p.systeme.as_deref(),
+        periode: crate::vue_gouvernance::periode(p.heures),
+        seuil_k: p.seuil_k.unwrap_or(indicateurs::SEUIL_K_DEFAUT).max(1),
+    };
+    let a = match indicateurs::calculer(&dossier, &calcul) {
+        Ok(a) => a,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"erreur": e}))).into_response(),
+    };
+    if p.signer == Some(1) {
+        return Json(indicateurs::signer(a, &etat.signataire)).into_response();
+    }
+    let taux = indicateurs::taux(&a);
+    Json(json!({"agregat": a, "taux": taux})).into_response()
+}
+
 /// Relevés de consommation des sessions précédentes, relus dans le journal du proxy LLM
 /// (prompts déchiffrés par le coffre ; clé effacée : jetons sans prompt).
 fn relire_consommation(journal: &Journal, coffre: &Coffre) -> Consommation {
@@ -874,6 +913,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/revues", get(revues))
         .route("/admin/revue", post(repondre_revue))
         .route("/admin/consommation", get(consommation_admin))
+        .route("/admin/gouvernance", get(gouvernance))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(etat.clone());
     let juge_affiche = etat.juge.as_ref().map(|j| j.description());

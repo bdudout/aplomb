@@ -10,7 +10,8 @@
 //! - `aplomb mermaid` — exporte les sessions en diagrammes de séquence Mermaid ;
 //! - `aplomb effacer` — efface les contenus d'une session en détruisant sa clé (EF-P2) ;
 //! - `aplomb compte` / `aplomb admin` — comptes d'administration et requêtes signées (EF-S2) ;
-//! - `aplomb agent` — comptes techniques des agents : consommation et quotas du modèle.
+//! - `aplomb agent` — comptes techniques des agents : consommation et quotas du modèle ;
+//! - `aplomb gouvernance` — indicateurs agrégés, signés et fédérables (J6, EF-P3, EF-P6).
 // Pas de code `unsafe`, sauf les appels système des deux modules qui en ont besoin
 // (identité du pair d'un socket, Touch ID) ; le cœur `aplomb-core` l'interdit tout à fait.
 #![deny(unsafe_code)]
@@ -31,6 +32,7 @@ mod modele;
 mod passerelle;
 mod protocole;
 mod serveur;
+mod vue_gouvernance;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -204,6 +206,11 @@ enum Commande {
         #[command(subcommand)]
         operation: OperationAdmin,
     },
+    /// Vue gouvernance : indicateurs agrégés (aucun indicateur nominatif), signés, fédérés.
+    Gouvernance {
+        #[command(subcommand)]
+        commande: CommandeGouvernance,
+    },
     /// Efface les contenus d'une session : sa clé est détruite, la chaîne reste vérifiable.
     Effacer {
         #[arg(long)]
@@ -226,6 +233,55 @@ enum CommandeCompte {
         fichier: PathBuf,
         #[arg(long)]
         dossier: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommandeGouvernance {
+    /// Indicateurs agrégés du journal : décisions, règles, moniteurs, juge, revues, intégrité.
+    /// Lit les métadonnées seules (aucune clé de session) ; rien de nominatif.
+    Indicateurs {
+        #[arg(long, default_value = "journal")]
+        journal: PathBuf,
+        /// Les dernières heures seulement (défaut : tout le journal).
+        #[arg(long)]
+        heures: Option<u64>,
+        /// Un seul système d'IA (identifiant de mandat).
+        #[arg(long)]
+        systeme: Option<String>,
+        /// Catégories vues moins de k fois regroupées sous « autres ».
+        #[arg(long, default_value_t = aplomb_core::indicateurs::SEUIL_K_DEFAUT)]
+        seuil_k: u64,
+        /// Signe l'agrégat avec la clé de l'instance (pour la fédération) ; demande --sortie.
+        #[arg(long)]
+        signer: bool,
+        /// Clé de signature de l'instance (celle des réponses de serve).
+        #[arg(long, default_value = "cles/reponses.cle")]
+        cle: PathBuf,
+        /// Identifiant d'instance (défaut : dérivé de sa clé publique).
+        #[arg(long)]
+        instance: Option<String>,
+        /// Écrit l'agrégat (JSON).
+        #[arg(long)]
+        sortie: Option<PathBuf>,
+    },
+    /// Ligne à ajouter au fichier des instances de la fédération pour cette instance.
+    Instance {
+        #[arg(long, default_value = "cles/reponses.pub")]
+        cle_pub: PathBuf,
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Vérifie et additionne les agrégats signés de plusieurs instances.
+    Federer {
+        /// Agrégats signés (aplomb gouvernance indicateurs --signer).
+        #[arg(required = true)]
+        agregats: Vec<PathBuf>,
+        /// Instances de la fédération : identifiants et clés publiques.
+        #[arg(long, default_value = "federation.yaml")]
+        instances: PathBuf,
+        #[arg(long)]
+        sortie: Option<PathBuf>,
     },
 }
 
@@ -348,6 +404,13 @@ fn main() -> ExitCode {
             agents::nouveau(&fichier, &id, &utilisateur, jetons_par_jour)
         }
         Commande::Agent { commande: CommandeAgent::Liste { fichier } } => agents::liste(&fichier),
+        Commande::Gouvernance { commande } => match commande {
+            CommandeGouvernance::Indicateurs { journal, heures, systeme, seuil_k, signer, cle, instance, sortie } => {
+                vue_gouvernance::indicateurs(vue_gouvernance::OptionsIndicateurs { journal, heures, systeme, seuil_k, signer, cle, instance, sortie })
+            }
+            CommandeGouvernance::Instance { cle_pub, id } => vue_gouvernance::declarer_instance(&cle_pub, id.as_deref()),
+            CommandeGouvernance::Federer { agregats, instances, sortie } => vue_gouvernance::federer(&agregats, &instances, sortie.as_deref()),
+        },
         Commande::Admin { compte, cle, url, operation } => {
             use aplomb_core::autorite::Operation;
             let (op, session) = match operation {

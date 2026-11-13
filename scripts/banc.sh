@@ -363,6 +363,44 @@ conso
 verifier "par compte technique et par utilisateur" \
   '[ "$(lc "sorted((x[\"compte\"], x[\"utilisateur\"]) for x in c[\"par_compte\"])")" = "[('"'"'agent-quota'"'"', '"'"'bob'"'"'), ('"'"'anonyme'"'"', '"'"'$USER'"'"'), ('"'"'dev'"'"', '"'"'alice'"'"')]" ]'
 verifier "quota affiché avec la consommation du jour" '[ "$(lc "[x[\"aujourd_hui\"] >= x[\"jetons_par_jour\"] for x in c[\"par_compte\"] if x[\"compte\"] == \"agent-quota\"][0]")" = True ]'
+echo "--- Vue gouvernance (J6)"
+GOUV="http://127.0.0.1:${P}01/admin/gouvernance"
+verifier "API protégée sans connexion" '[ "$(curl -s -o /dev/null -w %{http_code} "$GOUV")" = 401 ]'
+curl -s -b biscuits "$GOUV?heures=1" > gouv.json
+lg() { python3 -c "import json; g=json.load(open('gouv.json')); a=g.get('agregat', g); print($1)"; }
+verifier "décisions et sessions agrégées" '[ "$(lg "a[\"decisions\"][\"allow\"] > 0 and a[\"sessions\"] >= 1")" = True ]'
+verifier "taux calculés" '[ "$(lg "0 <= g[\"taux\"][\"refus\"] <= 1")" = True ]'
+verifier "mandat et branchements déclarés" '[ "$(lg "a[\"mandats\"][0][\"id\"]")" = banc ] && grep -q "hook-claude-code/1" gouv.json'
+INTERDITS="import json,sys
+def cles(v): return [k for k,x in v.items() for k in [k]+cles(x)] if isinstance(v,dict) else sum((cles(x) for x in v),[]) if isinstance(v,list) else []
+v=json.load(open(sys.argv[1])); bad={'session','utilisateur','compte','ressource','ref','prompt','scelle','approbateur','demandeur'} & set(cles(v)); print(sorted(bad) or 'aucun')"
+verifier "aucun champ nominatif (session, utilisateur, compte, ressource…)" '[ "$(python3 -c "$INTERDITS" gouv.json)" = aucun ]'
+verifier "aucune valeur nominative (session, comptes, chemins)" \
+  '! grep -q -e "$S" -e "\"alice\"" -e "\"bob\"" -e "$B" -e "\"$USER\"" gouv.json'
+curl -s -b biscuits "$GOUV?heures=1&seuil_k=1000000" > gouv-k.json
+verifier "seuil k : catégories rares regroupées sous « autres »" \
+  '[ "$(python3 -c "import json; a=json.load(open(\"gouv-k.json\"))[\"agregat\"]; print(list(a[\"outils\"]))")" = "['"'"'autres'"'"']" ]'
+"$APLOMB" gouvernance indicateurs --journal journal --systeme inconnu > gouv-inconnu.log
+verifier "filtre par système" 'grep -q "sessions d.agents : 0" gouv-inconnu.log'
+curl -s -b biscuits "$GOUV?heures=1&signer=1" > agregat-api.json
+"$APLOMB" gouvernance indicateurs --journal journal --heures 1 --signer --sortie agregat-a.json > gouv-cli.log 2>&1
+"$APLOMB" gouvernance indicateurs --journal journal --heures 1 --signer --instance banc-b --sortie agregat-b.json > /dev/null 2>&1
+"$APLOMB" gouvernance instance > federation.yaml
+CLEPUB="$(cat cles/reponses.pub)"
+printf -- '- id: banc-b\n  cle_publique: %s\n' "$CLEPUB" >> federation.yaml
+verifier "agrégat signé par serve et par la commande, même instance" \
+  '[ "$(python3 -c "import json; print(json.load(open(\"agregat-api.json\"))[\"agregat\"][\"instance\"] == json.load(open(\"agregat-a.json\"))[\"agregat\"][\"instance\"])")" = True ]'
+verifier "fédération de deux instances : sommes" \
+  '"$APLOMB" gouvernance federer agregat-a.json agregat-b.json --instances federation.yaml --sortie federe.json > federe.log 2>&1 && [ "$(python3 -c "import json; f=json.load(open(\"federe.json\")); a=json.load(open(\"agregat-a.json\"))[\"agregat\"]; print(f[\"total\"][\"decisions\"][\"allow\"] == 2 * a[\"decisions\"][\"allow\"])")" = True ]'
+verifier "fédération : double compte refusé" \
+  '! "$APLOMB" gouvernance federer agregat-a.json agregat-api.json --instances federation.yaml 2> federe-double.log && grep -q "recouvrent" federe-double.log'
+python3 -c "import json; a=json.load(open('agregat-b.json')); a['agregat']['decisions']['deny']=0; json.dump(a, open('agregat-faux.json','w'))"
+verifier "fédération : agrégat modifié refusé" \
+  '! "$APLOMB" gouvernance federer agregat-a.json agregat-faux.json --instances federation.yaml 2> federe-faux.log && grep -q "signature invalide" federe-faux.log'
+head -3 federation.yaml > federation-seule.yaml
+verifier "fédération : instance inconnue refusée" \
+  '! "$APLOMB" gouvernance federer agregat-a.json agregat-b.json --instances federation-seule.yaml 2> federe-inconnue.log && grep -q "inconnue" federe-inconnue.log'
+verifier "agrégat signé sans champ nominatif" '[ "$(python3 -c "$INTERDITS" agregat-a.json)" = aucun ]'
 echo "--- Déverrouillage"
 SOCKET="$HOME/.config/aplomb/agent.sock"
 "$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1

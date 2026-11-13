@@ -104,6 +104,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 - **Clés** : une clé maîtresse protégée par phrase de passe (Argon2id) enveloppe toutes les autres.
   - `aplomb deverrouiller` garde la clé disponible pour une durée, dans un service réservé au binaire `aplomb`.
   - Sur macOS, les opérations sensibles demandent Touch ID ; sous Linux, la phrase de passe.
+- **Vue gouvernance** (`aplomb gouvernance`, J6) : indicateurs agrégés du journal, sans rien de nominatif, signés par l'instance et additionnables entre instances (fédération). Voir [Vue gouvernance et fédération](#vue-gouvernance-et-fédération).
 
 ### Outils de test
 
@@ -343,6 +344,8 @@ flowchart LR
 | Exporter un diagramme de séquence | `aplomb mermaid --session <id>` ou `--sortie diagrammes` ; `--dechiffrer` montre les ressources en clair |
 | Créer un compte technique d'agent | `aplomb agent nouveau --id ci --utilisateur alice [--jetons-par-jour 2000000]`, puis redémarrer `serve` ; `aplomb agent liste` |
 | Suivre la consommation | Aplomb Watch, onglet « Consommation » (24 h, 7 j, 30 j) |
+| Voir les indicateurs de gouvernance | `aplomb gouvernance indicateurs [--heures 720] [--systeme <mandat>]`, ou `GET /admin/gouvernance?heures=24` |
+| Fédérer plusieurs instances | Chaque instance : `aplomb gouvernance indicateurs --signer --sortie agregat.json` ; puis `aplomb gouvernance federer *.json --instances federation.yaml` |
 | Changer la phrase de passe | `aplomb phrase changer` |
 | Rejouer les scénarios du hook | `APLOMB_DEPOT=<racine du mandat> APLOMB_INSTANCE=~/aplomb-instance scripts/scenarios.sh` |
 
@@ -360,6 +363,23 @@ Le proxy LLM relève chaque appel au modèle : le compte technique, l'utilisateu
   - `aplomb effacer --session modele` l'efface ; les jetons restent comptés.
 - **Contexte** : les jetons d'entrée d'un appel, cache compris. Une chute de plus de 40 % d'un appel au suivant compte comme une compaction.
 - **Où le voir** : Aplomb Watch, onglet « Consommation », ou `GET /admin/consommation?heures=24` (session requise). Au redémarrage, `serve` relit la consommation passée dans le journal.
+
+### Vue gouvernance et fédération
+
+La vue gouvernance s'adresse à ceux qui pilotent le système d'IA (RSSI, DPO, comité IA). Elle répond à « comment se comporte l'agent, et la supervision tient-elle ? » sans jamais dire qui a fait quoi (EF-P3).
+
+- **Ce qu'elle compte**, sur une période et pour un système (mandat) ou tous :
+  - sessions d'agents, par mode de branchement et niveau d'assurance ;
+  - décisions par verdict, taux de revue, de refus et de gel, décisions durcies par un moniteur ;
+  - règles déclenchées, avis suspects par moniteur, décisions par outil ;
+  - juge (consultations, indisponibilités, latence), revues humaines (approuvées, refusées, expirées), gels et dégels ;
+  - échanges et jetons du modèle, versions de mandat en vigueur, sessions intactes ou rompues.
+- **Ce qu'elle ne contient jamais** : ni identifiant de session, ni utilisateur, ni compte, ni ressource, ni prompt. Elle ne lit que les métadonnées en clair du journal et n'ouvre aucun contenu scellé.
+- **Seuil de publication** : une règle, un moniteur ou un outil vu moins de k fois (5 par défaut, `--seuil-k`) est regroupé sous « autres », pour qu'un cas rare ne désigne personne.
+- **Journal falsifié** : une session dont la chaîne est rompue est signalée et n'est pas comptée.
+- **Agrégat signé** : `--signer` (commande) ou `signer=1` (API de `serve`) signe l'agrégat avec la clé de l'instance, celle des réponses. L'identifiant d'instance dérive de cette clé, rien du nom de la machine.
+- **Fédération** (EF-P6) : `federation.yaml` liste les instances et leurs clés publiques (`aplomb gouvernance instance` donne la ligne de chacune). `aplomb gouvernance federer` vérifie chaque agrégat et les additionne. Il refuse un agrégat modifié, une instance inconnue et deux agrégats d'une même instance sur des périodes qui se recouvrent (double compte).
+- `federation.yaml` est une ancre de confiance, comme `cles/confiance.yaml` : il se gère hors bande.
 
 ### Ports
 
@@ -388,7 +408,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 117 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 121 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -411,6 +431,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Provenance (EF-B5) | Après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt, sortie de sous-agent), les actions sensibles de la session passent en revue |
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |
 | Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |
+| Vue gouvernance (J6, lot 1) | `aplomb gouvernance` et `GET /admin/gouvernance` : indicateurs agrégés sans rien de nominatif, seuil de publication k, sessions rompues écartées (EF-P3) ; agrégats signés par l'instance, fédération vérifiée (instance connue, signature, pas de double compte) (EF-P6) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |
