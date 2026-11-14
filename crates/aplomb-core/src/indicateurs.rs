@@ -30,7 +30,7 @@ pub const SEUIL_K_DEFAUT: u64 = 5;
 pub const AUTRES: &str = "autres";
 /// Sessions techniques : elles portent les actions des passerelles et du proxy LLM ; ce ne
 /// sont pas des sessions d'agents.
-const TECHNIQUES: &[&str] = &["modele", "passerelle", "_administration"];
+const TECHNIQUES: &[&str] = &["modele", "passerelle", "_administration", "_reporting"];
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Periode {

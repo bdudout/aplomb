@@ -107,6 +107,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 - **Clés** : une clé maîtresse protégée par phrase de passe (Argon2id) enveloppe toutes les autres.
   - `aplomb deverrouiller` garde la clé disponible pour une durée, dans un service réservé au binaire `aplomb`.
   - Sur macOS, les opérations sensibles demandent Touch ID ; sous Linux, la phrase de passe.
+- **Reporting MCP** (`aplomb reporting`) : un outil de gouvernance cyber, comme ACRA, interroge Aplomb en lecture seule (état de conformité, indicateurs, intégrité). Voir [Brancher un outil de gouvernance](#brancher-un-outil-de-gouvernance-reporting-mcp).
 - **Dossier de preuves AI Act** (`aplomb preuves`, J6) : pour un système (un mandat cosigné), un dossier signé qui rassemble les preuves et dit, article par article, ce qui est couvert. Voir [Dossier de preuves AI Act](#dossier-de-preuves-ai-act).
 - **Vue gouvernance** (`aplomb gouvernance`, J6) : indicateurs agrégés du journal, sans rien de nominatif, signés par l'instance et additionnables entre instances (fédération). Voir [Vue gouvernance et fédération](#vue-gouvernance-et-fédération).
 
@@ -352,6 +353,7 @@ flowchart LR
 | Fédérer plusieurs instances | Chaque instance : `aplomb gouvernance indicateurs --signer --sortie agregat.json` ; puis `aplomb gouvernance federer *.json --instances federation.yaml` |
 | Produire le dossier de preuves AI Act d'un système | `aplomb preuves exporter --mandat mandats/<mandat>.yaml --sortie preuves-<date>` (phrase ou déverrouillage : le dossier est signé) |
 | Vérifier un dossier de preuves (auditeur) | `aplomb preuves verifier preuves-<date> --cle-pub cles/reponses.pub` |
+| Donner l'accès en lecture à un outil de gouvernance (ACRA…) | `aplomb reporting nouveau --id acra` : affiche le jeton et la configuration à coller ; `aplomb reporting retirer --id acra` pour couper |
 | Changer la phrase de passe | `aplomb phrase changer` |
 | Rejouer les scénarios du hook | `APLOMB_DEPOT=<racine du mandat> APLOMB_INSTANCE=~/aplomb-instance scripts/scenarios.sh` |
 
@@ -407,6 +409,29 @@ La vue gouvernance s'adresse à ceux qui pilotent le système d'IA (RSSI, DPO, c
 - **Vérification** : `aplomb preuves verifier <dossier> --cle-pub <clé publique de l'instance>` contrôle la signature puis chaque pièce (présente, inchangée, aucune en trop). Sans Aplomb, il suffit de recalculer les SHA-256.
 - Les correspondances sont indicatives : à vérifier article par article avant usage réglementaire. Aplomb apporte des mesures techniques et leurs preuves ; gestion des risques, qualité et procédures restent à l'organisation.
 
+### Brancher un outil de gouvernance (reporting MCP)
+
+Un outil de gouvernance cyber (ACRA, un GRC, ou n'importe quel assistant capable de parler MCP) peut venir chercher lui-même l'état de l'agent supervisé, pour ses tableaux de bord et ses rapports.
+
+1. Créer un accès : `aplomb reporting nouveau --id acra --description "ACRA"`. La commande affiche le jeton une seule fois, l'adresse (`http://127.0.0.1:7705/mcp`) et la configuration à coller. Aucun redémarrage n'est nécessaire.
+2. Dans l'outil, déclarer un serveur MCP en HTTP avec l'en-tête `Authorization: Bearer <jeton>`. Avec Claude Code : `claude mcp add --transport http aplomb http://127.0.0.1:7705/mcp --header "Authorization: Bearer <jeton>"`.
+3. Demander par exemple à l'assistant : « Quel est l'état de conformité AI Act de l'agent supervisé ? ».
+
+| Outil | Ce qu'il rend |
+|---|---|
+| `lister_systemes` | Les systèmes supervisés : mandat, version, profil, intention, empreinte |
+| `etat_conformite` | Le statut constaté par article de l'AI Act, avec le constat et ce qui reste à l'organisation ; le résultat du banc rouge/bleu |
+| `indicateurs` | Les indicateurs agrégés (`heures` pour une période ; `signer: true` pour un agrégat signé, vérifiable par `aplomb gouvernance federer`) |
+| `integrite_journal` | Sessions intactes ou rompues, scellés, ancre, conservation |
+| `etat_supervision` | Gel en cours, sessions gelées, revues en attente, activité du juge et du protocole |
+| `correspondance_referentiels` | Correspondance avec l'AI Act, le NIST AI RMF, l'ISO/IEC 42001, l'OWASP, l'ANSSI et le CRA |
+
+- **Lecture seule par construction** : le serveur ne connaît que ces six outils. Aucun ne peut geler, dégeler, approuver ni modifier quoi que ce soit.
+- **Rien de nominatif** : ni identifiant de session, ni utilisateur, ni compte, ni ressource ; les signataires du mandat y sont « membre 1 », « membre 2 ».
+- **Traçabilité** : chaque appel est journalisé (client, outil, issue) dans la session `_reporting`.
+- **Outil sur une autre machine** (ACRA hébergé, par exemple) : faire écouter le reporting sur l'interface voulue (`serve --ecoute-reporting 0.0.0.0:7705`) derrière un relais TLS (Caddy, nginx). Le jeton circule dans un en-tête : jamais en HTTP clair hors de la machine.
+- `aplomb reporting liste` montre les accès ; `aplomb reporting retirer --id acra` coupe un accès aussitôt.
+
 ### Ports
 
 Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une option `--ecoute-…` de `serve`.
@@ -418,6 +443,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | 7702 | Aplomb Gate (`HTTPS_PROXY`) | l'agent |
 | 7703 | Proxy LLM (`ANTHROPIC_BASE_URL`) | l'agent |
 | 7704 | Passerelle MCP | l'agent |
+| 7705 | Reporting MCP, lecture seule | les outils de gouvernance (ACRA, GRC…), avec un jeton |
 
 ### Dépannage
 
@@ -434,7 +460,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 123 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 126 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -457,6 +483,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Provenance (EF-B5) | Après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt, sortie de sous-agent), les actions sensibles de la session passent en revue |
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |
 | Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |
+| Reporting MCP | `127.0.0.1:7705/mcp` : serveur MCP en lecture seule pour les outils de gouvernance (ACRA…), six outils (systèmes, conformité AI Act, indicateurs, intégrité, supervision, référentiels), jetons par client relus à chaque requête, appels journalisés, rien de nominatif |
 | Preuves AI Act (J6, lot 2) | `aplomb preuves exporter` : dossier signé par système (mandat, gouvernance, banc rouge/bleu, indicateurs, intégrité du journal), statut constaté par article de l'AI Act et correspondance NIST AI RMF, ISO/IEC 42001, OWASP, ANSSI, CRA ; `aplomb preuves verifier` pour l'auditeur. J6 terminé |
 | Vue gouvernance (J6, lots 1 et 3) | Onglet « Gouvernance » d'Aplomb Watch (export de l'agrégat signé), `aplomb gouvernance` et `GET /admin/gouvernance` : indicateurs agrégés sans rien de nominatif, seuil de publication k, sessions rompues écartées (EF-P3) ; agrégats signés par l'instance, fédération vérifiée (instance connue, signature, pas de double compte) (EF-P6) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |

@@ -89,7 +89,7 @@ for port in "${P}04" "${P}06"; do  # faux modèle et faux juge prêts
   for _ in $(seq 100); do curl -s -o /dev/null "http://127.0.0.1:$port/" && break; sleep 0.1; done
 done
 "$APLOMB" serve --mandat mandats/banc.yaml --ecoute-decision "127.0.0.1:${P}00" --ecoute-admin "127.0.0.1:${P}01" \
-  --ecoute-passerelle "127.0.0.1:${P}02" --ecoute-llm "127.0.0.1:${P}03" --ecoute-mcp "127.0.0.1:${P}05" \
+  --ecoute-passerelle "127.0.0.1:${P}02" --ecoute-llm "127.0.0.1:${P}03" --ecoute-mcp "127.0.0.1:${P}05" --ecoute-reporting "127.0.0.1:${P}07" \
   --mandat-enfant mandats/explorer.yaml > serve.log 2>&1 & SERVE=$!; PIDS="$PIDS $SERVE"
 for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${P}01/" && break; sleep 0.1; done
 
@@ -216,7 +216,7 @@ verifier "chaîne de délégation au journal" 'grep -q "explorer v1" journal/del
 verifier "mandat enfant plus large refusé au démarrage" \
   '! "$APLOMB" serve --mandat mandats/banc.yaml --mandat-enfant mandats/large.yaml --ecoute-decision 127.0.0.1:${P}10 \
      --ecoute-admin 127.0.0.1:${P}11 --ecoute-passerelle 127.0.0.1:${P}12 --ecoute-llm 127.0.0.1:${P}13 \
-     --ecoute-mcp 127.0.0.1:${P}15 > large.log 2>&1 && grep -q "evil.example" large.log'
+     --ecoute-mcp 127.0.0.1:${P}15 --ecoute-reporting 127.0.0.1:${P}17 > large.log 2>&1 && grep -q "evil.example" large.log'
 echo "--- Moniteurs (secrets, juge)"
 S4="moniteurs-$$"
 cmd() { printf '{"command":"%s"}' "$1"; }
@@ -263,7 +263,7 @@ verifier "sans raisonnement suspect : même action permise" '! hook_p "${P}00" "
 echo "--- Protocoles AI control (EF-E2)"
 servir() {  # mandat, chiffre des ports
   "$APLOMB" serve --mandat "mandats/$1.yaml" --ecoute-decision "127.0.0.1:${P}${2}0" --ecoute-admin "127.0.0.1:${P}${2}1" \
-    --ecoute-passerelle "127.0.0.1:${P}${2}2" --ecoute-llm "127.0.0.1:${P}${2}3" --ecoute-mcp "127.0.0.1:${P}${2}5" \
+    --ecoute-passerelle "127.0.0.1:${P}${2}2" --ecoute-llm "127.0.0.1:${P}${2}3" --ecoute-mcp "127.0.0.1:${P}${2}5" --ecoute-reporting "127.0.0.1:${P}${2}7" \
     --journal "journal-$1" --coffre "coffre-$1" > "serve-$1.log" 2>&1 &
   PIDS="$PIDS $!"
   for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${P}${2}1/" && break; sleep 0.1; done
@@ -341,7 +341,7 @@ CLE_DEV="$(grep -o 'aplomb-agent-dev-[0-9a-f]*' agent-dev.log)"; CLE_Q="$(grep -
 verifier "compte technique : seule l'empreinte est gardée" '[ -n "$CLE_DEV" ] && ! grep -q "$CLE_DEV" agents.yaml'
 kill -INT "$SERVE"; wait "$SERVE" 2>/dev/null || true
 "$APLOMB" serve --mandat mandats/banc.yaml --ecoute-decision "127.0.0.1:${P}00" --ecoute-admin "127.0.0.1:${P}01" \
-  --ecoute-passerelle "127.0.0.1:${P}02" --ecoute-llm "127.0.0.1:${P}03" --ecoute-mcp "127.0.0.1:${P}05" \
+  --ecoute-passerelle "127.0.0.1:${P}02" --ecoute-llm "127.0.0.1:${P}03" --ecoute-mcp "127.0.0.1:${P}05" --ecoute-reporting "127.0.0.1:${P}07" \
   --mandat-enfant mandats/explorer.yaml > serve2.log 2>&1 & SERVE=$!; PIDS="$PIDS $SERVE"
 for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${P}01/" && break; sleep 0.1; done
 LIEN="$("$APLOMB" admin --compte alice --url "http://127.0.0.1:${P}01" connexion | grep -o 'http://[^ ]*ticket=[^ ]*')"
@@ -425,13 +425,53 @@ verifier "autre clé d'instance refusée" '! "$APLOMB" preuves verifier preuves 
 sed 's/^intention: .*/intention: Mandat retouché sans cosignature./' mandats/banc.yaml > mandats/retouche.yaml
 verifier "mandat non cosigné refusé" '! "$APLOMB" preuves exporter --mandat mandats/retouche.yaml --sortie preuves-retouche 2> retouche.log && grep -q "cosigné" retouche.log'
 verifier "dossier non vide refusé" '! "$APLOMB" preuves exporter --mandat mandats/banc.yaml --sortie preuves 2> /dev/null'
+echo "--- Reporting MCP en lecture seule"
+RAP="http://127.0.0.1:${P}07/mcp"
+mcp_r() {  # jeton, corps JSON-RPC
+  curl -s -X POST "$RAP" -H "Authorization: Bearer $1" -H "Content-Type: application/json" -d "$2"
+}
+verifier "sans client : 401 et aide" '[ "$(curl -s -o rap-401.json -w %{http_code} -X POST "$RAP" -d "{}")" = 401 ] && grep -q "aplomb reporting nouveau" rap-401.json'
+"$APLOMB" reporting nouveau --id acra --description "ACRA, gouvernance cyber" > reporting-acra.log
+JETON_R="$(grep -o 'aplomb-rapport-acra-[0-9a-f]*' reporting-acra.log | head -1)"
+verifier "jeton affiché avec la configuration à coller" 'grep -q "claude mcp add --transport http aplomb" reporting-acra.log'
+verifier "seule l'empreinte du jeton est gardée" '! grep -q "$JETON_R" reporting.yaml'
+mcp_r "$JETON_R" '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"banc","version":"1"}}}' > rap-init.json
+verifier "client ajouté sans redémarrage : initialize" 'grep -q "aplomb-reporting" rap-init.json'
+code_r() { curl -s -o /dev/null -w %{http_code} -X POST "$RAP" -H "Authorization: Bearer $1" -d "$2"; }
+NOTIF='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+verifier "notification : 202" '[ "$(code_r "$JETON_R" "$NOTIF")" = 202 ]'
+mcp_r "$JETON_R" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' > rap-outils.json
+verifier "six outils, tous en lecture seule" '[ "$(python3 -c "import json; t=json.load(open(\"rap-outils.json\"))[\"result\"][\"tools\"]; print(len(t), all(o[\"annotations\"][\"readOnlyHint\"] for o in t))")" = "6 True" ]'
+appel_r() {  # outil, arguments JSON (facultatif)
+  mcp_r "$JETON_R" "$(python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":sys.argv[1],"arguments":json.loads(sys.argv[2])}}))' "$1" "${2:-"{}"}")" > "rap-$1.json"
+}
+for o in lister_systemes etat_conformite indicateurs integrite_journal etat_supervision correspondance_referentiels; do appel_r "$o"; done
+lr() { python3 -c "import json; r=json.load(open('rap-$1.json'))['result']; s=r['structuredContent']; print($2)"; }
+verifier "lister_systemes : mandat banc" '[ "$(lr lister_systemes "s[\"systemes\"][0][\"id\"]")" = banc ]'
+verifier "etat_conformite : 12 articles, art. 14 couvert" '[ "$(lr etat_conformite "len(s[\"articles\"]) == 12 and [a[\"statut\"] for a in s[\"articles\"] if a[\"article\"] == \"Art. 14\"] == [\"couvert\"]")" = True ]'
+verifier "indicateurs : décisions agrégées" '[ "$(lr indicateurs "s[\"agregat\"][\"decisions\"][\"allow\"] > 0")" = True ]'
+verifier "integrite_journal : scellés et témoin" '[ "$(lr integrite_journal "\"temoin\" in s[\"scelles\"] or not s[\"scelles\"][\"valides\"]")" = True ]'
+verifier "etat_supervision : compteurs" '[ "$(lr etat_supervision "\"gel_global\" in s and \"revues_en_attente\" in s")" = True ]'
+verifier "correspondance des référentiels" '[ "$(lr correspondance_referentiels "len(s[\"familles\"])")" = 10 ]'
+verifier "aucun champ nominatif dans les réponses" 'for o in lister_systemes etat_conformite indicateurs integrite_journal etat_supervision; do python3 -c "import json; json.dump(json.load(open(\"rap-$o.json\"))[\"result\"][\"structuredContent\"], open(\"rap-$o.sc.json\",\"w\"))"; [ "$(python3 -c "$INTERDITS" "rap-$o.sc.json")" = aucun ] || exit 1; done'
+verifier "aucune valeur nominative (session, comptes, chemins)" '! grep -q -e "$S" -e "alice" -e "\"bob" -e "$SECRET" rap-*.json'
+appel_r indicateurs '{"signer":true}'
+"$APLOMB" gouvernance instance > federation-rap.yaml
+verifier "agrégat signé par MCP, vérifiable en fédération" 'python3 -c "import json; json.dump(json.load(open(\"rap-indicateurs.json\"))[\"result\"][\"structuredContent\"], open(\"agregat-rap.json\",\"w\"))" && "$APLOMB" gouvernance federer agregat-rap.json --instances federation-rap.yaml > /dev/null'
+mcp_r "$JETON_R" '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"geler","arguments":{}}}' > rap-geler.json
+verifier "aucun outil d'écriture (geler refusé)" 'grep -q "outil inconnu" rap-geler.json'
+verifier "appels de reporting journalisés" 'grep -q "\"client\":\"acra\"" journal/_reporting-*.jsonl'
+verifier "mauvais jeton : 401" '[ "$(code_r aplomb-rapport-acra-faux "{}")" = 401 ]'
+"$APLOMB" reporting retirer --id acra > /dev/null
+PING='{"jsonrpc":"2.0","id":9,"method":"ping"}'
+verifier "client retiré : refusé aussitôt" '[ "$(code_r "$JETON_R" "$PING")" = 401 ]'
 echo "--- Déverrouillage"
 SOCKET="$HOME/.config/aplomb/agent.sock"
 "$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1
 verifier "service de déverrouillage lancé" '[ -S "$SOCKET" ]'
 verifier "socket réservé à l'utilisateur (0600)" '[ "$(stat -f %Lp "$SOCKET" 2>/dev/null || stat -c %a "$SOCKET")" = 600 ]'
 env -u APLOMB_PHRASE "$APLOMB" serve --mandat mandats/banc.yaml --ecoute-decision "127.0.0.1:${P}20" --ecoute-admin "127.0.0.1:${P}21" \
-  --ecoute-passerelle "127.0.0.1:${P}22" --ecoute-llm "127.0.0.1:${P}23" --ecoute-mcp "127.0.0.1:${P}25" < /dev/null > serve-sans-phrase.log 2>&1 &
+  --ecoute-passerelle "127.0.0.1:${P}22" --ecoute-llm "127.0.0.1:${P}23" --ecoute-mcp "127.0.0.1:${P}25" --ecoute-reporting "127.0.0.1:${P}27" < /dev/null > serve-sans-phrase.log 2>&1 &
 PIDS="$PIDS $!"
 for _ in $(seq 300); do grep -q "cosigné par" serve-sans-phrase.log && break; sleep 0.1; done
 verifier "serve démarre sans phrase de passe" 'grep -q "cosigné par" serve-sans-phrase.log'

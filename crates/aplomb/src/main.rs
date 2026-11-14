@@ -12,7 +12,8 @@
 //! - `aplomb compte` / `aplomb admin` — comptes d'administration et requêtes signées (EF-S2) ;
 //! - `aplomb agent` — comptes techniques des agents : consommation et quotas du modèle ;
 //! - `aplomb gouvernance` — indicateurs agrégés, signés et fédérables (J6, EF-P3, EF-P6) ;
-//! - `aplomb preuves` — dossier de preuves AI Act d'un système, signé ; sa vérification (J6).
+//! - `aplomb preuves` — dossier de preuves AI Act d'un système, signé ; sa vérification (J6) ;
+//! - `aplomb reporting` — clients du reporting MCP en lecture seule (ACRA, GRC…).
 // Pas de code `unsafe`, sauf les appels système des deux modules qui en ont besoin
 // (identité du pair d'un socket, Touch ID) ; le cœur `aplomb-core` l'interdit tout à fait.
 #![deny(unsafe_code)]
@@ -33,6 +34,7 @@ mod modele;
 mod passerelle;
 mod preuves;
 mod protocole;
+mod reporting;
 mod serveur;
 mod vue_gouvernance;
 
@@ -218,6 +220,12 @@ enum Commande {
         #[command(subcommand)]
         commande: CommandePreuves,
     },
+    /// Reporting MCP en lecture seule : donner à un outil de gouvernance (ACRA, GRC…) l'accès
+    /// à l'état de conformité et aux indicateurs.
+    Reporting {
+        #[command(subcommand)]
+        commande: CommandeReporting,
+    },
     /// Efface les contenus d'une session : sa clé est détruite, la chaîne reste vérifiable.
     Effacer {
         #[arg(long)]
@@ -240,6 +248,35 @@ enum CommandeCompte {
         fichier: PathBuf,
         #[arg(long)]
         dossier: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommandeReporting {
+    /// Crée un client et affiche son jeton (une seule fois) et la configuration à coller.
+    Nouveau {
+        /// Nom court de l'outil (exemple : acra).
+        #[arg(long)]
+        id: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long, default_value = reporting::FICHIER)]
+        fichier: PathBuf,
+        /// Adresse du serveur MCP telle que l'outil la joindra.
+        #[arg(long, default_value = "http://127.0.0.1:7705/mcp")]
+        url: String,
+    },
+    /// Liste les clients du reporting.
+    Liste {
+        #[arg(long, default_value = reporting::FICHIER)]
+        fichier: PathBuf,
+    },
+    /// Retire un client : son jeton est refusé aussitôt.
+    Retirer {
+        #[arg(long)]
+        id: String,
+        #[arg(long, default_value = reporting::FICHIER)]
+        fichier: PathBuf,
     },
 }
 
@@ -442,6 +479,11 @@ fn main() -> ExitCode {
             agents::nouveau(&fichier, &id, &utilisateur, jetons_par_jour)
         }
         Commande::Agent { commande: CommandeAgent::Liste { fichier } } => agents::liste(&fichier),
+        Commande::Reporting { commande } => match commande {
+            CommandeReporting::Nouveau { id, description, fichier, url } => reporting::nouveau(&fichier, &id, &description, &url),
+            CommandeReporting::Liste { fichier } => reporting::liste(&fichier),
+            CommandeReporting::Retirer { id, fichier } => reporting::retirer(&fichier, &id),
+        },
         Commande::Preuves { commande: CommandePreuves::Exporter { mandat, sortie, journal, heures, confiance, comptes, cle } } => {
             preuves::exporter(preuves::OptionsExport { mandat, sortie, journal, heures, confiance, comptes, cle })
         }

@@ -29,6 +29,7 @@ pub mod passerelle;
 pub mod politique;
 pub mod preuves;
 pub mod profils;
+pub mod reporting;
 pub mod reponse;
 pub mod scellement;
 pub mod superviseur;

@@ -15,6 +15,8 @@
 //!   - `GET /admin/gouvernance?heures=24&systeme=…&signer=1` : indicateurs agrégés, sans
 //!     rien de nominatif (J6, EF-P3) ; signés par la clé de l'instance pour la fédération ;
 //!   - `GET /` : la page de la vue technique (sans données).
+//! - **Reporting** (`--ecoute-reporting`, module `crate::reporting`) : `POST /mcp`, serveur
+//!   MCP en lecture seule pour les outils de gouvernance, sur jeton de client.
 //!
 //! Geler se fait seul ; dégeler exige deux comptes distincts (quatre yeux).
 //!
@@ -97,6 +99,13 @@ pub struct Options {
     /// imputée à « anonyme », pour l'utilisateur qui lance le service.
     #[arg(long, default_value = crate::agents::FICHIER)]
     agents: PathBuf,
+    /// Reporting MCP en lecture seule (outils de gouvernance : ACRA, GRC…). Pour un outil
+    /// sur une autre machine, écouter sur son interface derrière un relais TLS.
+    #[arg(long, default_value = crate::reporting::ECOUTE_DEFAUT)]
+    ecoute_reporting: SocketAddr,
+    /// Clients du reporting (`aplomb reporting nouveau`), relus à chaque requête.
+    #[arg(long, default_value = crate::reporting::FICHIER)]
+    reporting: PathBuf,
     #[arg(long, default_value = "127.0.0.1:7700")]
     ecoute_decision: SocketAddr,
     #[arg(long, default_value = "127.0.0.1:7701")]
@@ -169,6 +178,53 @@ pub(crate) struct Etat {
     /// Juge déclaré au mandat, consulté hors verrou.
     juge: Option<Arc<crate::juge::Juge>>,
 }
+
+impl Etat {
+    /// Clé publique de l'instance (réponses, scellés, agrégats).
+    pub(crate) fn cle_publique(&self) -> ed25519_dalek::VerifyingKey {
+        self.signataire.verifying_key()
+    }
+
+    pub(crate) fn mandat(&self) -> aplomb_core::mandat::MandatCharge {
+        self.interne.lock().expect("verrou").superviseur.mandat.clone()
+    }
+
+    pub(crate) fn signer_agregat(&self, a: aplomb_core::indicateurs::Agregat) -> aplomb_core::indicateurs::AgregatSigne {
+        aplomb_core::indicateurs::signer(a, &self.signataire)
+    }
+
+    /// Journalise un appel de reporting (client technique, outil, issue).
+    pub(crate) fn journaliser_reporting(&self, client: &str, outil: &str, reussi: bool) {
+        let mut interne = self.interne.lock().expect("verrou");
+        let detail = json!({"action": "reporting", "client": client, "outil": outil, "issue": if reussi { "ok" } else { "erreur" }});
+        let _ = interne.journal.ajouter(SESSION_REPORTING, "administration", detail, maintenant());
+    }
+
+    /// État courant de la supervision, sans rien de nominatif (reporting).
+    pub(crate) fn etat_supervision(&self) -> Value {
+        let interne = self.interne.lock().expect("verrou");
+        let (gel_global, sessions_gelees) = interne.superviseur.etat_gel();
+        let c = interne.compteurs;
+        let s = &interne.stats_juge;
+        let m = &interne.superviseur.mandat;
+        json!({
+            "systeme": m.mandat.id, "version_mandat": m.mandat.version,
+            "gel_global": gel_global, "sessions_gelees": sessions_gelees.len(),
+            "revues_en_attente": interne.revues.len(), "degels_en_attente": interne.autorite.demandes_en_attente().len(),
+            "decisions_depuis_demarrage": {"allow": c[0], "review": c[1], "deny": c[2], "gel": c[3]},
+            "juge": self.juge.as_ref().map(|_| json!({"consultations": s.consultations, "indisponibles": s.indisponible,
+                "durcies": s.durcies, "latence_moyenne_ms": if s.consultations > 0 { s.latence_ms / s.consultations } else { 0 }})),
+            "protocole": m.mandat.moniteurs.as_ref().and_then(|x| x.protocole.as_ref()).map(|p| {
+                let mut v = json!(interne.stats_protocole);
+                v["mode"] = json!(p.mode);
+                v
+            }),
+        })
+    }
+}
+
+/// Session du journal où s'inscrivent les appels de reporting.
+const SESSION_REPORTING: &str = "_reporting";
 
 /// Session globale du journal pour les actions d'administration sans session visée.
 const SESSION_ADMIN: &str = "_administration";
@@ -614,7 +670,7 @@ async fn verifier_journal(State(etat): State<Etat>, entetes: HeaderMap) -> Respo
 }
 
 /// Sessions techniques, rattachées aux sessions d'agents dans la vue chaînée.
-const SESSIONS_TECHNIQUES: &[&str] = &["modele", "passerelle", SESSION_ADMIN];
+const SESSIONS_TECHNIQUES: &[&str] = &["modele", "passerelle", SESSION_ADMIN, SESSION_REPORTING];
 
 /// Sessions d'agents du journal, les plus récentes d'abord (métadonnées seulement).
 async fn sessions(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
@@ -916,6 +972,16 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/gouvernance", get(gouvernance))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(etat.clone());
+    let reglages_reporting = crate::reporting::Reglages {
+        clients: opts.reporting.clone(),
+        mandat: opts.mandat.clone(),
+        journal: opts.journal.clone(),
+        confiance: opts.confiance.clone(),
+        comptes: opts.comptes.clone(),
+        cosignataires: signataires_mandat.len(),
+    };
+    let api_reporting = crate::reporting::routeur(etat.clone(), reglages_reporting);
+    let clients_reporting = crate::reporting::charger(&opts.reporting)?.clients.len();
     let juge_affiche = etat.juge.as_ref().map(|j| j.description());
     let etat_scellement = etat;
 
@@ -926,6 +992,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let l_passerelle = tokio::net::TcpListener::bind(opts.ecoute_passerelle).await.map_err(|e| e.to_string())?;
         let l_llm = tokio::net::TcpListener::bind(opts.ecoute_llm).await.map_err(|e| e.to_string())?;
         let l_mcp = tokio::net::TcpListener::bind(opts.ecoute_mcp).await.map_err(|e| e.to_string())?;
+        let l_reporting = tokio::net::TcpListener::bind(opts.ecoute_reporting).await.map_err(|e| e.to_string())?;
+        tokio::spawn(async move { axum::serve(l_reporting, api_reporting).await });
         let (agent, amont, racine, serveurs_mcp, moniteurs) = {
             let m = &etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat;
             (
@@ -976,6 +1044,11 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             } else {
                 format!("{} dans {} : clé d'agent exigée par le proxy LLM", agents.agents.len(), opts.agents.display())
             }
+        );
+        eprintln!(
+            "  reporting MCP      : http://{}/mcp  (lecture seule ; {})",
+            opts.ecoute_reporting,
+            if clients_reporting == 0 { "aucun client : aplomb reporting nouveau --id acra".to_string() } else { format!("{clients_reporting} client(s)") }
         );
         eprintln!("  scellement         : toutes les {} s, et à l'arrêt", opts.scellement);
         eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());

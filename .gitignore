@@ -15,3 +15,4 @@ conteneur/.env
 /comptes.yaml
 /agents.yaml
 /cles/
+/reporting.yaml

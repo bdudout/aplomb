@@ -66,35 +66,42 @@ fn bornes_journal(dossier: &Path) -> (Option<u64>, Option<u64>) {
     bornes
 }
 
-pub fn exporter(o: OptionsExport) -> Result<(), String> {
-    let confiance = Confiance::depuis_yaml(&lire(&o.confiance)?)?;
-    let (m, signataires) =
-        aplomb_core::mandat::charger_cosigne(&o.mandat, &confiance).map_err(|e| format!("mandat refusé : {e} — un dossier de preuves ne vaut que pour un mandat cosigné"))?;
-    if o.sortie.exists() && std::fs::read_dir(&o.sortie).map_err(|e| e.to_string())?.next().is_some() {
-        return Err(format!("{} n'est pas vide : choisir un nouveau dossier", o.sortie.display()));
-    }
-    let cle = crate::cle_maitresse::lire_cle_privee(&o.cle, "reponses")?;
-    let instance = indicateurs::identifiant_instance(&cle.verifying_key());
-    let s = &o.sortie;
+/// Sources d'un constat de conformité.
+pub struct Sources<'a> {
+    pub mandat: &'a Path,
+    pub journal: &'a Path,
+    pub heures: Option<u64>,
+    pub confiance: &'a Path,
+    pub comptes: &'a Path,
+}
+
+/// Tout ce qu'on mesure d'un système pour son état de conformité (export, reporting).
+pub struct Collecte {
+    pub m: aplomb_core::mandat::MandatCharge,
+    pub constats: Constats,
+    pub agregat: indicateurs::Agregat,
+    /// Comptes d'administration et rôles (identifiants nominatifs : pas pour le reporting).
+    pub comptes: Value,
+    pub journal: Value,
+    pub evaluation: Option<aplomb_core::evaluation::Rapport>,
+    pub periode: indicateurs::Periode,
+}
+
+/// Mesure l'état d'un système (mandat cosigné) : gouvernance, banc rouge/bleu rejoué sans
+/// juge, indicateurs du journal, intégrité, conservation. Sans clé secrète.
+pub fn collecter(src: &Sources, instance: &str, cle_scelles: &ed25519_dalek::VerifyingKey) -> Result<Collecte, String> {
+    let confiance = Confiance::depuis_yaml(&lire(src.confiance)?)?;
+    let (m, signataires) = aplomb_core::mandat::charger_cosigne(src.mandat, &confiance)
+        .map_err(|e| format!("mandat refusé : {e} — un état de conformité ne vaut que pour un mandat cosigné"))?;
     let mandat = &m.mandat;
     let mut c = Constats { signataires_mandat: signataires, seuil: confiance.seuil(), ..Default::default() };
+    c.juge = mandat.moniteurs.as_ref().is_some_and(|mo| mo.juge.is_some());
+    c.protocole = mandat.moniteurs.as_ref().and_then(|mo| mo.protocole.as_ref()).map_or("surveillance".into(), |p| format!("{:?}", p.mode).to_lowercase());
 
-    // Mandat cosigné et sa politique.
-    ecrire(&s.join("mandat").join(nom(&o.mandat)), &lire(&o.mandat)?)?;
-    ecrire(&s.join("mandat").join(nom(Path::new(&mandat.politique.regles))), &m.regles)?;
-    ecrire(&s.join("mandat").join(nom(Path::new(&mandat.politique.revue))), &m.revue)?;
-    if let Some(mo) = &mandat.moniteurs {
-        c.juge = mo.juge.is_some();
-        c.protocole = mo.protocole.as_ref().map_or("surveillance".into(), |p| format!("{:?}", p.mode).to_lowercase());
-    } else {
-        c.protocole = "surveillance".into();
-    }
-
-    // Gouvernance : clés publiques, comptes et rôles (sans clés).
-    ecrire(&s.join("gouvernance/confiance.yaml"), &lire(&o.confiance)?)?;
-    let comptes = match lire(&o.comptes) {
+    // Gouvernance : comptes et rôles (sans clés).
+    let comptes = match lire(src.comptes) {
         Ok(t) => {
-            let f: FichierComptes = serde_yaml::from_str(&t).map_err(|e| format!("{} : {e}", o.comptes.display()))?;
+            let f: FichierComptes = serde_yaml::from_str(&t).map_err(|e| format!("{} : {e}", src.comptes.display()))?;
             let cosigne = confiance.verifier(&f.octets_signes(), &f.signatures);
             c.comptes_cosignes = cosigne.is_ok();
             c.operateurs = f.comptes.iter().filter(|x| x.roles.contains(&Role::Operateur)).count();
@@ -104,39 +111,35 @@ pub fn exporter(o: OptionsExport) -> Result<(), String> {
         }
         Err(e) => json!({"absent": e}),
     };
-    ecrire(&s.join("gouvernance/comptes.json"), &json_joli(&comptes)?)?;
 
     // Banc rouge/bleu rejoué sans juge (déterministe), et référence de non-régression.
-    if let Some(r) = crate::evaluer::rapport_sans_juge(&o.mandat)? {
-        c.evaluation = Some((r.surete, r.utilite));
-        ecrire(&s.join("evaluation.json"), &json_joli(&r)?)?;
-    }
-    c.reference_non_regression = crate::evaluer::chemin_reference(&o.mandat).exists();
+    let evaluation = crate::evaluer::rapport_sans_juge(src.mandat)?;
+    c.evaluation = evaluation.as_ref().map(|r| (r.surete, r.utilite));
+    c.reference_non_regression = crate::evaluer::chemin_reference(src.mandat).exists();
 
-    // Indicateurs du système, signés.
-    let p = periode(o.heures);
-    let calcul = Calcul { instance: &instance, systeme: Some(&mandat.id), periode: p.clone(), seuil_k: indicateurs::SEUIL_K_DEFAUT };
-    let a = indicateurs::calculer(&o.journal, &calcul)?;
+    // Indicateurs du système.
+    let p = periode(src.heures);
+    let calcul = Calcul { instance, systeme: Some(&mandat.id), periode: p.clone(), seuil_k: indicateurs::SEUIL_K_DEFAUT };
+    let a = indicateurs::calculer(src.journal, &calcul)?;
     c.decisions = a.decisions.total();
     c.gels = a.decisions.gel + a.administration.gels;
     c.revues = a.revues.approuvees + a.revues.refusees + a.revues.expirees;
     c.branchements = a.branchements.keys().cloned().collect();
     c.sessions_intactes = a.integrite.sessions_intactes;
     c.sessions_rompues = a.integrite.sessions_rompues;
-    ecrire(&s.join("indicateurs.json"), &json_joli(&indicateurs::signer(a, &cle))?)?;
 
     // Journal : intégrité, scellés, ancre, conservation.
-    let scelles = aplomb_core::scellement::verifier(&o.journal, &cle.verifying_key());
+    let scelles = aplomb_core::scellement::verifier(src.journal, cle_scelles);
     c.scelles_valides = scelles.is_ok();
     c.scelles = scelles.as_ref().map_or(0, |r| r.scelles);
-    let ancre = std::fs::read_to_string(o.journal.join("scelles/derniere-ancre")).ok().map(|x| PathBuf::from(x.trim()));
+    let ancre = std::fs::read_to_string(src.journal.join("scelles/derniere-ancre")).ok().map(|x| PathBuf::from(x.trim()));
     let ancre_issue = match &ancre {
-        Some(a) if a.exists() => aplomb_core::scellement::verifier_ancre(&o.journal, a).map(|n| format!("{n} scellé(s) retrouvé(s) à l'identique")),
+        Some(a) if a.exists() => aplomb_core::scellement::verifier_ancre(src.journal, a).map(|n| format!("{n} scellé(s) retrouvé(s) à l'identique")),
         Some(_) => Err("ancre introuvable (support débranché ?)".into()),
         None => Err("aucune ancre".into()),
     };
     c.ancre_verifiee = ancre_issue.is_ok();
-    (c.premiere_entree, c.derniere_entree) = bornes_journal(&o.journal);
+    (c.premiere_entree, c.derniere_entree) = bornes_journal(src.journal);
     let journal = json!({
         "sessions_intactes": c.sessions_intactes, "sessions_rompues": c.sessions_rompues,
         "scelles": match &scelles {
@@ -146,8 +149,31 @@ pub fn exporter(o: OptionsExport) -> Result<(), String> {
         },
         "ancre": match &ancre_issue { Ok(x) => json!({"verifiee": true, "detail": x}), Err(e) => json!({"verifiee": false, "detail": e}) },
         "premiere_entree": c.premiere_entree, "derniere_entree": c.derniere_entree,
-        "cle_publique_scelles": hex::encode(cle.verifying_key().to_bytes()),
+        "cle_publique_scelles": hex::encode(cle_scelles.to_bytes()),
     });
+    Ok(Collecte { m, constats: c, agregat: a, comptes, journal, evaluation, periode: p })
+}
+
+pub fn exporter(o: OptionsExport) -> Result<(), String> {
+    if o.sortie.exists() && std::fs::read_dir(&o.sortie).map_err(|e| e.to_string())?.next().is_some() {
+        return Err(format!("{} n'est pas vide : choisir un nouveau dossier", o.sortie.display()));
+    }
+    let cle = crate::cle_maitresse::lire_cle_privee(&o.cle, "reponses")?;
+    let instance = indicateurs::identifiant_instance(&cle.verifying_key());
+    let src = Sources { mandat: &o.mandat, journal: &o.journal, heures: o.heures, confiance: &o.confiance, comptes: &o.comptes };
+    let Collecte { m, constats: c, agregat: a, comptes, journal, evaluation, periode: p } = collecter(&src, &instance, &cle.verifying_key())?;
+    let s = &o.sortie;
+    let mandat = &m.mandat;
+
+    ecrire(&s.join("mandat").join(nom(&o.mandat)), &lire(&o.mandat)?)?;
+    ecrire(&s.join("mandat").join(nom(Path::new(&mandat.politique.regles))), &m.regles)?;
+    ecrire(&s.join("mandat").join(nom(Path::new(&mandat.politique.revue))), &m.revue)?;
+    ecrire(&s.join("gouvernance/confiance.yaml"), &lire(&o.confiance)?)?;
+    ecrire(&s.join("gouvernance/comptes.json"), &json_joli(&comptes)?)?;
+    if let Some(r) = &evaluation {
+        ecrire(&s.join("evaluation.json"), &json_joli(r)?)?;
+    }
+    ecrire(&s.join("indicateurs.json"), &json_joli(&indicateurs::signer(a, &cle))?)?;
     // La chaîne de scellés n'est pas jointe : elle nomme les fichiers de session, donc les
     // identifiants de session. Le témoin du dernier scellé suffit pour la confronter à l'ancre.
     ecrire(&s.join("journal.json"), &json_joli(&journal)?)?;
