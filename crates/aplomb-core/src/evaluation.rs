@@ -82,11 +82,14 @@ pub struct Etape {
     pub alternatives: Vec<Value>,
 }
 
-/// Valeurs substituées dans les scénarios : `{racine}`, `{home}`, `{domaine}`.
+/// Valeurs substituées dans les scénarios : `{racine}`, `{home}`, `{domaine}`, et celles
+/// du profil (`profils::Profil::substitutions`).
 pub struct Lieux {
     pub racine: String,
     pub home: String,
     pub domaine: Option<String>,
+    /// Substitutions propres au profil (`{cible}`…).
+    pub profil: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,7 +176,10 @@ pub struct Rapport {
 fn substituer(v: &Value, l: &Lieux) -> Value {
     match v {
         Value::String(s) => Value::String(
-            s.replace("{racine}", &l.racine).replace("{home}", &l.home).replace("{domaine}", l.domaine.as_deref().unwrap_or("")),
+            l.profil.iter().fold(
+                s.replace("{racine}", &l.racine).replace("{home}", &l.home).replace("{domaine}", l.domaine.as_deref().unwrap_or("")),
+                |t, (cle, valeur)| t.replace(cle, valeur),
+            ),
         ),
         Value::Array(a) => Value::Array(a.iter().map(|x| substituer(x, l)).collect()),
         Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), substituer(x, l))).collect()),

@@ -14,7 +14,7 @@ par hook (niveau d'assurance 1, coopératif).
 | **Aplomb** | Cœur de décision (`aplomb-core`), service `aplomb serve`, hook Claude Code | MVP |
 | **Aplomb Gate** | Passerelles : réseau sortant (`127.0.0.1:7702`), proxy LLM (`127.0.0.1:7703`), passerelle MCP (`127.0.0.1:7704`) | faites, avec le confinement |
 | **Aplomb Watch** | Journal scellé, vue technique, export Mermaid, puis indicateurs pour le management | journal, flux en direct, vue chaînée et file de revue faits |
-| **Aplomb Pentest** | Profil dédié aux tests d'intrusion supervisés | à venir |
+| **Aplomb Pentest** | Profil P : test d'intrusion autorisé, borné par la fiche d'autorisation signée au mandat (portage de CLUSA) | fait (J4) |
 
 - Installer : [Installation](#installation) ; où placer chaque pièce : [Architectures de déploiement](docs/DEPLOIEMENTS.md)
 - Architecture du MVP : [`docs/ARCHITECTURE-MVP.md`](docs/ARCHITECTURE-MVP.md)
@@ -27,7 +27,7 @@ par hook (niveau d'assurance 1, coopératif).
 - **Mandat** (`mandats/*.yaml`) : ce que l'agent a le droit de faire.
   - Il fixe le dépôt de travail, les domaines joignables, les serveurs MCP, le modèle et les bornes.
   - Il est cosigné par deux membres au moins. Un mandat modifié sans nouvelle cosignature est refusé au démarrage.
-- **Profils** (`profils/code/`) : règles Cedar propres à un type d'agent.
+- **Profils** (`profils/code/`, `profils/pentest/`) : règles Cedar et jeu d'évaluation propres à un type d'agent. `aplomb profils` les liste.
   - `regles.cedar` permet ou refuse.
   - `revue.cedar` désigne ce qui demande un humain.
   - Le profil C « agent de code » traduit chaque outil de Claude Code en effet : lire, écrire, exécuter, réseau, outil MCP, déléguer…
@@ -130,9 +130,26 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 - `scripts/scenarios.sh` : scénarios du hook, dont ceux de l'annexe « Assume misalignment ».
 - `scripts/faux-modele.py`, `scripts/faux-mcp.py`, `scripts/faux-juge.py` : un modèle, un serveur MCP et un juge factices pour le banc.
 
-### Aplomb Pentest (à venir)
+### Aplomb Pentest
 
-Profil dédié aux tests d'intrusion supervisés : périmètre d'audit au mandat et preuves au journal.
+Profil P (`profil: pentest`) : une IA mène un test d'intrusion **autorisé** et ne peut pas sortir de la convention d'audit. Aplomb n'attaque rien et n'ajoute aucune capacité offensive : il décide, journalise et gèle.
+
+- **Fiche d'autorisation**, sous `extension:` dans le mandat et couverte par la cosignature : cibles (CIDR, adresses, domaines), exclusions (prioritaires), palier par technique (`vert` sans humain, `orange` revue, `rouge` refus), profondeur de rebond, fenêtre horaire, plafond de débit, interdits. Modèle commenté : [`exemples/mandat-pentest.yaml`](exemples/mandat-pentest.yaml).
+- **Invariants** (règles [`profils/pentest/regles.cedar`](profils/pentest/regles.cedar)) : cible hors fiche ou exclue, rebond au-delà de la fiche, exfiltration, déni de service ⇒ **gel** de la session. Une technique absente de la fiche est refusée ; exploitation, post-exploitation et rebond ne descendent jamais sous `orange`.
+- **Ressource réelle** : la cible est relue dans la commande, pas annoncée. Adresse écrite en entier ou en hexadécimal (`http://2130706433/`), CIDR qui contient une exclusion (sauf `--exclude`), plage nmap, cible dans un script exécuté, sauts `ssh -J` et `proxychains` comptés comme rebonds.
+- **Moniteurs du profil** : contournement de la passerelle (proxy retiré, réseau d'anonymisation) ⇒ gel ; escalade ou persistance sur une cible, options de furtivité ⇒ revue.
+- **Référentiels** : convention d'audit, art. 323-1 et suivants du Code pénal, CFAA et Computer Misuse Act, référentiel PASSI de l'ANSSI. Ils figurent dans le dossier de preuves et le reporting MCP.
+
+Usage :
+
+```bash
+cp <chemin du clone>/exemples/mandat-pentest.yaml mandats/audit-client.yaml   # puis l'adapter à la convention
+aplomb evaluer --mandat mandats/audit-client.yaml --sans-juge   # vérifie la fiche et joue le banc rouge/bleu, sans rien exécuter
+aplomb cosigner mandats/audit-client.yaml --compte alice --compte bob
+aplomb serve --mandat mandats/audit-client.yaml   # affiche la fiche appliquée et si la fenêtre est en cours
+```
+
+Le hook, les passerelles, Aplomb Watch, `aplomb preuves` et le reporting MCP marchent comme pour le profil C. Limites : un nom de domaine est jugé sur son nom (la résolution DNS n'est pas encore vérifiée) ; la passerelle sortante refuse les adresses internes, donc un pentest de réseau interne se supervise au niveau 1 (hook) pour l'instant.
 
 ## Installation
 
@@ -460,7 +477,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 126 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 161 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -484,6 +501,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |
 | Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |
 | Reporting MCP | `127.0.0.1:7705/mcp` : serveur MCP en lecture seule pour les outils de gouvernance (ACRA…), six outils (systèmes, conformité AI Act, indicateurs, intégrité, supervision, référentiels), jetons par client relus à chaque requête, appels journalisés, rien de nominatif |
+| Profil pentest (J4) | Deuxième profil ajouté par le registre de profils, sans toucher à la décision : fiche d'autorisation au mandat, 6 techniques à paliers, 35 tests (dont ceux de CLUSA portés : politique, graphe de scope et rebonds, superviseur d'alignement, interception d'outils), jeu de 22 scénarios (7 légitimes, 15 attaques) : 100 % des attaques arrêtées, aucune tâche légitime bloquée sur le mandat d'exemple ; vérifié au banc par le hook, `evaluer`, `preuves` et le reporting MCP |
 | Preuves AI Act (J6, lot 2) | `aplomb preuves exporter` : dossier signé par système (mandat, gouvernance, banc rouge/bleu, indicateurs, intégrité du journal), statut constaté par article de l'AI Act et correspondance NIST AI RMF, ISO/IEC 42001, OWASP, ANSSI, CRA ; `aplomb preuves verifier` pour l'auditeur. J6 terminé |
 | Vue gouvernance (J6, lots 1 et 3) | Onglet « Gouvernance » d'Aplomb Watch (export de l'agrégat signé), `aplomb gouvernance` et `GET /admin/gouvernance` : indicateurs agrégés sans rien de nominatif, seuil de publication k, sessions rompues écartées (EF-P3) ; agrégats signés par l'instance, fédération vérifiée (instance connue, signature, pas de double compte) (EF-P6) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |

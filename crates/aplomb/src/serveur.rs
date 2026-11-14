@@ -894,9 +894,10 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let (mandat, signataires_mandat) = aplomb_core::mandat::charger_cosigne(&opts.mandat, &confiance).map_err(|e| {
         format!("mandat refusé : {e} — faire cosigner : aplomb cosigner {} --compte <id>", opts.mandat.display())
     })?;
-    if mandat.mandat.profil != "code" {
-        return Err(format!("profil « {} » non pris en charge (MVP : code)", mandat.mandat.profil));
-    }
+    // Profil du mandat : connu du registre, extension de schéma valide (fiche…).
+    let profil = aplomb_core::profils::verifier_mandat(&mandat.mandat).map_err(|e| format!("mandat refusé : {e}"))?;
+    let resume_profil = profil.resume(&mandat.mandat);
+    let profil_affiche = format!("{} — {}", profil.nom(), profil.description());
     let id = format!("{} v{}", mandat.mandat.id, mandat.mandat.version);
     let mut superviseur = Superviseur::nouveau(mandat).map_err(|e| e.to_string())?;
     let mut enfants = Vec::new();
@@ -1019,6 +1020,10 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let proxy = crate::modele::routeur(etat_scellement.clone(), crate::modele::Reglages { agent, amont, jeton, protocole: reglages_protocole });
         tokio::spawn(async move { axum::serve(l_llm, proxy).await });
         eprintln!("Aplomb — mandat {id}, cosigné par {}", signataires_mandat.join(" et "));
+        eprintln!("  profil             : {profil_affiche}");
+        for ligne in &resume_profil {
+            eprintln!("                       {ligne}");
+        }
         eprintln!("  API décision       : http://{}", opts.ecoute_decision);
         eprintln!("  API administration : http://{}  (Aplomb Watch, vue technique)", opts.ecoute_admin);
         eprintln!("  Aplomb Gate        : http://{}  (passerelle sortante, HTTPS_PROXY de l'agent ; envoi plafonné à {} Kio par connexion)", opts.ecoute_passerelle, opts.plafond_envoi / 1024);

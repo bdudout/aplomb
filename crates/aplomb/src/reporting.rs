@@ -173,6 +173,7 @@ fn outil(p: &Partage, nom: &str, args: &Value) -> reporting::ResultatOutil {
                 "id": mandat.id, "version": mandat.version, "profil": mandat.profil, "agent": mandat.agent,
                 "intention": mandat.intention.trim(), "empreinte": &m.empreinte[..m.empreinte.len().min(16)],
                 "cosignataires": p.r.cosignataires,
+                "referentiels_profil": aplomb_core::profils::pour(&mandat.profil).referentiels(),
             }]}))
         }
         "etat_conformite" => {
@@ -215,7 +216,11 @@ fn outil(p: &Partage, nom: &str, args: &Value) -> reporting::ResultatOutil {
             Ok(crate::preuves::collecter(&src, &instance, &cle)?.journal)
         }
         "etat_supervision" => Ok(p.etat.etat_supervision()),
-        "correspondance_referentiels" => Ok(json!({"avertissement": AVERTISSEMENT, "familles": familles()})),
+        "correspondance_referentiels" => {
+            let profil = p.etat.mandat().mandat.profil.clone();
+            Ok(json!({"avertissement": AVERTISSEMENT, "familles": familles(),
+                "profil": profil, "referentiels_profil": aplomb_core::profils::pour(&profil).referentiels()}))
+        }
         _ => Err(format!("outil inconnu : {nom}")),
     }
 }

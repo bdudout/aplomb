@@ -181,7 +181,8 @@ pub fn exporter(o: OptionsExport) -> Result<(), String> {
     // Correspondance et lecture humaine.
     let arts = articles(&c);
     let correspondance = json!({"avertissement": preuves::AVERTISSEMENT, "systeme": mandat.id, "version_mandat": mandat.version,
-        "periode": p, "constats": c, "ai_act": arts, "familles": familles()});
+        "periode": p, "constats": c, "ai_act": arts, "familles": familles(),
+        "referentiels_profil": aplomb_core::profils::pour(&mandat.profil).referentiels()});
     ecrire(&s.join("correspondance.json"), &json_joli(&correspondance)?)?;
     ecrire(&s.join("LISEZMOI.md"), &lisezmoi(&m, &instance, &c, &arts, &p))?;
 
@@ -260,6 +261,13 @@ fn lisezmoi(m: &aplomb_core::mandat::MandatCharge, instance: &str, c: &Constats,
             cellule(&a.reste),
             a.pieces.iter().map(|x| format!("`{x}`")).collect::<Vec<_>>().join(", ")
         );
+    }
+    let referentiels = aplomb_core::profils::pour(&mandat.profil).referentiels();
+    if !referentiels.is_empty() {
+        t += &format!("\n## Référentiels du profil `{}`\n\n", mandat.profil);
+        for r in referentiels {
+            t += &format!("- {r}\n");
+        }
     }
     t += "\n## Pièces\n\n\
           - `mandat/` : le mandat tel que cosigné, et ses règles.\n\
