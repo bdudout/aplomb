@@ -90,6 +90,7 @@ mod tests {
                 branches_protegees: vec!["main".into()],
                 domaines_modele: vec!["api.anthropic.com".into()],
                 serveurs_mcp: vec![ServeurMcp { nom: "fs".into(), commande: vec!["fs".into()], outils: vec!["lire".into()], fiable: false }],
+                metier: None,
             },
             politique: FichiersPolitique { regles: "r".into(), revue: "v".into(), regles_sha256: String::new(), revue_sha256: String::new() },
             bornes: None,

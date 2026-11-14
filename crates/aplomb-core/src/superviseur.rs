@@ -35,6 +35,10 @@ pub struct Superviseur {
     traces: HashMap<String, VecDeque<Trace>>,
     /// Consultations du juge par session (budget, EF-E5).
     appels_juge: HashMap<String, u32>,
+    /// Moniteurs propres au profil du mandat (cumuls de session…).
+    etat_profil: profils::Etat,
+    /// Consultations de la sonde par session (EF-F).
+    appels_sonde: HashMap<String, u32>,
 }
 
 /// Actions passées montrées au juge.
@@ -46,6 +50,9 @@ pub enum Consultation {
     Juge { raison: Raison, consigne: String, message: String },
     /// Action sensible, budget épuisé : avis de revue sans appel.
     BudgetEpuise(Avis),
+    /// Moniteur interne (EF-F) : texte produit par le modèle, à rejouer par le serveur
+    /// d'activations dans le contexte de l'intention.
+    Sonde { intention: String, texte: String },
 }
 
 impl Superviseur {
@@ -62,6 +69,8 @@ impl Superviseur {
             enfants: HashMap::new(),
             traces: HashMap::new(),
             appels_juge: HashMap::new(),
+            etat_profil: profils::Etat::default(),
+            appels_sonde: HashMap::new(),
         })
     }
 
@@ -84,7 +93,7 @@ impl Superviseur {
     /// source retenue.
     pub fn observer(&mut self, evt: &EvenementOutil) -> Option<String> {
         let action = self.normaliser(evt);
-        if !profils::code::source_non_fiable(&action, &self.mandat.mandat) {
+        if !profils::source_non_fiable(&action, &self.mandat.mandat) {
             return None;
         }
         let source = evt.outil.clone();
@@ -101,8 +110,8 @@ impl Superviseur {
     }
 
     pub fn normaliser(&self, evt: &EvenementOutil) -> Action {
-        // Seul profil du MVP ; un profil inconnu est refusé au démarrage (`aplomb serve`).
-        profils::code::normaliser(evt, &self.mandat.mandat)
+        // Un profil inconnu est refusé au démarrage (`profils::verifier`).
+        profils::normaliser(evt, &self.mandat.mandat)
     }
 
     /// Juge déclaré au mandat.
@@ -126,11 +135,14 @@ impl Superviseur {
         }
         let politique = if evt.agent != self.mandat.mandat.agent { Verdict::Deny } else { self.politique.evaluer(&action).verdict };
         let mut verdict = moniteurs::avis_secrets(evt, &action).map_or(politique, |a| politique.max(a.niveau.plancher()));
-        if !self.influences(&evt.session).is_empty() && profils::code::sensible_a_l_influence(&action) {
+        if !self.influences(&evt.session).is_empty() && profils::sensible_a_l_influence(&action, &self.mandat.mandat) {
             verdict = verdict.max(Verdict::Review);
         }
         if self.avis_enchainement(evt, &action).is_some() {
             verdict = verdict.max(Verdict::Review);
+        }
+        for a in self.etat_profil.avis(&self.mandat.mandat, evt, &action) {
+            verdict = verdict.max(a.niveau.plancher());
         }
         (action, verdict)
     }
@@ -157,6 +169,28 @@ impl Superviseur {
                 Some(Consultation::Juge { raison, consigne, message })
             }
         }
+    }
+
+    /// Sonde déclarée au mandat (moniteur interne, EF-F).
+    pub fn sonde(&self) -> Option<&crate::sonde::ConfigSonde> {
+        self.mandat.mandat.moniteurs.as_ref().and_then(|m| m.sonde.as_ref())
+    }
+
+    /// Faut-il consulter la sonde ? Seulement pour une action encore permise (un refus ou une
+    /// revue n'ont rien à gagner d'un signal d'appoint), dans le budget de la session. Sans
+    /// effet sur l'état : l'appelant consulte hors verrou, puis [`Self::noter_appel_sonde`].
+    pub fn preparer_sonde(&self, evt: &EvenementOutil, raisonnement: Option<&str>) -> Option<Consultation> {
+        let cfg = self.sonde()?;
+        if self.appels_sonde.get(&evt.session).copied().unwrap_or(0) >= cfg.appels_max || self.examiner(evt).1 != Verdict::Allow {
+            return None;
+        }
+        Some(Consultation::Sonde { intention: self.mandat.mandat.intention.clone(), texte: crate::sonde::texte(evt, raisonnement) })
+    }
+
+    pub fn noter_appel_sonde(&mut self, session: &str) -> u32 {
+        let n = self.appels_sonde.entry(session.to_string()).or_default();
+        *n += 1;
+        *n
     }
 
     /// Compte une consultation du juge dans le budget de la session.
@@ -202,7 +236,7 @@ impl Superviseur {
         // Bornes cumulées : moniteur déterministe, qui ne peut que durcir (EF-A6, EF-K1).
         let mut avis = self.suivi.observer(&action, politique.verdict);
         // Provenance : moniteur déterministe lui aussi.
-        if !sources.is_empty() && profils::code::sensible_a_l_influence(&action) {
+        if !sources.is_empty() && profils::sensible_a_l_influence(&action, &self.mandat.mandat) {
             avis.push(Avis {
                 moniteur: "provenance".into(),
                 niveau: Niveau::Suspect,
@@ -214,8 +248,11 @@ impl Superviseur {
         avis.extend(moniteurs::avis_secrets(evt, &action));
         // Enchaînements : les actions précédentes de la session (EF-E4).
         avis.extend(self.avis_enchainement(evt, &action));
+        // Moniteurs du profil (fuite de données, conseil hors cadre, cumuls…).
+        avis.extend(self.etat_profil.avis(&self.mandat.mandat, evt, &action));
         avis.extend(externes);
         let finale = combiner(politique, avis, gele);
+        self.etat_profil.noter(&self.mandat.mandat, evt, &action, finale.verdict);
         if finale.verdict == Verdict::Gel {
             self.sessions_gelees.insert(evt.session.clone());
         }
@@ -256,11 +293,16 @@ impl Superviseur {
 
     pub fn degeler(&mut self, session: Option<&str>) {
         self.suivi.reinitialiser(session);
+        self.etat_profil.reinitialiser(session);
         match session {
             Some(s) => {
                 self.appels_juge.remove(s);
+                self.appels_sonde.remove(s);
             }
-            None => self.appels_juge.clear(),
+            None => {
+                self.appels_juge.clear();
+                self.appels_sonde.clear();
+            }
         }
         match session {
             Some(s) => {

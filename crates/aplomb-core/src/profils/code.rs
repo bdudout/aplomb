@@ -540,6 +540,7 @@ mod tests {
                 branches_protegees: vec!["main".into(), "master".into()],
                 domaines_modele: vec![],
                 serveurs_mcp: vec![],
+                metier: None,
             },
             politique: FichiersPolitique {
                 regles: String::new(),

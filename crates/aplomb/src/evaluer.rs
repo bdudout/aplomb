@@ -2,7 +2,10 @@
 //! mandat (signé ou candidat), son juge compris, et rend sûreté, utilité et coût. Avec
 //! `--reference`, échoue si une attaque passe moins bien qu'avant (EF-H4).
 //!
-//! La cosignature d'un mandat rejoue le même jeu, sans juge (déterministe) : voir
+//! Avec une sonde au mandat (moniteur interne, EF-F), `--sans-sonde` mesure son apport : même
+//! jeu, mêmes règles, sans elle ; `--seuil-sonde` essaie un autre seuil.
+//!
+//! La cosignature d'un mandat rejoue le même jeu, sans juge ni sonde (déterministe) : voir
 //! [`controler_avant_cosignature`].
 use std::path::{Path, PathBuf};
 
@@ -21,6 +24,10 @@ pub struct Options {
     pub sortie: Option<PathBuf>,
     /// Protocole à mesurer à la place de celui du mandat (EF-E2).
     pub protocole: Option<ModeProtocole>,
+    /// Ne pas consulter la sonde du mandat (mesure de son apport, EF-F).
+    pub sans_sonde: bool,
+    /// Seuil de la sonde à la place de celui du mandat.
+    pub seuil_sonde: Option<f32>,
 }
 
 /// Jeu du profil : `evaluation.yaml` à côté des règles du mandat.
@@ -44,7 +51,7 @@ fn lieux(m: &MandatCharge) -> Lieux {
 
 /// Remplace le protocole du mandat, pour comparer les protocoles sur un même mandat.
 fn imposer_protocole(m: &mut MandatCharge, mode: ModeProtocole) {
-    let moniteurs = m.mandat.moniteurs.get_or_insert(Moniteurs { juge: None, protocole: None, raisonnement: true });
+    let moniteurs = m.mandat.moniteurs.get_or_insert(Moniteurs { juge: None, protocole: None, raisonnement: true, sonde: None });
     let ancien = moniteurs.protocole.take();
     moniteurs.protocole = Some(Protocole {
         mode,
@@ -54,7 +61,8 @@ fn imposer_protocole(m: &mut MandatCharge, mode: ModeProtocole) {
     });
 }
 
-fn jouer(m: MandatCharge, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Juge>) -> Result<Rapport, String> {
+fn jouer(m: MandatCharge, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Juge>, sonde: Option<&crate::sonde::Sonde>) -> Result<Rapport, String> {
+    aplomb_core::profils::verifier(&m.mandat)?;
     if jeu.profil != m.mandat.profil {
         return Err(format!("jeu du profil « {} », mandat du profil « {} »", jeu.profil, m.mandat.profil));
     }
@@ -67,6 +75,14 @@ fn jouer(m: MandatCharge, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Jug
             m.juge = None;
         }
     }
+    if sonde.is_none() {
+        // Sans sonde : le superviseur fonctionne sans moniteur interne (EF-F3).
+        if let Some(m) = sup.mandat.mandat.moniteurs.as_mut() {
+            m.sonde = None;
+        }
+    } else if let (Some(s), Some(m)) = (sonde, sup.mandat.mandat.moniteurs.as_mut()) {
+        m.sonde = Some(s.cfg.clone());
+    }
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let mut consulter = |c: &Consultation| -> (Vec<Avis>, Option<MesureJuge>) {
         match (c, juge) {
@@ -75,9 +91,16 @@ fn jouer(m: MandatCharge, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Jug
                 let (issue, latence_ms) = rt.block_on(j.consulter(consigne, message));
                 let indisponible = issue.is_err();
                 let avis = issue.unwrap_or_else(|e| aplomb_core::moniteurs::avis_indisponible(&e));
-                (vec![avis], Some(MesureJuge { latence_ms, indisponible }))
+                (vec![avis], Some(MesureJuge { latence_ms, indisponible, sonde: false }))
             }
             (Consultation::Juge { .. }, None) => (Vec::new(), None),
+            (Consultation::Sonde { intention, texte }, _) => match sonde {
+                Some(s) => {
+                    let (avis, latence_ms, indisponible) = rt.block_on(s.consulter(intention, texte, None));
+                    (vec![avis], Some(MesureJuge { latence_ms, indisponible, sonde: true }))
+                }
+                None => (Vec::new(), None),
+            },
         }
     };
     Ok(evaluer(&mut sup, jeu, &l, budget, &mut consulter))
@@ -90,7 +113,12 @@ fn pourcent(x: f64) -> String {
 fn afficher(r: &Rapport) {
     let attaques = r.scenarios.iter().filter(|s| s.nature == Nature::Attaque && s.issue != Issue::NonApplicable).count();
     let legitimes = r.scenarios.iter().filter(|s| s.nature == Nature::Legitime && s.issue != Issue::NonApplicable).count();
-    println!("Banc rouge/bleu — mandat {} — juge : {}", r.mandat, r.juge.as_deref().unwrap_or("aucun"));
+    println!(
+        "Banc rouge/bleu — mandat {} — juge : {} — sonde : {}",
+        r.mandat,
+        r.juge.as_deref().unwrap_or("aucun"),
+        r.sonde.as_deref().unwrap_or("aucune")
+    );
     println!();
     for s in &r.scenarios {
         let issue = match s.issue {
@@ -137,6 +165,10 @@ fn afficher(r: &Rapport) {
         let c = &r.cout_juge;
         println!("  coût du juge      : {} consultations, {} indisponibles, {} ms en moyenne", c.consultations, c.indisponible, c.latence_moyenne_ms);
     }
+    if r.sonde.is_some() {
+        let c = &r.cout_sonde;
+        println!("  coût de la sonde  : {} consultations, {} indisponibles, {} ms en moyenne", c.consultations, c.indisponible, c.latence_moyenne_ms);
+    }
 }
 
 fn lire_rapport(chemin: &Path) -> Result<Rapport, String> {
@@ -181,7 +213,18 @@ pub fn lancer(o: Options) -> Result<(), String> {
         }
         _ => None,
     };
-    let r = jouer(m, &jeu, o.budget_audit, juge.as_ref())?;
+    let sonde = match (o.sans_sonde, m.mandat.moniteurs.as_ref().and_then(|x| x.sonde.clone())) {
+        (false, Some(mut cfg)) => {
+            if let Some(s) = o.seuil_sonde {
+                cfg.seuil = s;
+            }
+            let dossier = o.mandat.parent().unwrap_or(Path::new("."));
+            Some(crate::sonde::Sonde::nouvelle(cfg, dossier, false)?)
+        }
+        (false, None) if o.seuil_sonde.is_some() => return Err("--seuil-sonde : le mandat ne déclare pas de sonde (moniteurs.sonde)".into()),
+        _ => None,
+    };
+    let r = jouer(m, &jeu, o.budget_audit, juge.as_ref(), sonde.as_ref())?;
     afficher(&r);
     let regression = match &o.reference {
         Some(c) => comparer(&lire_rapport(c)?, &r),
@@ -211,7 +254,7 @@ pub fn controler_avant_cosignature(mandat: &Path, accepter_regression: bool) -> 
     if !chemin.exists() {
         return Ok(None);
     }
-    let r = jouer(m, &lire_jeu(&chemin)?, 1.0, None)?;
+    let r = jouer(m, &lire_jeu(&chemin)?, 1.0, None, None)?;
     let attaques = r.scenarios.iter().filter(|s| s.nature == Nature::Attaque && s.issue != Issue::NonApplicable).count();
     println!(
         "évaluation (sans juge) : sûreté {} sur {attaques} attaques, utilité {} ({} revues comprises)",
@@ -241,7 +284,7 @@ pub fn rapport_sans_juge(mandat: &Path) -> Result<Option<Rapport>, String> {
     if !chemin.exists() {
         return Ok(None);
     }
-    jouer(m, &lire_jeu(&chemin)?, 0.1, None).map(Some)
+    jouer(m, &lire_jeu(&chemin)?, 0.1, None, None).map(Some)
 }
 
 pub fn enregistrer_reference(mandat: &Path, r: &Rapport) -> Result<(), String> {

@@ -173,6 +173,7 @@ fn outil(p: &Partage, nom: &str, args: &Value) -> reporting::ResultatOutil {
                 "id": mandat.id, "version": mandat.version, "profil": mandat.profil, "agent": mandat.agent,
                 "intention": mandat.intention.trim(), "empreinte": &m.empreinte[..m.empreinte.len().min(16)],
                 "cosignataires": p.r.cosignataires,
+                "deploiement": aplomb_core::moniteurs::profil_deploiement(mandat.moniteurs.as_ref()),
             }]}))
         }
         "etat_conformite" => {
