@@ -181,6 +181,8 @@ pub(crate) struct Etat {
     juge: Option<Arc<crate::juge::Juge>>,
     /// Sonde (moniteur interne) déclarée au mandat, consultée hors verrou.
     sonde: Option<Arc<crate::sonde::Sonde>>,
+    /// Clients de reporting (relus pour l'onglet Modules).
+    reporting: Arc<std::path::PathBuf>,
 }
 
 impl Etat {
@@ -336,6 +338,12 @@ impl Etat {
             "niveau_assurance": niveau_assurance(&evt.mode),
             "deploiement": aplomb_core::moniteurs::profil_deploiement(m.mandat.moniteurs.as_ref()),
         });
+        // Modules actifs du chemin de décision et leur empreinte (EF-M3, EF-G3).
+        contenu["modules"] = json!(aplomb_core::modules::modules_du_mandat(&m.mandat)
+            .into_iter()
+            .filter(|x| x.actif && x.etape.decision())
+            .map(|x| json!({"id": x.id, "etape": x.etape, "facon": x.facon, "version": x.version, "empreinte": x.empreinte}))
+            .collect::<Vec<_>>());
         // Empreinte des poids du moniteur interne (EF-G3) : un rejeu sait quelle sonde a jugé.
         if let Some(s) = m.mandat.moniteurs.as_ref().and_then(|x| x.sonde.as_ref()) {
             contenu["sonde"] = json!({"modele": s.modele, "poids_sha256": s.poids_sha256, "seuil": s.seuil});
@@ -364,7 +372,7 @@ pub(crate) async fn consulter_juge(etat: &Etat, evt: &EvenementOutil, raisonneme
     match consultation {
         None => (Vec::new(), None),
         Some(Consultation::BudgetEpuise(a)) => (vec![a], Some(json!({"issue": "budget épuisé"}))),
-        Some(Consultation::Sonde { .. }) => (Vec::new(), None),
+        Some(Consultation::Sonde { .. } | Consultation::Externe { .. }) => (Vec::new(), None),
         Some(Consultation::Juge { raison, consigne, message }) => {
             let (issue, latence) = juge.consulter(&consigne, &message).await;
             let mut interne = etat.interne.lock().expect("verrou");
@@ -382,7 +390,7 @@ pub(crate) async fn consulter_juge(etat: &Etat, evt: &EvenementOutil, raisonneme
                 Err(e) => {
                     interne.stats_juge.indisponible += 1;
                     let t = json!({"raison": raison, "latence_ms": latence, "appels": appels, "issue": "indisponible", "cause": e});
-                    (aplomb_core::moniteurs::avis_indisponible(&e), t)
+                    (aplomb_core::moniteurs::avis_indisponible(&juge.cfg, &e), t)
                 }
             };
             (vec![avis], Some(trace))
@@ -410,6 +418,38 @@ pub(crate) async fn consulter_sonde(etat: &Etat, evt: &EvenementOutil, raisonnem
     (vec![avis], Some(trace))
 }
 
+/// Consulte les moniteurs externes du mandat (EF-M1), en parallèle et hors verrou. Leurs
+/// avis ne font que durcir ; une panne vaut le plancher déclaré du moniteur.
+pub(crate) async fn consulter_externes(etat: &Etat, evt: &EvenementOutil) -> (Vec<aplomb_core::decision::Avis>, Option<Value>) {
+    use aplomb_core::superviseur::Consultation;
+    let a_consulter: Vec<(aplomb_core::modules::ConfigMoniteurExterne, Value)> = {
+        let interne = etat.interne.lock().expect("verrou");
+        let mut tirage = || alea().0;
+        interne
+            .superviseur
+            .preparer_externes(evt, &mut tirage)
+            .into_iter()
+            .filter_map(|c| match c {
+                Consultation::Externe { id, requete } => interne.superviseur.moniteur_externe(&id).cloned().map(|cfg| (cfg, requete)),
+                _ => None,
+            })
+            .collect()
+    };
+    if a_consulter.is_empty() {
+        return (Vec::new(), None);
+    }
+    let issues = futures_util::future::join_all(a_consulter.iter().map(|(cfg, r)| crate::externes::consulter(cfg, r))).await;
+    let mut interne = etat.interne.lock().expect("verrou");
+    let mut traces = Vec::new();
+    let mut avis = Vec::new();
+    for ((cfg, _), (a, latence, panne)) in a_consulter.iter().zip(issues) {
+        interne.superviseur.noter_appel_externe(&cfg.id, &evt.session);
+        traces.push(json!({"id": cfg.id, "niveau": a.niveau, "latence_ms": latence, "panne": panne}));
+        avis.push(a);
+    }
+    (avis, Some(json!(traces)))
+}
+
 /// Juge un événement et journalise la décision (journal d'abord : une décision non
 /// journalisée n'est jamais rendue). Chemin unique du hook et des passerelles.
 pub(crate) async fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_core::decision::DecisionFinale, u64), String> {
@@ -423,6 +463,8 @@ pub(crate) async fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_c
     };
     let (avis_sonde, trace_sonde) = consulter_sonde(etat, evt, annonce.as_ref().and_then(|a| a.raisonnement.as_deref())).await;
     externes.extend(avis_sonde);
+    let (avis_externes, trace_externes) = consulter_externes(etat, evt).await;
+    externes.extend(avis_externes);
     externes.extend(annonce.map(|a| a.avis).unwrap_or_default());
     let t = maintenant();
     let mut interne = etat.interne.lock().expect("verrou");
@@ -438,6 +480,9 @@ pub(crate) async fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_c
     }
     if let Some(s) = trace_sonde {
         contenu["sonde"] = s;
+    }
+    if let Some(x) = trace_externes {
+        contenu["externes"] = x;
     }
     // Provenance (EF-B5) : contenus non fiables reçus par la session avant cette action.
     let sources = interne.superviseur.influences(&evt.session);
@@ -637,6 +682,26 @@ struct ParamGouvernance {
 
 /// Vue gouvernance (J6) : indicateurs agrégés du journal, avec leurs taux ; avec `signer=1`,
 /// l'agrégat signé par l'instance, prêt à fédérer.
+/// Onglet « Modules » : ce qui est actif à chaque étape et comment ajouter le reste.
+async fn modules_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    let mandat = {
+        let mut interne = etat.interne.lock().expect("verrou");
+        if compte_web(&mut interne, &entetes).is_none() {
+            return non_connecte();
+        }
+        interne.superviseur.mandat.mandat.clone()
+    };
+    let clients = crate::reporting::charger(&etat.reporting).map(|c| c.clients.len()).unwrap_or(0);
+    let etapes: Vec<Value> = aplomb_core::modules::Etape::TOUTES.iter().map(|e| json!({"etape": e, "libelle": e.libelle(), "decision": e.decision()})).collect();
+    Json(json!({
+        "mandat": {"id": mandat.id, "version": mandat.version, "profil": mandat.profil},
+        "deploiement": aplomb_core::moniteurs::profil_deploiement(mandat.moniteurs.as_ref()),
+        "etapes": etapes,
+        "modules": crate::modules::tous(&mandat, clients),
+    }))
+    .into_response()
+}
+
 async fn gouvernance(State(etat): State<Etat>, entetes: HeaderMap, Query(p): Query<ParamGouvernance>) -> Response {
     use aplomb_core::indicateurs;
     let dossier = {
@@ -955,6 +1020,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let juge = superviseur.juge().cloned().map(|cfg| crate::juge::Juge::nouveau(cfg, jeton.clone()).map(Arc::new)).transpose()?;
     let dossier_mandat = opts.mandat.parent().unwrap_or(std::path::Path::new("."));
     let sonde = superviseur.sonde().cloned().map(|cfg| crate::sonde::Sonde::nouvelle(cfg, dossier_mandat, true).map(Arc::new)).transpose()?;
+    superviseur.charger_filtres(dossier_mandat, true)?;
     let texte_comptes = std::fs::read_to_string(&opts.comptes)
         .map_err(|e| format!("comptes {} : {e} (créer un compte : aplomb compte nouveau)", opts.comptes.display()))?;
     let (autorite, signataires_comptes) = Autorite::depuis_yaml_cosigne(&texte_comptes, &confiance).map_err(|e| {
@@ -987,6 +1053,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         signataire: Arc::new(signataire),
         juge,
         sonde,
+        reporting: Arc::new(opts.reporting.clone()),
     };
 
     let api_decision = Router::new()
@@ -1012,6 +1079,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/revue", post(repondre_revue))
         .route("/admin/consommation", get(consommation_admin))
         .route("/admin/gouvernance", get(gouvernance))
+        .route("/admin/modules", get(modules_admin))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(etat.clone());
     let reglages_reporting = crate::reporting::Reglages {

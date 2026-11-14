@@ -28,7 +28,9 @@
 //! Heuristiques volontairement simples (MVP) : elles relèvent un palier ou refusent ;
 //! elles ne servent jamais à autoriser. Le confinement réel arrive au niveau 3 (J3).
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
+use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use crate::action::{Action, EvenementOutil};
@@ -52,6 +54,9 @@ impl super::Profil for ProfilCode {
     }
     fn sensible_a_l_influence(&self, action: &Action) -> bool {
         sensible_a_l_influence(action)
+    }
+    fn signaux(&self, evt: &EvenementOutil, action: &Action) -> super::Signaux {
+        signaux(evt, action)
     }
     fn referentiels(&self) -> &'static [&'static str] {
         &["Recommandations ANSSI/BSI sur les assistants de programmation (2024)"]
@@ -81,6 +86,58 @@ pub fn outil_mcp(outil: &str) -> Option<(&str, &str)> {
 /// l'agent (EF-B5, EF-D2) ? Page ou recherche web, fichier hors du dépôt, sortie réseau
 /// d'une commande, résultat d'un serveur MCP non déclaré fiable, sortie d'un sous-agent
 /// (EF-B6).
+/// Action qui fait sortir des données de la machine.
+fn sortante(action: &Action) -> bool {
+    let c = |k: &str| super::attribut_vrai(action, k);
+    matches!(action.verbe.as_str(), "reseau" | "outil_mcp") || c("envoi_externe") || (action.verbe == "executer" && c("reseau"))
+}
+
+/// Écriture qui introduit dans le code un appel système, une évaluation dynamique, un
+/// décodage d'une charge ou un téléchargement : une porte dérobée y ressemble, une
+/// modification ordinaire rarement. Heuristique de déclenchement du juge, pas un verdict.
+pub fn code_a_risque(evt: &EvenementOutil, action: &Action) -> bool {
+    static M: OnceLock<Regex> = OnceLock::new();
+    let m = M.get_or_init(|| {
+        Regex::new(r"os\.system|subprocess|\beval\(|\bexec\(|b64decode|base64 -d|child_process|Runtime\.getRuntime|curl |wget |socket\.|/dev/tcp/")
+            .expect("motif de code à risque")
+    });
+    let e = &evt.entree;
+    action.verbe == "ecrire" && ["content", "new_string", "new_source"].iter().any(|k| e[*k].as_str().is_some_and(|t| m.is_match(t)))
+}
+
+/// Fichier où une commande de téléchargement écrit (`curl -o f`, `wget -O f`, `curl … > f`).
+fn fichier_telecharge(commande: &str) -> Option<String> {
+    static M: OnceLock<Regex> = OnceLock::new();
+    let m = M.get_or_init(|| {
+        Regex::new(r#"\b(?:curl|wget)\b[^;&|]*?(?:\s(?:-o|-O|--output|--output-document)\s*=?\s*|>\s*)([^\s;&|'"]+)"#).expect("motif de téléchargement")
+    });
+    let f = m.captures(commande)?.get(1)?.as_str();
+    (!f.starts_with('-') && f != "/dev/null").then(|| nom_de_fichier(f).to_string())
+}
+
+fn nom_de_fichier(chemin: &str) -> &str {
+    chemin.trim_matches(|c| c == '"' || c == '\'').rsplit('/').next().unwrap_or(chemin)
+}
+
+/// Signaux du profil C pour les moniteurs du socle.
+pub fn signaux(evt: &EvenementOutil, action: &Action) -> super::Signaux {
+    let c = |k: &str| super::attribut_vrai(action, k);
+    let commande = action.contexte.get("commande").and_then(Value::as_str).unwrap_or_default();
+    let sort = sortante(action);
+    super::Signaux {
+        // Actions qui agissent hors du dépôt ou sur le système, et écritures qui ajoutent au
+        // code de quoi exécuter ou télécharger.
+        juge: matches!(action.verbe.as_str(), "executer" | "reseau" | "outil_mcp" | "deleguer" | "autre") || sort || code_a_risque(evt, action),
+        sortante: sort,
+        // `git push` compte : des données lues peuvent partir dans un commit.
+        envoi: c("envoi_externe") || action.verbe == "outil_mcp" || (action.verbe == "executer" && (c("reseau") || commande.contains("git push"))),
+        lit_sensible: c("chemin_sensible") || c("commande_lit_secret"),
+        telecharge: if c("reseau") { fichier_telecharge(commande) } else { None },
+        executes: if action.verbe == "executer" { scripts_executes(commande).iter().map(|f| nom_de_fichier(f).to_string()).collect() } else { Vec::new() },
+        destination: action.contexte.get("domaine").and_then(Value::as_str).unwrap_or_default().to_string(),
+    }
+}
+
 pub fn source_non_fiable(action: &Action, mandat: &Mandat) -> bool {
     let c = |k: &str| action.contexte.get(k).and_then(Value::as_bool).unwrap_or(false);
     let outil = action.contexte.get("outil").and_then(Value::as_str).unwrap_or_default();

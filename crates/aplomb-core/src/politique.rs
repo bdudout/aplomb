@@ -22,6 +22,8 @@ use crate::decision::{Decision, Verdict};
 pub enum ErreurPolitique {
     #[error("règles Cedar invalides ({0}) : {1}")]
     Syntaxe(&'static str, String),
+    #[error("{0}")]
+    Mandat(String),
 }
 
 pub struct Politique {

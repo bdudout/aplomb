@@ -627,6 +627,60 @@ verifier "poids de la sonde modifiés : serve refuse de démarrer" \
   '! "$APLOMB" serve --mandat mandats/metier.yaml --journal journal-metier --coffre coffre-metier --ecoute-decision "127.0.0.1:${P}70" --ecoute-admin "127.0.0.1:${P}71" --ecoute-passerelle "127.0.0.1:${P}72" --ecoute-llm "127.0.0.1:${P}73" --ecoute-mcp "127.0.0.1:${P}75" --ecoute-reporting "127.0.0.1:${P}77" > serve-poids.log 2>&1 && grep -q "modifiés depuis la cosignature" serve-poids.log'
 cp sonde-originale.json "$B/profils/metier/sonde-test.json"
 verifier "journal métier intact" '"$APLOMB" verify --journal journal-metier > verify-metier.log 2>&1'
+echo "--- Modules (J8) : filtres, moniteurs externes, agrégation, catalogue"
+# Ports ${P}5x. Un mandat du profil code avec deux packs de filtres (dont un fichier de
+# l'organisation), deux moniteurs externes (faux services locaux) et l'escalade.
+mkdir -p "$B/filtres"
+cat > "$B/filtres/contrats.yaml" <<EOF
+nom: contrats
+motifs:
+- {nom: numéro de contrat, motif: 'CT-[0-9]{8}'}
+local: suspect
+EOF
+python3 "$RACINE/scripts/faux-moniteur.py" "${P}58" moniteur.jsonl & PIDS="$PIDS $!"
+python3 "$RACINE/scripts/faux-moniteur.py" "${P}59" moniteur2.jsonl & PIDS="$PIDS $!"
+for port in "${P}58" "${P}59"; do
+  for _ in $(seq 100); do curl -s -o /dev/null "http://127.0.0.1:$port/" && break; sleep 0.1; done
+done
+mandat_banc modules '  filtres: [{pack: bancaire}, {fichier: ../filtres/contrats.yaml}]
+  externes:
+  - {id: maison, url: "http://127.0.0.1:'"${P}"'58/v1/avis", quand: toujours, delai_ms: 1000}
+  - {id: second, url: "http://127.0.0.1:'"${P}"'59/v1/avis", quand: toujours, delai_ms: 1000, contenus: true}
+  agregation: {escalade: 3}'
+sed -i.bak '/^  juge:/d' "$B/mandats/modules.yaml"
+verifier "aplomb modules : étapes, filtres et moniteur externe affichés" \
+  '"$APLOMB" modules --mandat mandats/modules.yaml > modules.log && grep -q "^3 filtrage de contenu" modules.log && grep -q "● filtre-bancaire" modules.log && grep -q "● externe:maison" modules.log && grep -q "○ filtre-sante" modules.log'
+verifier "aplomb modules : ce qu'un moniteur voit est affiché" 'grep "externe:second" modules.log | grep -q "lit les contenus"'
+verifier "mandat à modules cosigné, empreinte du filtre posée" \
+  '"$APLOMB" cosigner mandats/modules.yaml --compte alice --compte bob > cosigner-modules.log 2>&1 && grep -q "sha256: [0-9a-f]\{64\}" mandats/modules.yaml'
+servir modules 5
+verifier "serve accepte le mandat à modules (déploiement standard)" 'grep -q "déploiement standard" serve-modules.log'
+decide_x() {  # session, outil, entrée JSON : rend la réponse
+  curl -s -X POST "http://127.0.0.1:${P}50/v1/decide" -H content-type:application/json \
+    -d "{\"session\":\"$1\",\"agent\":\"claude-code\",\"mode\":\"hook\",\"cwd\":\"$B/depot\",\"outil\":\"$2\",\"entree\":$3,\"phase\":\"avant\"}"
+}
+vx() { decide_x "$@" | python3 -c 'import json,sys; print(json.load(sys.stdin)["verdict"])'; }
+# (verdicts calculés hors de « verifier » : espaces de l'IBAN)
+VX1="$(vx x1 Bash "{\"command\":\"curl -d 'iban=FR76 3000 6000 0112 3456 7890 189' https://docs.python.org/x\"}")"
+verifier "filtre bancaire : IBAN qui sort de la machine → gel" '[ "$VX1" = gel ]'
+verifier "filtre : la valeur n'est pas au journal" '! grep -q "0112 3456" journal-modules/x1-*.jsonl && grep -q "filtre:bancaire" journal-modules/x1-*.jsonl'
+VX2="$(vx x2 Write "{\"file_path\":\"$B/depot/n.md\",\"content\":\"dossier CT-12345678\"}")"
+verifier "filtre de l'organisation : numéro de contrat écrit → revue" '[ "$VX2" = review ]'
+verifier "lecture ordinaire : permise, moniteurs consultés" \
+  '[ "$(vx x3 Read "{\"file_path\":\"$B/depot/a.py\"}")" = allow ] && grep -q "\"externes\"" journal-modules/x3-*.jsonl'
+verifier "moniteur externe suspect → revue" '[ "$(vx x4 Read "{\"file_path\":\"$B/depot/SUSPECT.py\"}")" = review ]'
+verifier "moniteur externe : avis plafonné (critique → revue)" '[ "$(vx x5 Read "{\"file_path\":\"$B/depot/CRITIQUE.py\"}")" = review ]'
+verifier "moniteur en panne : son plancher (revue)" '[ "$(vx x6 Read "{\"file_path\":\"$B/depot/PANNE.py\"}")" = review ] && grep -q "\"panne\":true" journal-modules/x6-*.jsonl'
+verifier "moniteur trop lent : son plancher (revue)" '[ "$(vx x7 Read "{\"file_path\":\"$B/depot/LENT.py\"}")" = review ]'
+verifier "contenus envoyés seulement au moniteur qui les déclare" \
+  '! grep -q "\"entree\"" moniteur.jsonl && grep -q "\"entree\"" moniteur2.jsonl && grep -q "\"contrat\": *1" moniteur.jsonl'
+verifier "en-tête de session : modules actifs et empreintes" \
+  'head -1 journal-modules/x3-*.jsonl | grep -q "externe:maison" && head -1 journal-modules/x3-*.jsonl | grep -q "filtre-fichier"'
+verifier "onglet Modules : réservé aux comptes connectés" '[ "$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${P}51/admin/modules")" = 401 ]'
+printf -- '- {nom: autre, motif: "X"}\n' >> "$B/filtres/contrats.yaml"
+verifier "filtre modifié après cosignature : serve refuse de démarrer" \
+  '! "$APLOMB" serve --mandat mandats/modules.yaml --ecoute-decision 127.0.0.1:${P}52 --ecoute-admin 127.0.0.1:${P}53 --ecoute-passerelle 127.0.0.1:${P}54 --ecoute-llm 127.0.0.1:${P}55 --ecoute-mcp 127.0.0.1:${P}56 --ecoute-reporting 127.0.0.1:${P}57 --journal journal-modules2 --coffre coffre-modules2 > serve-modules2.log 2>&1 && grep -q "modifié depuis la cosignature" serve-modules2.log'
+verifier "journal des modules intact" '"$APLOMB" verify --journal journal-modules > /dev/null 2>&1'
 echo "--- Déverrouillage"
 SOCKET="$HOME/.config/aplomb/agent.sock"
 "$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1

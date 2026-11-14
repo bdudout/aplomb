@@ -233,6 +233,17 @@ pub fn actualiser_empreintes(mandat: &mut Mandat, dossier: &Path) -> Result<bool
             s.poids_sha256 = e;
         }
     }
+    // Filtres en fichier (EF-M3) : liés au mandat comme les règles.
+    if let Some(m) = mandat.moniteurs.as_mut() {
+        for f in &mut m.filtres {
+            if let crate::filtres::Filtre::Fichier { fichier, sha256 } = f {
+                let chemin = dossier.join(&*fichier);
+                let e = crate::filtres::empreinte(&std::fs::read(&chemin).map_err(|e| format!("filtre {} : {e}", chemin.display()))?);
+                change |= &e != sha256;
+                *sha256 = e;
+            }
+        }
+    }
     if change {
         mandat.signatures.clear();
     }

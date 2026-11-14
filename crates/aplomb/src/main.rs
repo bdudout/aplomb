@@ -24,6 +24,8 @@ mod agents;
 mod cle_maitresse;
 mod gouverner;
 mod evaluer;
+mod externes;
+mod modules;
 mod hook;
 mod juge;
 #[allow(unsafe_code)]
@@ -148,6 +150,19 @@ enum Commande {
     /// Profils de domaine connus (code, pentest…) : à quoi ils servent, leurs référentiels,
     /// le modèle de mandat à copier.
     Profils,
+    /// Modules actifs à chaque étape (filtrage, moniteurs, décision, reporting…), ce qu'ils
+    /// voient et envoient, et comment ajouter les autres.
+    Modules {
+        /// Mandat à examiner (défaut : le premier de mandats/).
+        #[arg(long)]
+        mandat: Option<PathBuf>,
+        /// Clients de reporting de l'instance.
+        #[arg(long, default_value = "reporting.yaml")]
+        reporting: PathBuf,
+        /// Montrer aussi les modules intégrés toujours actifs.
+        #[arg(long)]
+        tout: bool,
+    },
     /// Vérifie le journal : chaînes, scellés signés, et copie d'ancrage si fournie.
     Verify {
         #[arg(long, default_value = "journal")]
@@ -462,6 +477,10 @@ fn main() -> ExitCode {
             println!("Vérifier un mandat sans le signer : aplomb evaluer --mandat <fichier> --sans-juge");
             Ok(())
         }
+        Commande::Modules { mandat, reporting, tout } => match mandat.or_else(|| mandats_par_defaut().into_iter().next()) {
+            Some(m) => modules::afficher(&m, &reporting, tout),
+            None => Err("aucun mandat dans mandats/ : aplomb modules --mandat <fichier>".into()),
+        },
         Commande::Hook { perimetre, cle_serveur, branchement } => {
             return hook::executer(&perimetre, cle_serveur.as_deref(), &branchement)
         }

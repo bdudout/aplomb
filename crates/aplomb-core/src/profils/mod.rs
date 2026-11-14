@@ -49,6 +49,20 @@ pub trait Profil: Sync {
     fn resume(&self, _mandat: &Mandat) -> Vec<String> {
         Vec::new()
     }
+    /// Ce que le socle doit savoir de l'action pour ses moniteurs génériques (juge, secrets,
+    /// enchaînements). Le socle ne connaît aucun verbe : il ne lit que ces signaux (EF-M7).
+    /// Par défaut : juge pour toute action sensible à l'influence ou non déclarée, envoi
+    /// d'après l'attribut `envoi_externe`, destination d'après `domaine`.
+    fn signaux(&self, _evt: &EvenementOutil, action: &Action) -> Signaux {
+        let envoi = attribut_vrai(action, "envoi_externe");
+        Signaux {
+            juge: action.verbe == "autre" || self.sensible_a_l_influence(action),
+            sortante: envoi,
+            envoi,
+            destination: action.contexte.get("domaine").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            ..Signaux::default()
+        }
+    }
     /// Moniteurs à état de session (cumuls de paiements, dossiers lus…). Chaque superviseur
     /// en reçoit un neuf ; aucun par défaut.
     fn suivi(&self) -> Option<Box<dyn Suivi>> {
@@ -56,6 +70,30 @@ pub trait Profil: Sync {
     }
     /// Référentiels sectoriels du profil (§9).
     fn referentiels(&self) -> &'static [&'static str];
+}
+
+/// Signaux d'une action, fournis par son profil (voir [`Profil::signaux`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Signaux {
+    /// L'action justifie le juge à chaque fois ; sinon il n'est consulté que par échantillon.
+    pub juge: bool,
+    /// L'action fait sortir des données hors de la machine : un secret y est critique.
+    pub sortante: bool,
+    /// L'action peut emporter des données lues auparavant (« lecture sensible puis envoi »).
+    pub envoi: bool,
+    /// L'action lit une donnée sensible.
+    pub lit_sensible: bool,
+    /// Nom du fichier qu'écrit un téléchargement.
+    pub telecharge: Option<String>,
+    /// Noms des fichiers que l'action exécute.
+    pub executes: Vec<String>,
+    /// Destination visée (domaine), pour « refus puis détour ».
+    pub destination: String,
+}
+
+/// Attribut booléen du contexte d'une action (faux s'il est absent).
+pub fn attribut_vrai(action: &Action, cle: &str) -> bool {
+    action.contexte.get(cle).and_then(serde_json::Value::as_bool).unwrap_or(false)
 }
 
 /// État des moniteurs d'un profil, propre à un superviseur. Ses avis ne peuvent que durcir.
@@ -93,6 +131,21 @@ pub fn verifier_mandat(mandat: &Mandat) -> Result<&'static dyn Profil, String> {
         format!("profil « {} » inconnu : choisir parmi {}", mandat.profil, noms().join(", "))
     })?;
     p.valider(mandat).map_err(|e| format!("mandat {} (profil {}) : {e}", mandat.id, p.nom()))?;
+    // Modules déclarés au mandat (EF-M1) : chaque moniteur externe est valide et nommé une fois.
+    if let Some(m) = &mandat.moniteurs {
+        for f in &m.filtres {
+            if let crate::filtres::Filtre::Pack { pack, sortant, local } = f {
+                crate::filtres::pack_integre(pack, *sortant, *local).map_err(|e| format!("mandat {} : {e}", mandat.id))?;
+            }
+        }
+        let mut vus = std::collections::HashSet::new();
+        for c in &m.externes {
+            c.verifier().map_err(|e| format!("mandat {} : {e}", mandat.id))?;
+            if !vus.insert(c.id.as_str()) {
+                return Err(format!("mandat {} : moniteurs.externes « {} » déclaré deux fois", mandat.id, c.id));
+            }
+        }
+    }
     Ok(p)
 }
 

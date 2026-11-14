@@ -269,6 +269,15 @@ pub fn jouer(
                 cout.extend(m);
                 externes.extend(avis);
             }
+            // Moniteurs externes (EF-M1) ; au banc, pas d'échantillonnage (tirage à 1).
+            for c in sup.preparer_externes(evt, &mut || 1.0) {
+                let (avis, m) = consulter(&c);
+                if let Consultation::Externe { id, .. } = &c {
+                    sup.noter_appel_externe(id, &session);
+                }
+                cout.extend(m);
+                externes.extend(avis);
+            }
             externes
         };
         let mut externes = avis_proposition(sup, &evt, cout);

@@ -52,7 +52,7 @@ fn lieux(m: &MandatCharge) -> Lieux {
 
 /// Remplace le protocole du mandat, pour comparer les protocoles sur un même mandat.
 fn imposer_protocole(m: &mut MandatCharge, mode: ModeProtocole) {
-    let moniteurs = m.mandat.moniteurs.get_or_insert(Moniteurs { juge: None, protocole: None, raisonnement: true, sonde: None });
+    let moniteurs = m.mandat.moniteurs.get_or_insert(Moniteurs { juge: None, protocole: None, raisonnement: true, sonde: None, externes: Vec::new(), filtres: Vec::new(), agregation: None });
     let ancien = moniteurs.protocole.take();
     moniteurs.protocole = Some(Protocole {
         mode,
@@ -62,13 +62,15 @@ fn imposer_protocole(m: &mut MandatCharge, mode: ModeProtocole) {
     });
 }
 
-fn jouer(m: MandatCharge, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Juge>, sonde: Option<&crate::sonde::Sonde>) -> Result<Rapport, String> {
+fn jouer(m: MandatCharge, dossier: &Path, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Juge>, sonde: Option<&crate::sonde::Sonde>) -> Result<Rapport, String> {
     aplomb_core::profils::verifier_mandat(&m.mandat)?;
     if jeu.profil != m.mandat.profil {
         return Err(format!("jeu du profil « {} », mandat du profil « {} »", jeu.profil, m.mandat.profil));
     }
     let l = lieux(&m);
     let mut sup = Superviseur::nouveau(m).map_err(|e| e.to_string())?;
+    // Filtres en fichier : lus tels quels (le banc précède la cosignature, qui les liera).
+    sup.charger_filtres(dossier, false)?;
     if juge.is_none() {
         // Évaluation déterministe : le juge du mandat n'est pas consulté ; les moniteurs
         // déterministes (raisonnement, protocole sans juge) restent.
@@ -85,13 +87,18 @@ fn jouer(m: MandatCharge, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Jug
         m.sonde = Some(s.cfg.clone());
     }
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let externes: Vec<aplomb_core::modules::ConfigMoniteurExterne> = sup.mandat.mandat.moniteurs.as_ref().map(|m| m.externes.clone()).unwrap_or_default();
     let mut consulter = |c: &Consultation| -> (Vec<Avis>, Option<MesureJuge>) {
         match (c, juge) {
+            (Consultation::Externe { id, requete }, _) => match externes.iter().find(|x| &x.id == id) {
+                Some(cfg) => (vec![rt.block_on(crate::externes::consulter(cfg, requete)).0], None),
+                None => (Vec::new(), None),
+            },
             (Consultation::BudgetEpuise(a), _) => (vec![a.clone()], None),
             (Consultation::Juge { consigne, message, .. }, Some(j)) => {
                 let (issue, latence_ms) = rt.block_on(j.consulter(consigne, message));
                 let indisponible = issue.is_err();
-                let avis = issue.unwrap_or_else(|e| aplomb_core::moniteurs::avis_indisponible(&e));
+                let avis = issue.unwrap_or_else(|e| aplomb_core::moniteurs::avis_indisponible(&j.cfg, &e));
                 (vec![avis], Some(MesureJuge { latence_ms, indisponible, sonde: false }))
             }
             (Consultation::Juge { .. }, None) => (Vec::new(), None),
@@ -225,7 +232,7 @@ pub fn lancer(o: Options) -> Result<(), String> {
         (false, None) if o.seuil_sonde.is_some() => return Err("--seuil-sonde : le mandat ne déclare pas de sonde (moniteurs.sonde)".into()),
         _ => None,
     };
-    let r = jouer(m, &jeu, o.budget_audit, juge.as_ref(), sonde.as_ref())?;
+    let r = jouer(m, o.mandat.parent().unwrap_or(Path::new(".")), &jeu, o.budget_audit, juge.as_ref(), sonde.as_ref())?;
     afficher(&r);
     let regression = match &o.reference {
         Some(c) => comparer(&lire_rapport(c)?, &r),
@@ -255,7 +262,7 @@ pub fn controler_avant_cosignature(mandat: &Path, accepter_regression: bool) -> 
     if !chemin.exists() {
         return Ok(None);
     }
-    let r = jouer(m, &lire_jeu(&chemin)?, 1.0, None, None)?;
+    let r = jouer(m, mandat.parent().unwrap_or(Path::new(".")), &lire_jeu(&chemin)?, 1.0, None, None)?;
     let attaques = r.scenarios.iter().filter(|s| s.nature == Nature::Attaque && s.issue != Issue::NonApplicable).count();
     println!(
         "évaluation (sans juge) : sûreté {} sur {attaques} attaques, utilité {} ({} revues comprises)",
@@ -285,7 +292,7 @@ pub fn rapport_sans_juge(mandat: &Path) -> Result<Option<Rapport>, String> {
     if !chemin.exists() {
         return Ok(None);
     }
-    jouer(m, &lire_jeu(&chemin)?, 0.1, None, None).map(Some)
+    jouer(m, mandat.parent().unwrap_or(Path::new(".")), &lire_jeu(&chemin)?, 0.1, None, None).map(Some)
 }
 
 pub fn enregistrer_reference(mandat: &Path, r: &Rapport) -> Result<(), String> {

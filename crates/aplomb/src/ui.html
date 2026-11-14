@@ -92,7 +92,15 @@
     <button role="tab" id="o-chaine" aria-selected="false">Vue chaînée</button>
     <button role="tab" id="o-conso" aria-selected="false">Consommation</button>
     <button role="tab" id="o-gouv" aria-selected="false">Gouvernance</button>
+    <button role="tab" id="o-modules" aria-selected="false">Modules</button>
   </div>
+  <section id="v-modules" class="conso" hidden>
+    <div class="barre">
+      <button id="recharger-modules">Actualiser</button>
+      <span class="doux" id="resume-modules"></span>
+    </div>
+    <div id="modules"></div>
+  </section>
   <section id="v-gouv" class="conso" hidden>
     <div class="barre">
       <select id="periode-gouv" aria-label="Période">
@@ -246,13 +254,44 @@ const court = (id) => id ? "…" + id.slice(-8) : "sans id";
 const heure = (t) => t ? new Date(t).toLocaleTimeString("fr-FR") : "—";
 
 function onglet(nom) {
-  for (const n of ["flux", "chaine", "conso", "gouv"]) {
+  for (const n of ["flux", "chaine", "conso", "gouv", "modules"]) {
     $("o-" + n).setAttribute("aria-selected", nom === n);
     $("v-" + n).hidden = nom !== n;
   }
   if (nom === "chaine" && !$("sessions").options.length) chargerSessions();
   if (nom === "conso") chargerConso();
   if (nom === "gouv") chargerGouv();
+  if (nom === "modules") chargerModules();
+}
+
+const FACONS = { declaratif: "déclaratif", integre: "intégré", externe: "externe" };
+
+async function chargerModules() {
+  const r = await fetch("/admin/modules");
+  const g = await r.json().catch(() => ({})), zone = $("modules");
+  zone.replaceChildren();
+  if (!r.ok) { zone.appendChild(el("p", "ecart", g.erreur || r.status)); return; }
+  const actifs = g.modules.filter(m => m.actif).length;
+  $("resume-modules").textContent = `mandat ${g.mandat.id} v${g.mandat.version} (profil ${g.mandat.profil}) — déploiement ${g.deploiement} — ${actifs} modules actifs`;
+  zone.appendChild(el("p", "doux", "Sur le chemin de décision (étapes 1 à 6), un module ne peut que durcir ; sa panne vaut son plancher. Hors décision, il ne reçoit que des données minimisées."));
+  g.etapes.forEach((e, i) => {
+    const de = g.modules.filter(m => m.etape === e.etape && (m.actif || !m.id.startsWith("profil-")));
+    if (!de.length) return;
+    zone.appendChild(el("h2", "", `${i + 1}. ${e.libelle}${e.decision ? "" : " — hors décision"}`));
+    const t = el("table"), tete = el("tr");
+    for (const c of ["État", "Module", "Façon", "Rôle", "Ce qu'il voit", "Régler ou activer"]) tete.appendChild(el("th", "", c));
+    t.appendChild(el("thead")).appendChild(tete);
+    const corps = t.appendChild(el("tbody"));
+    for (const m of de) {
+      const l = el("tr");
+      const voit = [m.capacites.contenus_en_clair ? "contenus en clair" : "", m.capacites.hors_machine ? "hors de la machine" : ""].filter(Boolean).join(", ") || "métadonnées";
+      for (const [v, cl] of [[m.actif ? "● actif" : "○ disponible", m.actif ? "allow" : "doux"], [m.id], [FACONS[m.facon] || m.facon], [m.description], [voit], [m.reglage, "doux"]])
+        l.appendChild(el("td", cl || "", v));
+      if (m.empreinte) l.title = "empreinte " + m.empreinte.slice(0, 16);
+      corps.appendChild(l);
+    }
+    zone.appendChild(t);
+  });
 }
 
 const nombre = (n) => (n ?? 0).toLocaleString("fr-FR");
@@ -449,6 +488,8 @@ $("o-flux").onclick = () => onglet("flux");
 $("o-chaine").onclick = () => onglet("chaine");
 $("o-conso").onclick = () => onglet("conso");
 $("o-gouv").onclick = () => onglet("gouv");
+$("o-modules").onclick = () => onglet("modules");
+$("recharger-modules").onclick = chargerModules;
 $("recharger-gouv").onclick = chargerGouv;
 $("periode-gouv").onchange = chargerGouv;
 $("systeme-gouv").onchange = chargerGouv;

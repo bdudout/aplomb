@@ -39,6 +39,11 @@ pub struct Superviseur {
     etat_profil: Option<Box<dyn profils::Suivi>>,
     /// Consultations de la sonde par session (EF-F).
     appels_sonde: HashMap<String, u32>,
+    /// Filtres de contenu du mandat (EF-D1) ; les fichiers sont chargés par
+    /// [`Self::charger_filtres`].
+    filtres: Vec<crate::filtres::PackCompile>,
+    /// Consultations des moniteurs externes, par (moniteur, session).
+    appels_externes: HashMap<(String, String), u32>,
 }
 
 /// Actions passées montrées au juge.
@@ -53,6 +58,8 @@ pub enum Consultation {
     /// Moniteur interne (EF-F) : texte produit par le modèle, à rejouer par le serveur
     /// d'activations dans le contexte de l'intention.
     Sonde { intention: String, texte: String },
+    /// Moniteur externe déclaré au mandat (EF-M1) : requête du contrat v1 à lui envoyer.
+    Externe { id: String, requete: serde_json::Value },
 }
 
 impl Superviseur {
@@ -60,6 +67,14 @@ impl Superviseur {
         let politique = Politique::nouvelle(&mandat.regles, &mandat.revue)?;
         let suivi = Suivi::nouveau(mandat.mandat.bornes.clone().unwrap_or_default());
         let etat_profil = profils::pour(&mandat.mandat.profil).suivi();
+        // Packs intégrés tout de suite ; les fichiers attendent le dossier du mandat.
+        let integres: Vec<crate::filtres::Filtre> = mandat
+            .mandat
+            .moniteurs
+            .as_ref()
+            .map(|m| m.filtres.iter().filter(|f| matches!(f, crate::filtres::Filtre::Pack { .. })).cloned().collect())
+            .unwrap_or_default();
+        let filtres = crate::filtres::charger(&integres, None, false).map_err(ErreurPolitique::Mandat)?;
         Ok(Self {
             mandat,
             politique,
@@ -72,6 +87,8 @@ impl Superviseur {
             appels_juge: HashMap::new(),
             etat_profil,
             appels_sonde: HashMap::new(),
+            appels_externes: HashMap::new(),
+            filtres,
         })
     }
 
@@ -135,17 +152,18 @@ impl Superviseur {
     /// Verdict des moniteurs déterministes (politique, secrets, provenance), sans effet sur
     /// l'état : ce que deviendrait l'action si l'agent la présentait maintenant.
     pub fn examiner(&self, evt: &EvenementOutil) -> (Action, Verdict) {
-        let mut action = self.normaliser(evt);
-        if moniteurs::code_a_risque(evt, &action) {
-            action.contexte.insert("code_a_risque".into(), serde_json::json!(true));
-        }
+        let action = self.normaliser(evt);
+        let signaux = self.profil().signaux(evt, &action);
         let politique = if evt.agent != self.mandat.mandat.agent { Verdict::Deny } else { self.politique.evaluer(&action).verdict };
-        let mut verdict = moniteurs::avis_secrets(evt, &action).map_or(politique, |a| politique.max(a.niveau.plancher()));
+        let mut verdict = moniteurs::avis_secrets(evt, signaux.sortante).map_or(politique, |a| politique.max(a.niveau.plancher()));
         if !self.influences(&evt.session).is_empty() && self.profil().sensible_a_l_influence(&action) {
             verdict = verdict.max(Verdict::Review);
         }
-        if self.avis_enchainement(evt, &action).is_some() {
+        if self.avis_enchainement(evt, &action, &signaux).is_some() {
             verdict = verdict.max(Verdict::Review);
+        }
+        for a in self.avis_filtres(evt, signaux.sortante) {
+            verdict = verdict.max(a.niveau.plancher());
         }
         for a in self.etat_profil.iter().flat_map(|s| s.avis(&self.mandat.mandat, evt, &action)) {
             verdict = verdict.max(a.niveau.plancher());
@@ -153,9 +171,9 @@ impl Superviseur {
         (action, verdict)
     }
 
-    fn avis_enchainement(&self, evt: &EvenementOutil, action: &Action) -> Option<Avis> {
+    fn avis_enchainement(&self, evt: &EvenementOutil, action: &Action, signaux: &profils::Signaux) -> Option<Avis> {
         let historique: Vec<Trace> = self.traces.get(&evt.session).map(|t| t.iter().cloned().collect()).unwrap_or_default();
-        moniteurs::avis_enchainement(&historique, evt, action)
+        moniteurs::avis_enchainement(&historique, evt, action, signaux)
     }
 
     /// Comme [`Self::preparer`], avec le raisonnement du modèle qui a demandé l'action,
@@ -165,7 +183,8 @@ impl Superviseur {
         // Un secret ou la provenance décident déjà : inutile de payer le juge.
         let (action, verdict) = self.examiner(evt);
         let appels = self.appels_juge.get(&evt.session).copied().unwrap_or(0);
-        match moniteurs::saisir(cfg, &action, verdict, appels, tirage) {
+        let sensible = self.profil().signaux(evt, &action).juge;
+        match moniteurs::saisir(cfg, sensible, verdict, appels, tirage) {
             Saisir::Non => None,
             Saisir::BudgetEpuise => Some(Consultation::BudgetEpuise(moniteurs::avis_budget(cfg))),
             Saisir::Oui(raison) => {
@@ -193,6 +212,60 @@ impl Superviseur {
         Some(Consultation::Sonde { intention: self.mandat.mandat.intention.clone(), texte: crate::sonde::texte(evt, raisonnement) })
     }
 
+    /// Charge tous les filtres du mandat, fichiers compris (relatifs à `dossier`, celui du
+    /// mandat). `exiger_empreinte` : en service, un fichier non lié par la cosignature est
+    /// refusé (EF-M3).
+    pub fn charger_filtres(&mut self, dossier: &std::path::Path, exiger_empreinte: bool) -> Result<(), String> {
+        let tous = self.mandat.mandat.moniteurs.as_ref().map(|m| m.filtres.clone()).unwrap_or_default();
+        self.filtres = crate::filtres::charger(&tous, Some(dossier), exiger_empreinte)?;
+        Ok(())
+    }
+
+    /// Avis des filtres de contenu sur l'événement.
+    fn avis_filtres(&self, evt: &EvenementOutil, sortante: bool) -> Vec<Avis> {
+        if self.filtres.is_empty() {
+            return Vec::new();
+        }
+        let mut texte = evt.entree.to_string();
+        if let Some(s) = &evt.contenu_execute {
+            texte.push('\n');
+            texte.push_str(s);
+        }
+        self.filtres.iter().filter_map(|f| f.avis(&texte, sortante)).collect()
+    }
+
+    /// Moniteurs externes à consulter pour cette action (EF-M1) : seulement si elle est
+    /// encore permise, selon leur déclenchement, dans leur budget. `tirage(i)` est uniforme
+    /// dans `[0, 1)` pour le i-ème moniteur. Sans effet sur l'état.
+    pub fn preparer_externes(&self, evt: &EvenementOutil, tirage: &mut dyn FnMut() -> f64) -> Vec<Consultation> {
+        let Some(m) = self.mandat.mandat.moniteurs.as_ref().filter(|m| !m.externes.is_empty()) else { return Vec::new() };
+        let (action, verdict) = self.examiner(evt);
+        if verdict != Verdict::Allow {
+            return Vec::new();
+        }
+        let sensible = self.profil().signaux(evt, &action).juge;
+        let historique: Vec<serde_json::Value> =
+            self.traces.get(&evt.session).map(|t| t.iter().filter_map(|x| serde_json::to_value(x).ok()).collect()).unwrap_or_default();
+        m.externes
+            .iter()
+            .filter(|c| {
+                let appels = self.appels_externes.get(&(c.id.clone(), evt.session.clone())).copied().unwrap_or(0);
+                let t = tirage();
+                appels < c.appels_max && (c.quand == crate::modules::Declenchement::Toujours || sensible || t < c.echantillon)
+            })
+            .map(|c| Consultation::Externe { id: c.id.clone(), requete: crate::modules::requete(c, &self.mandat.mandat.intention, evt, &action, &historique) })
+            .collect()
+    }
+
+    /// Déclaration d'un moniteur externe du mandat.
+    pub fn moniteur_externe(&self, id: &str) -> Option<&crate::modules::ConfigMoniteurExterne> {
+        self.mandat.mandat.moniteurs.as_ref()?.externes.iter().find(|c| c.id == id)
+    }
+
+    pub fn noter_appel_externe(&mut self, id: &str, session: &str) {
+        *self.appels_externes.entry((id.to_string(), session.to_string())).or_default() += 1;
+    }
+
     pub fn noter_appel_sonde(&mut self, session: &str) -> u32 {
         let n = self.appels_sonde.entry(session.to_string()).or_default();
         *n += 1;
@@ -214,6 +287,7 @@ impl Superviseur {
     /// Décide d'une action, avec les avis de moniteurs extérieurs (juge).
     pub fn decider_avec(&mut self, evt: &EvenementOutil, externes: Vec<Avis>) -> (Action, DecisionFinale) {
         let mut action = self.normaliser(evt);
+        let signaux = self.profil().signaux(evt, &action);
         let sources = self.influences(&evt.session).to_vec();
         action.contexte.insert("influence_externe".into(), serde_json::json!(!sources.is_empty()));
         let mut politique = if evt.agent != self.mandat.mandat.agent {
@@ -251,14 +325,18 @@ impl Superviseur {
             });
         }
         // Secrets : moniteur déterministe (EF-D1).
-        avis.extend(moniteurs::avis_secrets(evt, &action));
+        avis.extend(moniteurs::avis_secrets(evt, signaux.sortante));
+        avis.extend(self.avis_filtres(evt, signaux.sortante));
         // Enchaînements : les actions précédentes de la session (EF-E4).
-        avis.extend(self.avis_enchainement(evt, &action));
+        avis.extend(self.avis_enchainement(evt, &action, &signaux));
         // Moniteurs spécialisés du profil : ils ne peuvent que durcir (§8).
         avis.extend(self.profil().avis(evt, &action, &self.mandat.mandat));
         // Moniteurs à état de session du profil (cumuls…).
         avis.extend(self.etat_profil.iter().flat_map(|s| s.avis(&self.mandat.mandat, evt, &action)));
+        // Agrégation des avis probabilistes (EF-K2) : un plancher de plus, jamais de moins.
+        let agregation = crate::modules::avis_agregation(self.mandat.mandat.moniteurs.as_ref().and_then(|m| m.agregation.as_ref()), &externes);
         avis.extend(externes);
+        avis.extend(agregation);
         let finale = combiner(politique, avis, gele);
         if let Some(s) = self.etat_profil.as_mut() {
             s.noter(evt, &action, finale.verdict);
@@ -267,7 +345,7 @@ impl Superviseur {
             self.sessions_gelees.insert(evt.session.clone());
         }
         let traces = self.traces.entry(evt.session.clone()).or_default();
-        traces.push_back(Trace::depuis(evt, &action, finale.verdict));
+        traces.push_back(Trace::depuis(evt, &action, &signaux, finale.verdict));
         if traces.len() > TRACES_MAX {
             traces.pop_front();
         }
@@ -280,12 +358,13 @@ impl Superviseur {
     /// une borne est dépassée : la session est alors gelée.
     pub fn ecarter(&mut self, evt: &EvenementOutil) -> bool {
         let action = self.normaliser(evt);
+        let signaux = self.profil().signaux(evt, &action);
         let gel = self.suivi.observer(&action, Verdict::Deny).iter().any(|a| a.niveau == Niveau::Critique);
         if gel {
             self.sessions_gelees.insert(evt.session.clone());
         }
         let traces = self.traces.entry(evt.session.clone()).or_default();
-        traces.push_back(Trace::depuis(evt, &action, Verdict::Deny));
+        traces.push_back(Trace::depuis(evt, &action, &signaux, Verdict::Deny));
         if traces.len() > TRACES_MAX {
             traces.pop_front();
         }
@@ -310,10 +389,12 @@ impl Superviseur {
             Some(s) => {
                 self.appels_juge.remove(s);
                 self.appels_sonde.remove(s);
+                self.appels_externes.retain(|(_, x), _| x != s);
             }
             None => {
                 self.appels_juge.clear();
                 self.appels_sonde.clear();
+                self.appels_externes.clear();
             }
         }
         match session {

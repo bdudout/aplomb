@@ -667,6 +667,22 @@ impl super::Profil for ProfilMetier {
     fn valider(&self, mandat: &Mandat) -> Result<(), String> {
         verifier(mandat)
     }
+    /// Juge pour tout acte irréversible ou sensible à l'influence (paiement, envoi externe,
+    /// export, suppression, coordonnées bancaires) ; lecture sensible : dossier d'une catégorie
+    /// sensible ; envoi : ce qui sort de l'organisation.
+    fn signaux(&self, _evt: &EvenementOutil, action: &Action) -> super::Signaux {
+        let b = |k: &str| super::attribut_vrai(action, k);
+        let categorie = action.contexte.get("categorie").and_then(Value::as_str).unwrap_or_default();
+        let sort = b("envoi_externe") || matches!(action.verbe.as_str(), "payer" | "exporter");
+        super::Signaux {
+            juge: action.verbe == "autre" || sensible_a_l_influence(action),
+            sortante: sort,
+            envoi: sort,
+            lit_sensible: action.verbe == "lire_dossier" && CATEGORIES_SENSIBLES.contains(&categorie),
+            destination: action.contexte.get("domaine").and_then(Value::as_str).unwrap_or_default().to_string(),
+            ..super::Signaux::default()
+        }
+    }
     fn resume(&self, mandat: &Mandat) -> Vec<String> {
         let Ok(m) = perimetre(mandat) else { return Vec::new() };
         let p = &m.plafonds;
@@ -898,6 +914,20 @@ mod tests {
                 assert!(a.contexte.contains_key(k), "{outil} : {k}");
             }
         }
+    }
+
+    #[test]
+    fn signaux_du_socle() {
+        use crate::profils::Profil;
+        let m = mandat();
+        let sig = |outil: &str, entree: Value| {
+            let e = evt(outil, entree);
+            ProfilMetier.signaux(&e, &normaliser(&e, &m))
+        };
+        // Un paiement appelle le juge à chaque fois, pas par échantillon (audit 2026-11).
+        assert!(sig("mcp__paiement__rembourser", json!({"iban": IBAN_DE, "montant": 100})).juge);
+        assert!(sig("mcp__paiement__rembourser", json!({"iban": IBAN_DE, "montant": 100})).sortante);
+        assert!(!sig("mcp__crm__lire_dossier", json!({"dossier": "A"})).juge);
     }
 
     #[test]

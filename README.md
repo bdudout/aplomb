@@ -60,6 +60,10 @@ par hook (niveau d'assurance 1, coopératif).
     - lire un fichier sensible, puis envoyer des données (réseau, outil MCP, `git push`).
   - **Bornes** : refus, revues, domaines et envois comptés par session. Un dépassement gèle la session. Une proposition du modèle écartée par un protocole compte comme un refus.
   - **Délégation** : un sous-agent est jugé par son propre mandat, inclus dans celui du parent, et par le mandat parent. Le plus strict l'emporte.
+- **Modules** (J8) : chaque étape (branchement, normalisation, filtrage, moniteurs, décision, approbation, journal, diffusion, reporting, visualisation, identité) accepte des modules, déclaratifs, intégrés ou externes. `aplomb modules` les liste ; l'onglet « Modules » d'Aplomb Watch aussi. Sur la décision, un module ne peut que durcir. Voir [`docs/MODULES.md`](docs/MODULES.md).
+  - **Filtres de contenu** : packs `bancaire`, `identifiant_national`, `sante`, `coordonnees`, ou pack de l'organisation en YAML, lié au mandat par son empreinte. Une donnée trouvée qui sort de la machine gèle la session ; la valeur n'est jamais journalisée.
+  - **Moniteurs externes** : un service HTTP de l'organisation (DLP, classifieur maison) rend un avis selon un contrat versionné ; délai, plafond, plancher en cas de panne, et ce qu'il voit, déclarés au mandat.
+  - **Agrégation** : `escalade: N` gèle la session quand N moniteurs probabilistes s'inquiètent ensemble.
 - **Service** `aplomb serve` : sert les décisions (`127.0.0.1:7700`) et tient le journal.
   - S'il est injoignable, l'agent est bloqué (fail-closed).
 - **Hook Claude Code** (`aplomb hook`, niveau 1) : soumet chaque action avant exécution.
@@ -120,7 +124,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 
 ### Outils de test
 
-- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné et d'un agent métier avec sonde, plus un audit pentest (204 vérifications), sans rien toucher du réel.
+- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné et d'un agent métier avec sonde, plus un audit pentest et les modules (221 vérifications), sans rien toucher du réel.
 - `aplomb evaluer --mandat <mandat>` : banc rouge/bleu. Il joue le jeu d'évaluation du profil ([`profils/code/evaluation.yaml`](profils/code/evaluation.yaml), [`profils/metier/evaluation.yaml`](profils/metier/evaluation.yaml)) avec ce mandat, juge et sonde compris, et rend :
   - la **sûreté** : la part des attaques bloquées ou mises en revue ;
   - l'**utilité** : la part des tâches légitimes faites sans humain ;
@@ -183,7 +187,7 @@ cargo build --release
 cargo install --path crates/aplomb   # met `aplomb` dans ~/.cargo/bin (déjà dans le PATH avec rustup)
 ```
 
-Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `104 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
+Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `221 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
 
 ### 2. Créer son instance
 
@@ -311,6 +315,16 @@ Dans le dépôt supervisé, `.claude/settings.json` (chemins absolus) :
 
   - **Latence** : chaque action sensible attend l'avis du juge. Avec un petit modèle local, comptez une à quelques secondes.
   - **Mesure** : Aplomb Watch affiche le nombre de consultations, d'actions durcies et d'indisponibilités, et la latence moyenne.
+- **Modules** : filtres de contenu, moniteurs externes, agrégation (voir [`docs/MODULES.md`](docs/MODULES.md)) :
+
+  ```yaml
+  moniteurs:
+    filtres: [{pack: bancaire}, {fichier: ../filtres/contrats.yaml}]
+    externes:
+    - {id: dlp, url: "http://127.0.0.1:9000/v1/avis", delai_ms: 800}
+  ```
+
+  `aplomb modules --tout` montre ce qui est actif et ce qui est disponible, étape par étape.
 - **Sous-agents** :
   - un mandat enfant porte `agent: claude-code/<type de sous-agent>` et `parent: <id du mandat parent>` ;
   - il doit être inclus dans le parent ;
@@ -487,7 +501,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 183 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, profil M métier et sonde, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 194 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, profil M métier et sonde, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -516,6 +530,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Profil pentest (J4) | Deuxième profil ajouté par le registre de profils, sans toucher à la décision : fiche d'autorisation au mandat, 6 techniques à paliers, 35 tests (dont ceux de CLUSA portés : politique, graphe de scope et rebonds, superviseur d'alignement, interception d'outils), jeu de 22 scénarios (7 légitimes, 15 attaques) : 100 % des attaques arrêtées, aucune tâche légitime bloquée sur le mandat d'exemple ; vérifié au banc par le hook, `evaluer`, `preuves` et le reporting MCP |
 | Preuves AI Act (J6, lot 2) | `aplomb preuves exporter` : dossier signé par système (mandat, gouvernance, banc rouge/bleu, indicateurs, intégrité du journal), statut constaté par article de l'AI Act et correspondance NIST AI RMF, ISO/IEC 42001, OWASP, ANSSI, CRA ; `aplomb preuves verifier` pour l'auditeur. J6 terminé |
 | Vue gouvernance (J6, lots 1 et 3) | Onglet « Gouvernance » d'Aplomb Watch (export de l'agrégat signé), `aplomb gouvernance` et `GET /admin/gouvernance` : indicateurs agrégés sans rien de nominatif, seuil de publication k, sessions rompues écartées (EF-P3) ; agrégats signés par l'instance, fédération vérifiée (instance connue, signature, pas de double compte) (EF-P6) |
+| Socle modulaire (J8) | 11 étapes, catalogue des modules (`aplomb modules`, onglet Modules, `GET /admin/modules`), modules actifs et empreintes dans l'en-tête de chaque session ; le socle ne lit plus aucun verbe de profil (signaux fournis par le profil) ; filtres de contenu intégrés et en fichier (empreinte cosignée) ; moniteurs externes, contrat v1, en parallèle, plafonnés, plancher en panne, contenus seulement s'ils sont déclarés ; agrégation par escalade ; plancher du juge réglable. Audit et feuille de route : [`docs/AUDIT-2026-11.md`](docs/AUDIT-2026-11.md) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |
