@@ -102,3 +102,26 @@ aplomb hook ──HTTP──▶ aplomb serve ── API décision :7700 ─┐
   `aplomb evaluer --protocole` (étapes avec `raisonnement` et `alternatives`), propositions
   écartées comptées comme refus. J5 est terminé, sauf l'essai avec de vrais modèles locaux
   (juge et modèle de confiance) : seuls le faux modèle et le faux juge du banc ont servi.
+- **Commandes indirectes (profil code, 2026-11-14).** Une commande dangereuse cachée
+  derrière un nom anodin est jugée sur ce qu'elle exécute :
+  - **dépliée** avant l'analyse (`profils::code::deplier`) : guillemets vides et barres
+    obliques retirées (`r''m`), corps des alias, de `eval`, `sh -c`, `trap`,
+    `find -exec` et des alias git, alias utilisés dans la même commande, variables
+    affectées (`c=rm; $c -rf`) ;
+  - **lue** par le hook : fichier chargé par `source` ou `.`, cible d'un lien symbolique
+    lancé (`./efface` → `rm`), recette d'une cible `make` et de ses prérequis, script
+    `npm run` / `yarn` / `pnpm` avec ses `pre` et `post`. Ces commandes comptent comme
+    celles de la ligne (suppression, push, supervision) ;
+  - **mise en revue** quand ce qui s'exécute reste illisible (moniteur `indirection`) :
+    `eval`, programme lu dans une variable ou une substitution, contenu envoyé à un
+    interpréteur par un tube (`base64 -d | sh`, `curl … | bash`), script lu d'une
+    substitution (`source <(…)`), lien ou copie d'un programme du système sous un autre
+    nom, alias git, `PATH` modifié.
+
+  La définition d'un alias ou d'une fonction est jugée sur son corps, au moment où elle
+  est écrite. Ses usages ultérieurs ne passent que par un fichier relu (`source`), un lien
+  résolu, un alias git (en revue) ou un fichier de démarrage du shell (point protégé).
+  Claude Code ne garde ni alias ni fonction d'une commande à l'autre ; pour un agent qui
+  garderait un shell ouvert, c'est à vérifier. Limites : un
+  binaire compilé par l'agent puis lancé n'est pas lu, et une analyse de texte ne remplace
+  pas le conteneur isolé, qui reste la garantie (niveau 3).

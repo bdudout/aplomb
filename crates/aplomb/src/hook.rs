@@ -37,15 +37,124 @@ fn chemin_reel(cwd: &str, chemin: &str) -> Option<String> {
 /// Taille maximale lue par script exécuté.
 const MAX_SCRIPT: u64 = 64 * 1024;
 
-/// Contenu des scripts locaux que la commande exécute (ressource réelle, EF-B4).
+fn lire_borne(p: &Path) -> Option<String> {
+    let lisible = std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() <= MAX_SCRIPT);
+    lisible.then(|| std::fs::read_to_string(p).ok()).flatten()
+}
+
+/// Recettes d'une cible de Makefile, et de ses prérequis (première cible si aucune).
+fn recettes_make(makefile: &str, cibles: &[String]) -> String {
+    let regles: Vec<(String, Vec<String>, Vec<String>)> = {
+        let mut v: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+        for ligne in makefile.lines() {
+            if let Some(r) = ligne.strip_prefix('\t') {
+                if let Some(d) = v.last_mut() {
+                    d.2.push(r.to_string());
+                }
+            } else if let Some((tete, prerequis)) = ligne.split_once(':').filter(|(t, _)| !t.trim().is_empty() && !t.contains('=') && !ligne.contains(":=")) {
+                for nom in tete.split_whitespace() {
+                    v.push((nom.to_string(), prerequis.split_whitespace().map(String::from).collect(), Vec::new()));
+                }
+            }
+        }
+        v
+    };
+    let mut a_voir: Vec<String> = if cibles.is_empty() {
+        regles.iter().find(|r| !r.0.starts_with('.')).map(|r| vec![r.0.clone()]).unwrap_or_default()
+    } else {
+        cibles.to_vec()
+    };
+    let (mut vues, mut sortie) = (Vec::new(), String::new());
+    while let Some(c) = a_voir.pop() {
+        if vues.contains(&c) || vues.len() > 50 {
+            continue;
+        }
+        vues.push(c.clone());
+        for (_, prerequis, recette) in regles.iter().filter(|r| r.0 == c) {
+            a_voir.extend(prerequis.iter().cloned());
+            for l in recette {
+                sortie.push_str(l.trim_start_matches(['@', '-', '+']));
+                sortie.push('\n');
+            }
+        }
+    }
+    sortie
+}
+
+/// Script `package.json` lancé par `npm run x`, `npm test`, `yarn x`, `pnpm x`, `bun run x`
+/// (avec ses `pre` et `post`).
+fn script_paquet(cwd: &str, programme: &str, args: &[String]) -> Option<String> {
+    if !matches!(programme, "npm" | "yarn" | "pnpm" | "bun") {
+        return None;
+    }
+    let mots: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with('-')).collect();
+    let nom = match mots.as_slice() {
+        ["run" | "run-script", nom, ..] => *nom,
+        ["test" | "start" | "stop" | "restart", ..] => mots[0],
+        [nom, ..] if programme != "npm" && !matches!(*nom, "add" | "install" | "remove" | "exec" | "dlx" | "x") => *nom,
+        _ => return None,
+    };
+    let paquet: Value = serde_json::from_str(&lire_borne(&Path::new(cwd).join("package.json"))?).ok()?;
+    let scripts = paquet.get("scripts")?;
+    let texte: Vec<&str> = [format!("pre{nom}"), nom.to_string(), format!("post{nom}")]
+        .iter()
+        .filter_map(|n| scripts.get(n).and_then(Value::as_str))
+        .collect();
+    (!texte.is_empty()).then(|| texte.join("\n"))
+}
+
+/// Ce que la commande exécute réellement (ressource réelle, EF-B4), pour que la décision
+/// porte sur l'effet et pas sur le nom :
+/// - les scripts locaux lancés (`python3 x.py`, `sh x.sh`, `./x`, `source x`, `. x`) ;
+/// - la cible d'un lien symbolique lancé (`./efface` → `rm`), avec ses arguments ;
+/// - la recette d'une cible `make` et le script `npm run` / `yarn` / `pnpm`.
 fn contenu_execute(cwd: &str, commande: &str) -> Option<String> {
+    use aplomb_core::profils::code;
     let mut contenu = String::new();
-    for script in aplomb_core::profils::code::scripts_executes(commande) {
-        let p = Path::new(cwd).join(&script);
-        let lisible = std::fs::metadata(&p).is_ok_and(|m| m.is_file() && m.len() <= MAX_SCRIPT);
-        if let Some(texte) = lisible.then(|| std::fs::read_to_string(&p).ok()).flatten() {
-            contenu.push_str(&texte);
-            contenu.push('\n');
+    let mut ajouter = |t: &str| {
+        contenu.push_str(t);
+        contenu.push('\n');
+    };
+    for script in code::scripts_executes(commande) {
+        if let Some(texte) = lire_borne(&Path::new(cwd).join(&script)) {
+            ajouter(&texte);
+        }
+    }
+    for (programme, args) in code::commandes_lancees(commande) {
+        if programme.contains('/') {
+            let p = Path::new(cwd).join(&programme);
+            if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
+                if let Ok(cible) = std::fs::canonicalize(&p) {
+                    let nom = cible.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    ajouter(&format!("{nom} {}", args.join(" ")));
+                }
+            }
+        }
+        if programme == "make" || programme == "gmake" {
+            let mut fichier = None;
+            let mut cibles = Vec::new();
+            let mut i = 0;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-f" | "--file" | "-C" => {
+                        if args[i].as_str() != "-C" {
+                            fichier = args.get(i + 1).cloned();
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    a if a.starts_with('-') || a.contains('=') => {}
+                    a => cibles.push(a.to_string()),
+                }
+                i += 1;
+            }
+            let noms = fichier.map(|f| vec![f]).unwrap_or_else(|| vec!["GNUmakefile".into(), "makefile".into(), "Makefile".into()]);
+            if let Some(texte) = noms.iter().find_map(|n| lire_borne(&Path::new(cwd).join(n))) {
+                ajouter(&recettes_make(&texte, &cibles));
+            }
+        }
+        if let Some(texte) = script_paquet(cwd, &programme, &args) {
+            ajouter(&texte);
         }
     }
     (!contenu.is_empty()).then_some(contenu)
