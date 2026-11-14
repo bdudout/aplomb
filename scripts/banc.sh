@@ -1205,9 +1205,11 @@ verifier "base injoignable : serve refuse de démarrer" 'serve_pg_refuse "postgr
 PGBIN="$(dirname "$(command -v initdb 2>/dev/null || ls /opt/homebrew/opt/postgresql@*/bin/initdb /usr/lib/postgresql/*/bin/initdb 2>/dev/null | tail -1)" 2>/dev/null)"
 if [ -x "$PGBIN/initdb" ]; then
   echo "--- État partagé PostgreSQL (J14) : deux instances, une base jetable"
-  "$PGBIN/initdb" -D "$B/pg" -U aplomb --auth=trust > pg-init.log 2>&1
-  pg_demarrer() { "$PGBIN/pg_ctl" -D "$B/pg" -o "-p ${Q}70 -k $B -c listen_addresses=127.0.0.1" -l pg.log -w start > /dev/null; }
-  pg_demarrer
+  # Locale C : initdb refuse une langue système mal réglée (LANG, LC_*).
+  LC_ALL=C "$PGBIN/initdb" -D "$B/pg" -U aplomb --auth=trust --no-locale -E UTF8 > pg-init.log 2>&1 \
+    || { echo "  ÉCHEC initdb (voir pg-init.log)"; tail -3 pg-init.log; ko=$((ko + 1)); }
+  pg_demarrer() { LC_ALL=C "$PGBIN/pg_ctl" -D "$B/pg" -o "-p ${Q}70 -k $B -c listen_addresses=127.0.0.1" -l pg.log -w start > /dev/null; }
+  pg_demarrer || { echo "  ÉCHEC démarrage PostgreSQL"; tail -5 pg.log; ko=$((ko + 1)); }
   ETAT="postgres://aplomb@127.0.0.1:${Q}70/postgres"
   servir_partage qa 8 mandats/partage.yaml
   servir_partage qb 9 mandats/partage.yaml
@@ -1220,14 +1222,14 @@ if [ -x "$PGBIN/initdb" ]; then
     '"$APLOMB" admin --compte alice --url "http://127.0.0.1:${Q}81" degel --session "$SPQ" | grep -q "dégel demandé" && "$APLOMB" admin --compte bob --url "http://127.0.0.1:${Q}91" degel --session "$SPQ" | grep -q "dégel appliqué"'
   verifier "PostgreSQL : A reprend la session dégelée" '! hook_p 8 "$SPQ" Read "$LIRE" | grep -q deny'
   verifier "PostgreSQL : bornes communes, gel au 6e refus" 'bornes_communes 8 9 "$SPQ-bornes"'
-  "$PGBIN/pg_ctl" -D "$B/pg" stop -m fast > /dev/null
+  LC_ALL=C "$PGBIN/pg_ctl" -D "$B/pg" stop -m fast > /dev/null
   verifier "PostgreSQL arrêté : refus (fail-closed)" 'hook_p 8 "$SPQ-doute" Read "$LIRE" | grep -q deny'
   verifier "PostgreSQL arrêté : opération d'administration refusée" \
     '"$APLOMB" admin --compte alice --url "http://127.0.0.1:${Q}81" gel --session x 2>&1 | grep -q "opération refusée"'
   pg_demarrer
-  reprise_pg() { for _ in 1 2 3; do hook_p 8 "$SPQ-doute" Read "$LIRE" | grep -q deny || return 0; sleep 0.5; done; return 1; }
-  verifier "PostgreSQL redémarré : reconnexion, décisions reprises" 'reprise_pg'
-  verifier "PostgreSQL redémarré : les gels sont restés en base" 'hook_p 9 "$SPQ-bornes" Read "$LIRE" | grep -q "SESSION GEL"'
+  # Première décision de chaque instance après le redémarrage : reconnexion sans perte.
+  verifier "PostgreSQL redémarré : reconnexion, première décision rendue" '! hook_p 8 "$SPQ-doute" Read "$LIRE" | grep -q deny'
+  verifier "PostgreSQL redémarré : les gels sont restés en base (première décision de B)" 'hook_p 9 "$SPQ-bornes" Read "$LIRE" | grep -q "SESSION GEL"'
   kill -INT "$SERVE_qa" "$SERVE_qb"; wait "$SERVE_qa" "$SERVE_qb" 2>/dev/null || true
   ETAT=etat.sqlite
 else

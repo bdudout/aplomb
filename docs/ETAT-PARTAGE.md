@@ -42,7 +42,8 @@ compteur. Deux approbations simultanées ne dégèlent pas deux fois.
 | Situation | Effet |
 |---|---|
 | Stockage illisible, table absente, verrou tenu plus de 2 s, base injoignable | Pas de décision, donc l'action est refusée. Le hook répond `deny` (superviseur injoignable). |
-| Connexion PostgreSQL perdue pendant une transaction | La transaction échoue jusqu'au bout. Rien n'est appliqué à moitié. La requête suivante se reconnecte. |
+| Connexion PostgreSQL perdue entre deux décisions (bascule, redémarrage de la base) | La décision suivante se reconnecte avant d'ouvrir sa transaction, une fois. Elle n'est pas perdue. |
+| Connexion PostgreSQL perdue pendant une transaction | La transaction échoue jusqu'au bout. Rien n'est appliqué à moitié. La décision suivante se reconnecte. |
 | Gel ou compteur qui n'a pas pu être écrit | La décision n'est pas rendue (refus). La suivante réécrit d'abord les gels. |
 | Passerelle qui ne peut pas lire l'état | La session est tenue pour gelée. |
 | Opération d'administration pendant une panne | Refusée (`503`, « opération refusée »). |
@@ -105,4 +106,5 @@ la grappe), les agents sont donc **bloqués, pas libres**.
   du compte de service ; la base PostgreSQL par un compte dédié, TLS et le pare-feu.
 - Le scénario PostgreSQL du banc ne se joue que si PostgreSQL est installé sur la machine
   du banc (`initdb`). Sans lui, le banc ne vérifie que les adresses refusées et la base
-  injoignable.
+  injoignable. Il a été joué avec PostgreSQL 17 sur une base locale ; une grappe avec
+  vraie bascule n'a pas encore été montée.

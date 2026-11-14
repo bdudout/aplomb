@@ -225,8 +225,17 @@ fn traiter(cfg: &postgres::Config, tls: &Tls, e: &mut Etat, op: Op) -> Result<Re
         Op::Debut(verrou) => {
             e.transaction = false;
             e.rompue = false;
-            let c = connecter(cfg, tls, e)?;
-            c.batch_execute("BEGIN").map_err(err)?;
+            // Une connexion morte (bascule, redémarrage de la base) ne se voit qu'au premier
+            // échange. Avant BEGIN, rien n'est commencé : on se reconnecte une fois et on
+            // réessaie, pour ne pas refuser la première décision après chaque bascule.
+            if let Err(x) = connecter(cfg, tls, e)?.batch_execute("BEGIN") {
+                if !x.is_closed() && !e.client.as_ref().map_or(true, |c| c.is_closed()) {
+                    return Err(err(x));
+                }
+                e.client = None;
+                connecter(cfg, tls, e)?.batch_execute("BEGIN").map_err(err)?;
+            }
+            let c = e.client.as_mut().expect("connexion");
             if let Err(x) = c.execute("SELECT pg_advisory_xact_lock($1)", &[&verrou]) {
                 let _ = c.batch_execute("ROLLBACK");
                 return Err(err(x));

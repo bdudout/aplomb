@@ -156,9 +156,10 @@ canal d'approbation (Slack, Teams, ITSM) donne le lien vers la bonne instance.
     instances, refus si le stockage est illisible, gels conservés au redémarrage ;
   - les adresses PostgreSQL refusées (mot de passe dans l'adresse, TLS manquant) ;
   - la base injoignable au démarrage.
-- **Testé si PostgreSQL est installé sur la machine du banc** : le même scénario à deux
-  instances sur une base jetable. On y ajoute l'arrêt de la base (refus), puis son
-  redémarrage (reconnexion, gels conservés).
+- **Testé au banc avec PostgreSQL 17** (base jetable, joué dès qu'`initdb` est présent) :
+  le même scénario à deux instances, plus l'arrêt de la base (refus, administration
+  refusée) puis son redémarrage. La première décision de chaque instance après le
+  redémarrage est rendue, et les gels sont restés en base.
 - **Pas encore monté** :
   - l'architecture B complète, avec répartiteur, grappe Patroni et vraie bascule ;
   - les débits, qui n'ont pas été mesurés.
