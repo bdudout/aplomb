@@ -215,6 +215,9 @@ flowchart LR
 
 ## Quel déploiement choisir
 
+Deux architectures complètes, poste unique avec une IA locale et centre de données avec
+un LLM d'entreprise, sont décrites dans [ARCHITECTURES.md](ARCHITECTURES.md).
+
 | Situation | Recommandation |
 |---|---|
 | Découvrir Aplomb, faire une démonstration | Cas 1 |

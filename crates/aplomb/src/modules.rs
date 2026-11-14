@@ -68,9 +68,9 @@ pub fn modules_instance(i: &Instance) -> Vec<Module> {
         "etat-partage",
         Etape::Decision,
         Facon::Integre,
-        &i.etat_partage.as_ref().map(|f| format!("gels, dégels et nonces communs aux instances du mandat ({f})")).unwrap_or_else(|| "gels, dégels et nonces communs à plusieurs instances du mandat (SQLite)".into()),
+        &i.etat_partage.as_ref().map(|f| format!("gels, bornes, dégels et nonces communs aux instances du mandat ({f})")).unwrap_or_else(|| "gels, bornes, dégels et nonces communs à plusieurs instances du mandat (SQLite sur une machine, PostgreSQL sur plusieurs)".into()),
         i.etat_partage.is_some(),
-        "aplomb serve --etat-partage etat.sqlite (docs/ETAT-PARTAGE.md)",
+        "aplomb serve --etat-partage etat.sqlite ou postgres://… (docs/ETAT-PARTAGE.md, docs/ARCHITECTURES.md)",
     ));
     // Identité (étape 11) : options cosignées dans comptes.yaml.
     v.push(m("mfa-totp", Etape::Identite, Facon::Integre, "second facteur TOTP : connexion à la vue, dégel, réactivation", identite.mfa_exigee(), "identite: {mfa: {}} dans comptes.yaml, puis aplomb compte mfa --compte <id>"));

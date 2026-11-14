@@ -429,6 +429,17 @@ impl Superviseur {
         degeles
     }
 
+    /// Compteurs des bornes d'une session (pour un stockage partagé entre instances).
+    pub fn compteurs_session(&self, session: &str) -> Option<crate::bornes::Compteurs> {
+        self.suivi.compteurs(session).cloned()
+    }
+
+    /// Reprend les compteurs des bornes d'une session depuis un stockage partagé, avant de
+    /// décider : les bornes comptent alors pour toutes les instances ensemble.
+    pub fn charger_compteurs(&mut self, session: &str, compteurs: Option<crate::bornes::Compteurs>) {
+        self.suivi.remplacer(session, compteurs);
+    }
+
     pub fn etat_gel(&self) -> (bool, Vec<String>) {
         let mut s: Vec<String> = self.sessions_gelees.iter().cloned().collect();
         s.sort();

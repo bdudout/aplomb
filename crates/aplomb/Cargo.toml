@@ -28,6 +28,12 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 webpki-roots = "1"
 # État partagé entre instances (option `--etat-partage`) ; SQLite compilé avec le binaire.
 rusqlite = { version = "0.37", features = ["bundled"] }
+# PostgreSQL pour l'état partagé entre machines (`--etat-partage postgres://…`). Compilé
+# par défaut ; `--no-default-features` donne un binaire SQLite seul.
+postgres = { version = "0.19", default-features = false, optional = true }
+
+[features]
+default = ["postgres"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

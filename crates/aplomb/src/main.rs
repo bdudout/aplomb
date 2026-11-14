@@ -34,6 +34,8 @@ mod juge;
 mod deverrouillage;
 mod diffusion;
 mod etat_partage;
+#[cfg(feature = "postgres")]
+mod etat_pg;
 mod mcp;
 #[allow(unsafe_code)]
 mod presence;

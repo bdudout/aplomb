@@ -335,7 +335,7 @@ Dans le dépôt supervisé, `.claude/settings.json` (chemins absolus) :
   `aplomb modules --tout` montre ce qui est actif et ce qui est disponible, étape par étape.
 - **Un métier sans recompiler** (J12) : `profil_declaratif: {fichier: profil-rh/profil.yaml}` décrit outils, verbes et attributs en YAML, lié au mandat par empreinte ; les décisions restent en Cedar. Voir [`docs/PROFILS-DECLARATIFS.md`](docs/PROFILS-DECLARATIFS.md) et l'exemple RH.
 - **Codex CLI, Cursor** : voir [`docs/AGENTS.md`](docs/AGENTS.md).
-- **Plusieurs instances d'un même mandat** (J13) : `aplomb serve --etat-partage etat.sqlite` partage gels, dégels et nonces entre instances sur une machine ; un gel posé sur l'une s'applique à toutes dès la décision suivante, et un stockage illisible fait refuser. Voir [`docs/ETAT-PARTAGE.md`](docs/ETAT-PARTAGE.md).
+- **Plusieurs instances d'un même mandat** (J13, J14) : `aplomb serve --etat-partage etat.sqlite` (une machine) ou `--etat-partage postgres://…` (plusieurs machines) partage gels, compteurs des bornes, dégels et nonces entre instances. Un gel posé sur l'une s'applique à toutes dès la décision suivante, une session répartie est bornée comme si elle n'en voyait qu'une, et un stockage injoignable fait refuser. Voir [`docs/ETAT-PARTAGE.md`](docs/ETAT-PARTAGE.md).
 - **Publier une version** : `scripts/publier.sh --compte alice --compte bob` construit de façon reproductible, produit la nomenclature CycloneDX (`aplomb publication sbom`) et fait signer le binaire par les membres ; `aplomb publication verifier` pour l'utilisateur. Dossier CRA : [`docs/CRA.md`](docs/CRA.md), signalement : [`SECURITY.md`](SECURITY.md).
 - **Sous-agents** :
   - un mandat enfant porte `agent: claude-code/<type de sous-agent>` et `parent: <id du mandat parent>` ;
@@ -383,6 +383,10 @@ flowchart LR
 | 5. + modèle local | Rien ne quitte la machine | Données sensibles, hors ligne | mécanisme testé au banc, pas avec un vrai modèle |
 | 6. Zones cloisonnées (VM, hôtes séparés) | Pare-feu entre zones | Environnement régulé, équipe | cible : pas encore de TLS entre zones |
 | 7. Sans virtualisation | Compte système dédié et pare-feu de l'OS | Machines sans Docker ni VM | possible, non outillé |
+
+Deux architectures complètes en sont tirées, dans [`docs/ARCHITECTURES.md`](docs/ARCHITECTURES.md) :
+- **A, poste unique avec une IA locale** : conteneur isolé, modèle local, état partagé SQLite. Rien à installer d'autre que Docker.
+- **B, centre de données avec un LLM d'entreprise** : au moins deux instances derrière un répartiteur TLS, état partagé dans une grappe PostgreSQL synchrone, SSO et SIEM. Une instance ou un nœud de base peut tomber sans arrêter le service, et toute panne de la supervision bloque les agents au lieu de les libérer.
 
 ## Utilisation au quotidien
 
@@ -519,7 +523,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 228 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, profil M métier et sonde, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 230 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, profil M métier et sonde, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -552,7 +556,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Diffusion SIEM et conservation (J9) | Schéma pivot versionné `aplomb/1` ; ECS (`_bulk`, dédoublonné par `_id`), Splunk HEC, syslog RFC 5424 sur TLS ou TCP local, CEF, LEEF, OTLP/HTTP JSON, webhook HMAC-SHA256, fichier ; RFC 3339 avec fuseau IANA et UTC joint ; journal utilisé comme file persistante (curseurs par destination, reprise après coupure et redémarrage, testée au banc sans perte ni doublon) ; jetons par variables d'environnement ; alertes au journal (échec prolongé, dérive d'horloge) ; `aplomb diffusion exemple / verifier / apercu / tester`, `GET /admin/diffusion`. Archivage des sessions scellées avec registre de rétention scellé (EF-I5). Désactivé par défaut (EF-N6) |
 | Identité (J10) | Options cosignées avec les comptes (une signature existante reste valable sans elles) ; TOTP RFC 6238 sans dépendance nouvelle, secret enveloppé, sans rejeu, exigé pour ouvrir la vue, dégeler et réactiver, jamais pour geler ; SSO OpenID Connect (PKCE S256, état et nonce à usage unique, émetteur, audience, dates), rôles par groupes, `amr` exigé avec la MFA ; suspension des comptes inactifs au démarrage et toutes les heures, réactivation à quatre yeux hors du compte visé ; `aplomb compte revue`, campagnes cosignées dans le dossier de preuves. Testé au banc avec un faux fournisseur d'identité ; pas encore WebAuthn, SAML, SCIM |
 | Industrialisation (J12) | Hooks Codex CLI et Cursor (`aplomb hook --agent`), revue rendue en refus motivé ; proxy LLM compatible OpenAI (`/v1/chat/completions`, flux SSE, appels d'outils, jetons de cache) ; profils déclaratifs en YAML liés par empreinte (exemple RH) ; passerelle MCP 2026-07-28 sans état (découverte, en-têtes contrôlés, origine, processus partagé et identifiants renumérotés) à côté des sessions ; `aplomb publication sbom / signer / verifier`, construction reproductible, dossier CRA indicatif et SECURITY.md. voir [`docs/AUDIT-2026-11.md`](docs/AUDIT-2026-11.md) |
-| État partagé (J13) | Option `--etat-partage` (SQLite) : gels, dégels propagés, demandes à quatre yeux entre instances, nonces communs ; transaction exclusive pour l'administration ; refus si le stockage est illisible ; un fichier par mandat. **Pas encore** : PostgreSQL pour plusieurs machines, bornes comptées en commun, plusieurs systèmes par instance |
+| État partagé (J13, J14) | Option `--etat-partage` : SQLite (une machine) ou PostgreSQL (plusieurs machines, TLS obligatoire hors de la machine, reconnexion après bascule). Gels, compteurs des bornes, dégels propagés, demandes à quatre yeux entre instances, nonces communs ; transaction exclusive par décision et par opération d'administration ; refus si le stockage est injoignable ; un stockage par mandat. Architectures de référence dans `docs/ARCHITECTURES.md`. **Pas encore** : grappe PostgreSQL réelle montée et débit mesuré (le scénario PostgreSQL du banc ne se joue que si PostgreSQL est installé), certificats clients PostgreSQL, plusieurs systèmes par instance |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |

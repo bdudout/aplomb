@@ -140,6 +140,8 @@ Un profil qui a besoin de moniteurs propres s'ajoute par le registre de profils 
 machine, ce qui lit une donnée sensible. Le socle ne lit aucun verbe propre à un profil.
 
 Pour faire tourner plusieurs instances d'un même mandat, l'option **état partagé**
-(`aplomb serve --etat-partage etat.sqlite`, étape décision) met en commun les gels, les
-dégels et les nonces. Un gel posé sur une instance s'applique à toutes ; un dégel reste
-à quatre yeux, même entre deux instances ; un stockage illisible fait refuser. Voir [ETAT-PARTAGE.md](ETAT-PARTAGE.md).
+(`aplomb serve --etat-partage etat.sqlite` ou `postgres://…`, étape décision) met en
+commun les gels, les compteurs des bornes, les dégels et les nonces. Un gel posé sur une
+instance s'applique à toutes ; les bornes comptent pour toutes ensemble ; un dégel reste
+à quatre yeux, même entre deux instances ; un stockage injoignable fait refuser.
+Architectures de référence : [ARCHITECTURES.md](ARCHITECTURES.md). Voir [ETAT-PARTAGE.md](ETAT-PARTAGE.md).

@@ -34,13 +34,15 @@ impl Default for Bornes {
     }
 }
 
-#[derive(Debug, Default)]
-struct Compteurs {
-    refus: u32,
-    revues: u32,
-    domaines: HashSet<String>,
-    envois: u32,
-    actions: u32,
+/// Compteurs d'une session. Sérialisables : l'état partagé entre instances les porte
+/// (bornes comptées en commun).
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Compteurs {
+    pub refus: u32,
+    pub revues: u32,
+    pub domaines: HashSet<String>,
+    pub envois: u32,
+    pub actions: u32,
 }
 
 /// Compteurs de toutes les sessions.
@@ -97,6 +99,24 @@ impl Suivi {
         avis
     }
 
+    /// Compteurs actuels d'une session (aucun : rien compté).
+    pub fn compteurs(&self, session: &str) -> Option<&Compteurs> {
+        self.sessions.get(session)
+    }
+
+    /// Remplace les compteurs d'une session par ceux d'un stockage partagé : c'est lui
+    /// qui fait foi. `None` : la session n'y a rien compté.
+    pub fn remplacer(&mut self, session: &str, compteurs: Option<Compteurs>) {
+        match compteurs {
+            Some(c) => {
+                self.sessions.insert(session.to_string(), c);
+            }
+            None => {
+                self.sessions.remove(session);
+            }
+        }
+    }
+
     /// L'opérateur qui dégèle une session repart de zéro pour elle (il a pris acte).
     pub fn reinitialiser(&mut self, session: Option<&str>) {
         match session {
@@ -149,6 +169,21 @@ mod tests {
         assert!(s.observer(&e, Verdict::Review).is_empty());
         let noms: Vec<String> = s.observer(&e, Verdict::Review).into_iter().map(|a| a.moniteur).collect();
         assert_eq!(noms, vec!["borne-revues", "borne-envois"]);
+    }
+
+    #[test]
+    fn compteurs_repris_d_un_stockage() {
+        let mut s = Suivi::nouveau(Bornes { refus: 1, ..Bornes::default() });
+        let a = action("s", json!({}));
+        assert!(s.observer(&a, Verdict::Deny).is_empty());
+        let c = s.compteurs("s").cloned();
+        assert_eq!(c.as_ref().map(|c| c.refus), Some(1));
+        // Une autre instance reprend ces compteurs : le refus suivant dépasse la borne.
+        let mut autre = Suivi::nouveau(Bornes { refus: 1, ..Bornes::default() });
+        autre.remplacer("s", c);
+        assert_eq!(autre.observer(&a, Verdict::Deny)[0].moniteur, "borne-refus");
+        autre.remplacer("s", None);
+        assert!(autre.compteurs("s").is_none());
     }
 
     #[test]
