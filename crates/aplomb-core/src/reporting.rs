@@ -91,6 +91,9 @@ pub const OUTILS: &[&str] = &[
     "integrite_journal",
     "etat_supervision",
     "correspondance_referentiels",
+    "rapport_reglementaire",
+    "modules",
+    "revues_en_attente",
 ];
 
 fn schema_heures() -> Value {
@@ -127,6 +130,18 @@ pub fn definitions() -> Value {
               vide.clone()),
         outil("correspondance_referentiels", "Correspondance des référentiels",
               "Correspondance des familles d'exigences d'Aplomb avec l'AI Act, le NIST AI RMF, l'ISO/IEC 42001, l'OWASP, l'ANSSI et le CRA.",
+              vide.clone()),
+        outil("rapport_reglementaire", "Rapport réglementaire",
+              "Statut exigence par exigence pour DORA, ISO/IEC 42001 (annexe A) ou NIS 2 (art. 20, 21 § 2, 23) : apport d'Aplomb, constat mesuré, reste à l'organisation. Correspondances indicatives.",
+              json!({"type": "object", "properties": {
+                  "referentiel": {"type": "string", "enum": ["dora", "iso42001", "nis2"]},
+                  "heures": {"type": "integer", "minimum": 1, "description": "Ne garder que les dernières heures (défaut : tout le journal)."}
+              }, "required": ["referentiel"], "additionalProperties": false})),
+        outil("modules", "Modules actifs",
+              "Modules de l'instance, étape par étape (filtrage, moniteurs, décision, approbation, journal, diffusion, reporting, visualisation, identité) : actif ou disponible, ce que chacun voit.",
+              vide.clone()),
+        outil("revues_en_attente", "Revues humaines en attente",
+              "Nombre de revues humaines en attente, par priorité, et âge de la plus ancienne. Rien de nominatif ni de contenu.",
               vide),
     ])
 }

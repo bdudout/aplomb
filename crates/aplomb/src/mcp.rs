@@ -267,7 +267,7 @@ async fn traiter(p: &Partage, serveur: &ServeurMcp, processus: &Processus, m: Va
         Verdict::Allow => {}
         Verdict::Review => {
             let resume = format!("{outil} {}", appel.arguments);
-            if let Err(e) = demander_revue(&p.etat, &evt, &resume, &d.motif).await {
+            if let Err(e) = demander_revue(&p.etat, &evt, &resume, &d).await {
                 return refus(&id, &format!("{outil} : {e} — {}", d.motif));
             }
         }

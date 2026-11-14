@@ -122,6 +122,20 @@ pub struct Constats {
     pub gels: u64,
     /// Modes de branchement vus (« hook-claude-code/1 »…).
     pub branchements: Vec<String>,
+    /// Options de l'instance (J9-J11) : second facteur, SSO, revue des comptes inactifs,
+    /// formats de diffusion au SIEM, canaux d'approbation, délai de revue (s).
+    #[serde(default)]
+    pub mfa: bool,
+    #[serde(default)]
+    pub sso: bool,
+    #[serde(default)]
+    pub revue_comptes: bool,
+    #[serde(default)]
+    pub siem: Vec<String>,
+    #[serde(default)]
+    pub canaux_approbation: usize,
+    #[serde(default)]
+    pub delai_revue: u64,
 }
 
 impl Constats {

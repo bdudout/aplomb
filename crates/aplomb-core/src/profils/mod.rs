@@ -131,6 +131,9 @@ pub fn verifier_mandat(mandat: &Mandat) -> Result<&'static dyn Profil, String> {
         format!("profil « {} » inconnu : choisir parmi {}", mandat.profil, noms().join(", "))
     })?;
     p.valider(mandat).map_err(|e| format!("mandat {} (profil {}) : {e}", mandat.id, p.nom()))?;
+    if let Some(a) = &mandat.approbation {
+        a.verifier().map_err(|e| format!("mandat {} : {e}", mandat.id))?;
+    }
     // Modules déclarés au mandat (EF-M1) : chaque moniteur externe est valide et nommé une fois.
     if let Some(m) = &mandat.moniteurs {
         for f in &m.filtres {

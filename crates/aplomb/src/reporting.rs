@@ -222,6 +222,15 @@ fn outil(p: &Partage, nom: &str, args: &Value) -> reporting::ResultatOutil {
             Ok(json!({"avertissement": AVERTISSEMENT, "familles": familles(),
                 "profil": profil, "referentiels_profil": aplomb_core::profils::pour(&profil).referentiels()}))
         }
+        "rapport_reglementaire" => {
+            let r = aplomb_core::rapports::Referentiel::depuis(args.get("referentiel").and_then(Value::as_str).unwrap_or(""))?;
+            let src = crate::preuves::Sources { mandat: &p.r.mandat, journal: &p.r.journal, heures: reporting::heures(args)?, confiance: &p.r.confiance, comptes: &p.r.comptes };
+            let col = crate::preuves::collecter(&src, &instance, &cle)?;
+            let x = aplomb_core::rapports::rapport(r, &anonymiser(col.constats), &col.m.mandat.id, col.m.mandat.version, &instance, crate::identite::maintenant());
+            serde_json::to_value(x).map_err(|e| e.to_string())
+        }
+        "modules" => Ok(p.etat.modules_json()),
+        "revues_en_attente" => Ok(p.etat.revues_en_attente()),
         _ => Err(format!("outil inconnu : {nom}")),
     }
 }

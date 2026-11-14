@@ -45,6 +45,7 @@ fn mandat() -> Mandat {
         extension: None,
         bornes: None,
         moniteurs: None,
+        approbation: None,
         signature: None,
         signatures: Vec::new(),
     }

@@ -105,6 +105,9 @@ pub struct Mandat {
     /// Moniteurs (EF-E) : juge et ses réglages. Absents : règles et secrets seulement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moniteurs: Option<crate::moniteurs::Moniteurs>,
+    /// Approbation (étape 6) : délai de revue. Absente : 120 s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approbation: Option<crate::approbation::ConfigApprobation>,
     /// Signature ed25519 (hex) du mandat sans ce champ (ancien format, un seul signataire).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
@@ -300,6 +303,7 @@ mod tests {
             extension: None,
             bornes: None,
             moniteurs: None,
+            approbation: None,
             signature: None,
             signatures: Vec::new(),
         }

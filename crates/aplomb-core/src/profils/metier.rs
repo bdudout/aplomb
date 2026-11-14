@@ -758,6 +758,7 @@ mod tests {
             politique: FichiersPolitique { regles: String::new(), revue: String::new(), regles_sha256: String::new(), revue_sha256: String::new() },
             bornes: None,
             moniteurs: None,
+            approbation: None,
             signature: None,
             signatures: Vec::new(),
         }

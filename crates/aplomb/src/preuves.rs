@@ -107,12 +107,25 @@ pub fn collecter(src: &Sources, instance: &str, cle_scelles: &ed25519_dalek::Ver
             let cosigne = confiance.verifier(&f.octets_signes(), &f.signatures);
             c.comptes_cosignes = cosigne.is_ok();
             c.operateurs = f.comptes.iter().filter(|x| x.roles.contains(&Role::Operateur)).count();
+            c.mfa = f.identite.mfa_exigee();
+            c.sso = f.identite.sso.is_some();
+            c.revue_comptes = f.identite.revue.is_some();
             c.approbateurs = f.comptes.iter().filter(|x| x.roles.contains(&Role::Approbateur)).count();
             json!({"cosigne": c.comptes_cosignes, "signataires": cosigne.unwrap_or_default(),
                    "comptes": f.comptes.iter().map(|x| json!({"id": x.id, "roles": x.roles})).collect::<Vec<_>>()})
         }
         Err(e) => json!({"absent": e}),
     };
+
+    // Options de l'instance, à côté de comptes.yaml (diffusion.yaml, approbation.yaml).
+    c.delai_revue = aplomb_core::approbation::delai_s(mandat.approbation.as_ref());
+    let instance_dir = src.comptes.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    if let Ok(Some(d)) = crate::diffusion::charger(&instance_dir.join("diffusion.yaml")) {
+        c.siem = d.destinations.iter().map(|x| x.format.nom().to_string()).collect();
+    }
+    if let Ok(t) = std::fs::read_to_string(instance_dir.join("approbation.yaml")) {
+        c.canaux_approbation = aplomb_core::approbation::ConfigCanaux::depuis_yaml(&t).map(|k| k.canaux.len()).unwrap_or(0);
+    }
 
     // Banc rouge/bleu rejoué sans juge (déterministe), et référence de non-régression.
     let evaluation = crate::evaluer::rapport_sans_juge(src.mandat)?;
@@ -211,6 +224,11 @@ pub fn exporter(o: OptionsExport) -> Result<(), String> {
         "periode": p, "constats": c, "ai_act": arts, "familles": familles(),
         "referentiels_profil": aplomb_core::profils::pour(&mandat.profil).referentiels(), "referentiels_detail": referentiels_profil});
     ecrire(&s.join("correspondance.json"), &json_joli(&correspondance)?)?;
+    for r in aplomb_core::rapports::Referentiel::TOUS {
+        let x = aplomb_core::rapports::rapport(r, &c, &mandat.id, mandat.version, &instance, maintenant());
+        ecrire(&s.join("rapports").join(format!("{}.json", r.court())), &json_joli(&x)?)?;
+        ecrire(&s.join("rapports").join(format!("{}.md", r.court())), &aplomb_core::rapports::markdown(&x))?;
+    }
     ecrire(&s.join("LISEZMOI.md"), &lisezmoi(&m, &instance, &c, &arts, &p))?;
 
     // Manifeste signé.
@@ -303,6 +321,7 @@ fn lisezmoi(m: &aplomb_core::mandat::MandatCharge, instance: &str, c: &Constats,
           - `indicateurs.json` : indicateurs agrégés du système, signés, sans rien de nominatif.\n\
           - `journal.json` : intégrité du journal, scellés, ancre, conservation ; le témoin du dernier scellé se confronte \
           à l'ancre conservée hors de la machine (la chaîne de scellés n'est pas jointe : elle nomme les sessions).\n\
+          - `rapports/` : DORA, ISO/IEC 42001 (annexe A) et NIS 2, exigence par exigence (JSON et Markdown).\n\
           - `correspondance.json` : constats, statut par article, correspondance avec le NIST AI RMF, l'ISO/IEC 42001, l'OWASP, l'ANSSI et le CRA.\n\
           - `manifeste.json` : empreinte SHA-256 de chaque pièce, signé par l'instance.\n\n\
           ## Vérifier ce dossier\n\n\

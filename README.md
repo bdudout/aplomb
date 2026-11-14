@@ -124,6 +124,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 - **Dossier de preuves AI Act** (`aplomb preuves`, J6) : pour un système (un mandat cosigné), un dossier signé qui rassemble les preuves et dit, article par article, ce qui est couvert. Voir [Dossier de preuves AI Act](#dossier-de-preuves-ai-act).
 - **Vue gouvernance** (`aplomb gouvernance`, J6) : indicateurs agrégés du journal, sans rien de nominatif, signés par l'instance et additionnables entre instances (fédération). Voir [Vue gouvernance et fédération](#vue-gouvernance-et-fédération).
 
+- **Approbation et rapports** (J11, options désactivées par défaut) : revues priorisées (normale, haute, critique) et enrichies (intention, avis, actions précédentes, conséquences), délai fixé dans le mandat ; réviseurs prévenus par Slack, Teams, ticket ITSM, courriel ou webhook signé (la décision reste dans Aplomb Watch) ; `aplomb rapport --referentiel dora|iso42001|nis2`, envoi signé à un outil GRC (`--pousser`), rapports joints au dossier de preuves ; panneaux déclarés dans `panneaux.yaml` (onglet « Tableaux »). Voir [`docs/APPROBATION.md`](docs/APPROBATION.md).
 - **Identité** (J10, options cosignées dans `comptes.yaml`, désactivées par défaut) : second facteur TOTP pour ouvrir la vue et pour assouplir (dégel, réactivation) ; SSO OpenID Connect, groupes de l'annuaire → rôles, sans remplacer cosignatures ni quatre yeux ; suspension des comptes inactifs, réactivation à quatre yeux, campagnes de revue cosignées et jointes au dossier de preuves. Voir [`docs/IDENTITE.md`](docs/IDENTITE.md).
 
 ### Outils de test
@@ -403,6 +404,7 @@ flowchart LR
 | Fédérer plusieurs instances | Chaque instance : `aplomb gouvernance indicateurs --signer --sortie agregat.json` ; puis `aplomb gouvernance federer *.json --instances federation.yaml` |
 | Produire le dossier de preuves AI Act d'un système | `aplomb preuves exporter --mandat mandats/<mandat>.yaml --sortie preuves-<date>` (phrase ou déverrouillage : le dossier est signé) |
 | Vérifier un dossier de preuves (auditeur) | `aplomb preuves verifier preuves-<date> --cle-pub cles/reponses.pub` |
+| Produire un rapport DORA, ISO/IEC 42001 ou NIS 2 | `aplomb rapport --referentiel nis2` ; `--pousser <url> --jeton-env VAR` pour l'envoyer signé à l'outil GRC |
 | Donner l'accès en lecture à un outil de gouvernance (ACRA…) | `aplomb reporting nouveau --id acra` : affiche le jeton et la configuration à coller ; `aplomb reporting retirer --id acra` pour couper |
 | Changer la phrase de passe | `aplomb phrase changer` |
 | Rejouer les scénarios du hook | `APLOMB_DEPOT=<racine du mandat> APLOMB_INSTANCE=~/aplomb-instance scripts/scenarios.sh` |

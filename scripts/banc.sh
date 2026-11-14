@@ -450,7 +450,7 @@ code_r() { curl -s -o /dev/null -w %{http_code} -X POST "$RAP" -H "Authorization
 NOTIF='{"jsonrpc":"2.0","method":"notifications/initialized"}'
 verifier "notification : 202" '[ "$(code_r "$JETON_R" "$NOTIF")" = 202 ]'
 mcp_r "$JETON_R" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' > rap-outils.json
-verifier "six outils, tous en lecture seule" '[ "$(python3 -c "import json; t=json.load(open(\"rap-outils.json\"))[\"result\"][\"tools\"]; print(len(t), all(o[\"annotations\"][\"readOnlyHint\"] for o in t))")" = "6 True" ]'
+verifier "neuf outils, tous en lecture seule" '[ "$(python3 -c "import json; t=json.load(open(\"rap-outils.json\"))[\"result\"][\"tools\"]; print(len(t), all(o[\"annotations\"][\"readOnlyHint\"] for o in t))")" = "9 True" ]'
 appel_r() {  # outil, arguments JSON (facultatif)
   mcp_r "$JETON_R" "$(python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":sys.argv[1],"arguments":json.loads(sys.argv[2])}}))' "$1" "${2:-"{}"}")" > "rap-$1.json"
 }
@@ -881,6 +881,113 @@ verifier "aplomb compte revue : comptes, dernière activité, statut" \
 verifier "campagne de revue cosignée, jointe au dossier de preuves" \
   '"$APLOMB" cosigner revues/revue-banc.yaml --compte alice --compte bob > /dev/null 2>&1 && "$APLOMB" preuves exporter --mandat mandats/banc.yaml --journal journal-id --comptes comptes-id.yaml --sortie preuves-id > preuves-id.log 2>&1 && ls preuves-id/gouvernance/revues/revue-banc.yaml > /dev/null'
 verifier "anciennes signatures des comptes toujours valables (comptes.yaml sans identité)" '! grep -q "identite" comptes.yaml && "$APLOMB" modules --mandat mandats/banc.yaml > /dev/null'
+echo "--- Approbation et reporting (J11) : revue priorisée, canaux, rapports, panneaux"
+# Ports ${Q}2x. Un mandat avec un délai de revue de 15 s ; les canaux et l'outil GRC sont de
+# faux récepteurs locaux, le courriel un faux sendmail.
+mandat_banc approb 'approbation: {delai_s: 15}'
+sed -i.bak '/^  juge:/d' "$B/mandats/approb.yaml"
+verifier "délai de revue hors bornes refusé à la cosignature" \
+  'sed "s/delai_s: 15/delai_s: 5/" mandats/approb.yaml > mandats/approb-court.yaml && ! "$APLOMB" cosigner mandats/approb-court.yaml --compte alice --compte bob > cosigner-court.log 2>&1 && grep -q "delai_s" cosigner-court.log'
+verifier "mandat avec délai de revue cosigné" '"$APLOMB" cosigner mandats/approb.yaml --compte alice --compte bob > cosigner-approb.log 2>&1'
+mkdir -p "$B/appro"
+cat > "$B/appro/sendmail.sh" <<EOF
+#!/bin/sh
+cat >> "$B/appro/courriels.txt"
+EOF
+chmod +x "$B/appro/sendmail.sh"
+cat > approbation.yaml <<EOF
+lien: "http://127.0.0.1:${Q}21/"
+canaux:
+- {id: slack, type: slack, url_env: APLOMB_BANC_SLACK}
+- {id: teams, type: teams, url_env: APLOMB_BANC_TEAMS, priorite_min: haute}
+- {id: itsm, type: itsm, url: "http://127.0.0.1:${Q}28/api/now/table/incident", jeton_env: APLOMB_BANC_ITSM}
+- {id: soc, type: webhook, url: "http://127.0.0.1:${Q}28/revue", jeton_env: APLOMB_BANC_HOOK}
+- {id: astreinte, type: courriel, a: [astreinte@banc.test], de: aplomb@banc.test, sendmail: $B/appro/sendmail.sh}
+EOF
+cat > panneaux.yaml <<EOF
+panneaux:
+- {titre: Revues demandées, type: compteur, mesure: decisions.review, heures: 24}
+- {titre: Outils, type: repartition, mesure: outils, heures: 24}
+- {titre: Décisions par heure, type: serie, mesure: decisions.allow, heures: 6, points: 6}
+EOF
+servir_approb() {
+  "$APLOMB" serve --mandat mandats/approb.yaml --ecoute-decision "127.0.0.1:${Q}20" --ecoute-admin "127.0.0.1:${Q}21" \
+    --ecoute-passerelle "127.0.0.1:${Q}22" --ecoute-llm "127.0.0.1:${Q}23" --ecoute-mcp "127.0.0.1:${Q}25" --ecoute-reporting "127.0.0.1:${Q}27" \
+    --journal journal-approb --coffre coffre-approb > "$1" 2>&1
+}
+verifier "canal sans son secret : serve refuse de démarrer et nomme la variable" '! servir_approb serve-approb0.log && grep -q "APLOMB_BANC_SLACK" serve-approb0.log'
+export APLOMB_BANC_SLACK="http://127.0.0.1:${Q}28/slack" APLOMB_BANC_TEAMS="http://127.0.0.1:${Q}28/teams" \
+  APLOMB_BANC_ITSM=jeton-itsm-du-banc APLOMB_BANC_HOOK=secret-revue-du-banc APLOMB_BANC_GRC=jeton-grc-du-banc
+python3 "$RACINE/scripts/faux-siem.py" http "${Q}28" "$B/appro/recu.jsonl" & PIDS="$PIDS $!"
+"$APLOMB" serve --mandat mandats/approb.yaml --ecoute-decision "127.0.0.1:${Q}20" --ecoute-admin "127.0.0.1:${Q}21" \
+  --ecoute-passerelle "127.0.0.1:${Q}22" --ecoute-llm "127.0.0.1:${Q}23" --ecoute-mcp "127.0.0.1:${Q}25" --ecoute-reporting "127.0.0.1:${Q}27" \
+  --journal journal-approb --coffre coffre-approb > serve-approb.log 2>&1 &
+SERVE_AP=$!; PIDS="$PIDS $SERVE_AP"
+for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${Q}21/" && curl -s -o /dev/null "http://127.0.0.1:${Q}28/" && break; sleep 0.1; done
+verifier "serve annonce le délai et les canaux" 'grep -q "revue 15 s ; canaux : slack (slack), teams (teams, dès haute)" serve-approb.log && grep -q "3 panneau(x)" serve-approb.log'
+ADM_AP="http://127.0.0.1:${Q}21"
+LIEN_AP="$("$APLOMB" admin --compte alice --url "$ADM_AP" connexion | grep -o 'http://[^ ]*ticket=[^ ]*')"
+curl -s -o /dev/null -c biscuits-ap "$LIEN_AP"
+MCP_AP="http://127.0.0.1:${Q}25/mcp/notes"
+rpc_ap() { curl -s -X POST "$MCP_AP" -H "content-type: application/json" -H "accept: application/json, text/event-stream" ${1:+-H "mcp-session-id: $1"} -d "$2"; }
+SID_AP="$(curl -s -D - -o /dev/null -X POST "$MCP_AP" -H "content-type: application/json" -d "$INIT" | tr -d '\r' | sed -n 's/^mcp-session-id: //p')"
+rpc_ap "$SID_AP" '{"jsonrpc":"2.0","method":"notifications/initialized"}' > /dev/null
+appel_ap() { rpc_ap "$SID_AP" "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":{\"q\":\"x\"}}}"; }
+appel_ap chercher > /dev/null
+appel_ap effacer > revue-ap1.json & ATT_AP=$!
+for _ in $(seq 100); do curl -s -b biscuits-ap "$ADM_AP/admin/revues" > revues-ap.json; grep -q '"id"' revues-ap.json && break; sleep 0.1; done
+lra() { python3 -c "import json; r=json.load(open('revues-ap.json'))[0]; print($1)"; }
+verifier "revue enrichie : priorité, raisons, système, intention" '[ "$(lra "r[\"priorite\"] in (\"normale\",\"haute\",\"critique\") and len(r[\"raisons\"]) > 0 and r[\"systeme\"] == \"approb\" and \"Banc\" in r[\"intention\"]")" = True ]'
+verifier "revue enrichie : actions précédentes de la session, conséquences" '[ "$(lra "len(r[\"historique\"]) == 1 and \"chercher\" in r[\"historique\"][0][\"outil\"] and \"sans_reponse\" in r[\"consequences\"]")" = True ]'
+verifier "délai de revue pris dans le mandat (15 s)" '[ "$(lra "r[\"delai\"]")" = 15 ]'
+for _ in $(seq 100); do [ "$(grep -c . "$B/appro/recu.jsonl" 2>/dev/null || echo 0)" -ge 3 ] && [ -s "$B/appro/courriels.txt" ] && break; sleep 0.1; done
+lrc() { python3 -c "import json,sys; L=[json.loads(l) for l in open('$B/appro/recu.jsonl')]; print($1)"; }
+verifier "Slack prévenu, avec le lien d'Aplomb Watch" '[ "$(lrc "any(l[\"chemin\"] == \"/slack\" and \"127.0.0.1:${Q}21\" in json.loads(l[\"corps\"])[\"text\"] for l in L)")" = True ]'
+verifier "ticket ITSM : jeton en Bearer, champs ServiceNow" '[ "$(lrc "any(l[\"chemin\"].endswith(\"/incident\") and l[\"entetes\"].get(\"authorization\") == \"Bearer jeton-itsm-du-banc\" and \"short_description\" in json.loads(l[\"corps\"]) for l in L)")" = True ]'
+verifier "webhook signé (HMAC-SHA256, horodatage)" '[ "$(lrc "[__import__(\"hmac\").compare_digest(e[\"x-aplomb-signature\"], \"sha256=\" + __import__(\"hmac\").new(b\"secret-revue-du-banc\", (e[\"x-aplomb-horodatage\"] + \".\" + l[\"corps\"]).encode(), __import__(\"hashlib\").sha256).hexdigest()) for l in L if l[\"chemin\"] == \"/revue\" for e in [l[\"entetes\"]]] == [True]")" = True ]'
+verifier "courriel envoyé par sendmail (en-têtes RFC 5322)" 'grep -q "^To: astreinte@banc.test" "$B/appro/courriels.txt" && grep -q "^Subject: =?UTF-8?B?" "$B/appro/courriels.txt"'
+verifier "Teams non prévenu : priorité sous son seuil" '[ "$(lra "r[\"priorite\"]")" != normale ] || ! grep -q "\"/teams\"" "$B/appro/recu.jsonl"'
+verifier "canaux sans le détail par défaut (ressource absente)" '! grep -q "\"q\"" "$B/appro/recu.jsonl" && ! grep -q "\"q\"" "$B/appro/courriels.txt"'
+sleep 1
+verifier "chaque notification journalisée avec son issue" '[ "$(grep -c "\"notification-revue\"" journal-approb/_administration-*.jsonl)" -ge 4 ] && grep -q "\"envoyée\"" journal-approb/_administration-*.jsonl'
+wait "$ATT_AP"
+verifier "sans réponse dans le délai du mandat : refus" 'grep -q "sans réponse en 15 s" revue-ap1.json'
+# Reporting MCP : nouveaux outils.
+"$APLOMB" reporting nouveau --id grc > reporting-grc.log
+JETON_G="$(grep -o 'aplomb-rapport-grc-[0-9a-f]*' reporting-grc.log | head -1)"
+RAP_AP="http://127.0.0.1:${Q}27/mcp"
+appel_g() { curl -s -X POST "$RAP_AP" -H "Authorization: Bearer $JETON_G" -H "Content-Type: application/json" \
+  -d "$(python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":sys.argv[1],"arguments":json.loads(sys.argv[2])}}))' "$1" "${2:-"{}"}")" > "rapg-$1.json"; }
+appel_g rapport_reglementaire '{"referentiel":"nis2"}'; appel_g modules; appel_g revues_en_attente
+lg() { python3 -c "import json; s=json.load(open('rapg-$1.json'))['result']['structuredContent']; print($2)"; }
+verifier "MCP rapport_reglementaire : NIS 2 exigence par exigence" '[ "$(lg rapport_reglementaire "s[\"referentiel\"] == \"nis2\" and any(c[\"reference\"] == \"Art. 21 § 2 j\" for c in s[\"controles\"])")" = True ]'
+verifier "MCP modules : canaux d'approbation actifs" '[ "$(lg modules "any(m[\"id\"] == \"canal:slack\" and m[\"actif\"] for m in s[\"modules\"])")" = True ]'
+verifier "MCP revues_en_attente : compte sans contenu" '[ "$(lg revues_en_attente "s[\"total\"] == 0 and s[\"delai_s\"] == 15")" = True ]'
+verifier "MCP : aucune valeur nominative" '! grep -q -e "alice" -e "\"bob" -e "$SID_AP" rapg-*.json'
+# Panneaux.
+curl -s -b biscuits-ap "$ADM_AP/admin/panneaux" > panneaux-ap.json
+lpn() { python3 -c "import json; p=json.load(open('panneaux-ap.json'))['panneaux']; print($1)"; }
+verifier "panneaux : compteur, répartition, série calculés" '[ "$(lpn "[x[\"type\"] for x in p] == [\"compteur\",\"repartition\",\"serie\"] and p[0][\"donnees\"][\"valeur\"] >= 1 and len(p[2][\"donnees\"][\"points\"]) == 6")" = True ]'
+verifier "panneaux : réservés aux comptes connectés" '[ "$(curl -s -o /dev/null -w "%{http_code}" "$ADM_AP/admin/panneaux")" = 401 ]'
+printf 'panneaux:\n- {titre: X, type: compteur, mesure: sessions_par_compte}\n' > panneaux-faux.yaml
+verifier "panneau sur une mesure inconnue : refusé" '! "$APLOMB" modules --mandat mandats/approb.yaml --panneaux panneaux-faux.yaml 2> panneaux-faux.log && grep -q "inconnue" panneaux-faux.log'
+verifier "aplomb modules : revue priorisée, canaux, panneaux, rapports" \
+  '"$APLOMB" modules --mandat mandats/approb.yaml > modules-ap.log && grep -q "● canal:soc" modules-ap.log && grep -q "● panneaux" modules-ap.log && grep -q "● rapports-reglementaires" modules-ap.log && grep -q "● revue-priorisee" modules-ap.log'
+verifier "aplomb modules sans les options : proposées, non actives" \
+  '(cd "$B/appro" && "$APLOMB" modules --mandat ../mandats/approb.yaml > ../modules-ap0.log) && grep -q "○ notification-revue" modules-ap0.log && grep -q "○ panneaux" modules-ap0.log'
+kill -INT "$SERVE_AP"; wait "$SERVE_AP" 2>/dev/null || true
+# Rapports réglementaires.
+verifier "aplomb rapport DORA (Markdown)" '"$APLOMB" rapport --referentiel dora --mandat mandats/approb.yaml --journal journal-approb > dora.md && grep -q "Art. 9 § 4" dora.md && grep -q "indicatives" dora.md'
+verifier "aplomb rapport ISO/IEC 42001 (JSON) : journal A.6.2.8" \
+  '"$APLOMB" rapport --referentiel iso42001 --mandat mandats/approb.yaml --journal journal-approb --format json --sortie iso.json > /dev/null && python3 -c "import json; r=json.load(open(\"iso.json\")); assert any(c[\"reference\"] == \"A.6.2.8\" for c in r[\"controles\"])"'
+verifier "référentiel inconnu : la liste est proposée" '"$APLOMB" rapport --referentiel sox 2>&1 | grep -q "dora, iso42001 ou nis2"'
+verifier "envoi en HTTP vers une autre machine : refusé" '"$APLOMB" rapport --referentiel nis2 --mandat mandats/approb.yaml --pousser http://grc.exemple.fr/api 2>&1 | grep -q "HTTPS requis"'
+verifier "rapport poussé à l'outil GRC, signé par l'instance, jeton en Bearer" \
+  '"$APLOMB" rapport --referentiel nis2 --mandat mandats/approb.yaml --journal journal-approb --pousser "http://127.0.0.1:${Q}28/grc/rapports" --jeton-env APLOMB_BANC_GRC | grep -q "envoyé, signé" && [ "$(lrc "[(l[\"entetes\"].get(\"authorization\"), len(json.loads(l[\"corps\"])[\"signature\"])) for l in L if l[\"chemin\"] == \"/grc/rapports\"]")" = "[('"'"'Bearer jeton-grc-du-banc'"'"', 128)]" ]'
+verifier "dossier de preuves : rapports DORA, ISO 42001, NIS 2 joints" \
+  '"$APLOMB" preuves exporter --mandat mandats/approb.yaml --journal journal-approb --sortie preuves-ap > preuves-ap.log 2>&1 && for r in dora iso42001 nis2; do [ -f "preuves-ap/rapports/$r.json" ] && [ -f "preuves-ap/rapports/$r.md" ] || exit 1; done && "$APLOMB" preuves verifier preuves-ap > /dev/null 2>&1'
+verifier "constats : canaux d'approbation et délai mesurés" '[ "$(python3 -c "import json; c=json.load(open(\"preuves-ap/correspondance.json\"))[\"constats\"]; print(c[\"canaux_approbation\"], c[\"delai_revue\"])")" = "5 15" ]'
+rm -f approbation.yaml panneaux.yaml
 echo "--- Déverrouillage"
 SOCKET="$HOME/.config/aplomb/agent.sock"
 "$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1

@@ -89,7 +89,7 @@ async fn traiter(mut client: TcpStream, etat: Etat, reglages: &Reglages) -> std:
         Verdict::Allow => {}
         // Revue : la connexion attend la réponse d'un humain dans Aplomb Watch.
         Verdict::Review => {
-            if let Err(e) = demander_revue(&etat, &evt, &cible.url(), &decision.motif).await {
+            if let Err(e) = demander_revue(&etat, &evt, &cible.url(), &decision).await {
                 return refuser(&mut client, "403 Forbidden", &format!("{e} — {}", decision.motif)).await;
             }
         }

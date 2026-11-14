@@ -36,6 +36,22 @@
            display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
   .revue .quoi { flex:1 1 320px; min-width:0; }
   .revue .res { font-family:ui-monospace, monospace; font-size:12px; word-break:break-all; }
+  .revue.p-critique { border-color:var(--gel); } .revue.p-haute { border-color:var(--deny); }
+  .prio { display:inline-block; font-size:11px; font-weight:700; text-transform:uppercase; padding:1px 6px; border-radius:4px; margin-right:6px; border:1px solid currentColor; }
+  .grille-panneaux { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:12px; }
+  .panneau { border:1px solid var(--bord, #8884); border-radius:8px; padding:10px 12px; }
+  .panneau .grand { font-size:28px; font-weight:700; }
+  .serie { display:flex; align-items:flex-end; gap:2px; height:60px; }
+  .serie i { flex:1; background:var(--review); min-height:1px; border-radius:2px 2px 0 0; }
+  .revue details { margin-top:4px; font-size:13px; } .revue ul { margin:4px 0 0 18px; padding:0; }
+  .revue.p-critique { border-color:var(--gel); } .revue.p-haute { border-color:var(--deny); }
+  .prio { display:inline-block; font-size:11px; font-weight:700; text-transform:uppercase; padding:1px 6px; border-radius:4px; margin-right:6px; border:1px solid currentColor; }
+  .grille-panneaux { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:12px; }
+  .panneau { border:1px solid var(--bord, #8884); border-radius:8px; padding:10px 12px; }
+  .panneau .grand { font-size:28px; font-weight:700; }
+  .serie { display:flex; align-items:flex-end; gap:2px; height:60px; }
+  .serie i { flex:1; background:var(--review); min-height:1px; border-radius:2px 2px 0 0; }
+  .revue details { margin-top:4px; font-size:13px; } .revue ul { margin:4px 0 0 18px; padding:0; }
   button.ok { border-color:var(--allow); color:var(--allow); }
   .onglets { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px; }
   .onglets button[aria-selected="true"] { border-color:var(--texte); font-weight:600; }
@@ -93,7 +109,15 @@
     <button role="tab" id="o-conso" aria-selected="false">Consommation</button>
     <button role="tab" id="o-gouv" aria-selected="false">Gouvernance</button>
     <button role="tab" id="o-modules" aria-selected="false">Modules</button>
+    <button role="tab" id="o-tableaux" aria-selected="false">Tableaux</button>
   </div>
+  <section id="v-tableaux" class="conso" hidden>
+    <div class="barre">
+      <button id="recharger-tableaux">Actualiser</button>
+      <span class="doux">Panneaux déclarés dans panneaux.yaml, sur les indicateurs agrégés (rien de nominatif).</span>
+    </div>
+    <div id="tableaux" class="grille-panneaux"></div>
+  </section>
   <section id="v-modules" class="conso" hidden>
     <div class="barre">
       <button id="recharger-modules">Actualiser</button>
@@ -222,11 +246,23 @@ async function chargerRevues() {
   const zone = $("revues");
   zone.replaceChildren();
   for (const v of await r.json()) {
-    const carte = el("div", "revue");
+    const carte = el("div", "revue p-" + (v.priorite || "normale"));
     const quoi = el("div", "quoi");
     const reste = Math.max(0, Math.round((v.horodatage + v.delai * 1000 - Date.now()) / 1000));
-    quoi.append(el("b", "review", "Revue demandée "), el("span", "doux", `${v.mode} · ${v.outil} · session ${(v.session || "").slice(0, 8)} · ${reste} s pour répondre`),
-      el("div", "res", v.resume), el("div", "doux", v.motif));
+    const prio = el("span", "prio " + (v.priorite === "critique" ? "gel" : v.priorite === "haute" ? "deny" : "review"), v.priorite || "normale");
+    quoi.append(prio, el("b", "review", "Revue demandée "), el("span", "doux", `${v.mode} · ${v.outil} (${v.verbe || "?"}) · session ${(v.session || "").slice(0, 8)} · ${reste} s pour répondre`),
+      el("div", "res", v.resume), el("div", "doux", (v.raisons || []).join(" · ")), el("div", "doux", v.motif));
+    // Demande enrichie : intention, moniteurs, actions précédentes, conséquences.
+    const plus = el("details");
+    plus.append(el("summary", null, "Pour décider"));
+    const liste = el("ul");
+    if (v.intention) liste.append(el("li", null, "Intention du mandat : " + v.intention));
+    for (const a of v.avis || []) liste.append(el("li", null, `${a.moniteur} (${a.niveau}) : ${a.motif}`));
+    if ((v.provenance || []).length) liste.append(el("li", null, "Contenus non fiables lus avant : " + v.provenance.join(", ")));
+    if ((v.historique || []).length) liste.append(el("li", null, "Actions précédentes : " + v.historique.map(h => `${h.outil} ${h.verdict}`).join(", ")));
+    for (const [k, c] of Object.entries(v.consequences || {})) liste.append(el("li", null, `${k.replace("_", " ")} : ${c}`));
+    plus.append(liste);
+    quoi.append(plus);
     const oui = el("button", "ok", "Approuver"), non = el("button", "danger", "Refuser");
     const repondre = async (approuver) => {
       oui.disabled = non.disabled = true;
@@ -254,7 +290,7 @@ const court = (id) => id ? "…" + id.slice(-8) : "sans id";
 const heure = (t) => t ? new Date(t).toLocaleTimeString("fr-FR") : "—";
 
 function onglet(nom) {
-  for (const n of ["flux", "chaine", "conso", "gouv", "modules"]) {
+  for (const n of ["flux", "chaine", "conso", "gouv", "modules", "tableaux"]) {
     $("o-" + n).setAttribute("aria-selected", nom === n);
     $("v-" + n).hidden = nom !== n;
   }
@@ -262,6 +298,38 @@ function onglet(nom) {
   if (nom === "conso") chargerConso();
   if (nom === "gouv") chargerGouv();
   if (nom === "modules") chargerModules();
+  if (nom === "tableaux") chargerTableaux();
+}
+
+async function chargerTableaux() {
+  const r = await fetch("/admin/panneaux");
+  const g = await r.json().catch(() => ({})), zone = $("tableaux");
+  zone.replaceChildren();
+  if (!r.ok) { zone.appendChild(el("p", "ecart", g.erreur || r.status)); return; }
+  if (!g.panneaux.length) { zone.appendChild(el("p", "doux", g.aide || "Aucun panneau.")); return; }
+  const fmt = (m, v) => m.startsWith("taux.") ? Math.round(v * 100) + " %" : (v ?? 0).toLocaleString("fr-FR");
+  for (const p of g.panneaux) {
+    const c = el("div", "panneau");
+    c.append(el("b", null, p.titre), el("div", "doux", `${p.mesure} · ${p.heures} h`));
+    if (p.type === "compteur") c.appendChild(el("div", "grand", fmt(p.mesure, p.donnees.valeur)));
+    if (p.type === "repartition") {
+      const max = Math.max(1, ...p.donnees.lignes.map(l => l.valeur));
+      if (!p.donnees.lignes.length) c.appendChild(el("p", "doux", "Rien sur la période."));
+      for (const l of p.donnees.lignes) {
+        const ligne = el("div", "doux", `${l.cle} — ${fmt(p.mesure, l.valeur)}`), j = el("div", "jauge"), i = el("i");
+        i.style.width = Math.round(100 * l.valeur / max) + "%";
+        j.appendChild(i);
+        c.append(ligne, j);
+      }
+    }
+    if (p.type === "serie") {
+      const max = Math.max(1e-9, ...p.donnees.points.map(x => x.valeur)), s = el("div", "serie");
+      for (const x of p.donnees.points) { const b = el("i"); b.style.height = Math.round(100 * x.valeur / max) + "%"; b.title = `${heure(x.debut)} : ${fmt(p.mesure, x.valeur)}`; s.appendChild(b); }
+      const total = p.donnees.points.reduce((a, x) => a + x.valeur, 0);
+      c.append(s, el("div", "doux", p.mesure.startsWith("taux.") ? "" : `total ${fmt(p.mesure, total)}`));
+    }
+    zone.appendChild(c);
+  }
 }
 
 const FACONS = { declaratif: "déclaratif", integre: "intégré", externe: "externe" };
@@ -490,6 +558,10 @@ $("o-conso").onclick = () => onglet("conso");
 $("o-gouv").onclick = () => onglet("gouv");
 $("o-modules").onclick = () => onglet("modules");
 $("recharger-modules").onclick = chargerModules;
+$("o-tableaux").onclick = () => onglet("tableaux");
+$("recharger-tableaux").onclick = chargerTableaux;
+$("o-tableaux").onclick = () => onglet("tableaux");
+$("recharger-tableaux").onclick = chargerTableaux;
 $("recharger-gouv").onclick = chargerGouv;
 $("periode-gouv").onchange = chargerGouv;
 $("systeme-gouv").onchange = chargerGouv;

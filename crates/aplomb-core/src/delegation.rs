@@ -95,6 +95,7 @@ mod tests {
             extension: None,
             bornes: None,
             moniteurs: None,
+            approbation: None,
             signature: None,
             signatures: vec![],
         }

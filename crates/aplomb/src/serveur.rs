@@ -109,6 +109,12 @@ pub struct Options {
     /// Activité des comptes (revue des comptes inactifs, EF-N5).
     #[arg(long, default_value = "activite-comptes.json")]
     activite: PathBuf,
+    /// Panneaux d'Aplomb Watch (option) : compteurs, répartitions, séries.
+    #[arg(long, default_value = "panneaux.yaml")]
+    panneaux: PathBuf,
+    /// Canaux qui préviennent les réviseurs (option) : Slack, Teams, ITSM, courriel, webhook.
+    #[arg(long, default_value = "approbation.yaml")]
+    approbation: PathBuf,
     /// Diffusion du journal vers le SIEM (option) : absent, rien ne sort
     /// (`aplomb diffusion exemple > diffusion.yaml`).
     #[arg(long, default_value = "diffusion.yaml")]
@@ -182,8 +188,6 @@ struct Revue {
     reponse: tokio::sync::oneshot::Sender<(bool, String)>,
 }
 
-/// Temps laissé à l'humain pour répondre ; ensuite, refus.
-const DELAI_REVUE: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[derive(Clone)]
 pub(crate) struct Etat {
@@ -202,6 +206,10 @@ pub(crate) struct Etat {
     fichier_diffusion: Arc<PathBuf>,
     /// Fournisseur d'identité (SSO), si déclaré dans comptes.yaml.
     sso: Option<Arc<aplomb_core::identite::ConfigSso>>,
+    /// Canaux d'approbation, si approbation.yaml existe.
+    canaux: Option<Arc<aplomb_core::approbation::ConfigCanaux>>,
+    /// Panneaux déclarés, si panneaux.yaml existe.
+    panneaux: Option<Arc<aplomb_core::panneaux::ConfigPanneaux>>,
 }
 
 impl Etat {
@@ -235,6 +243,45 @@ impl Etat {
     }
 
     /// État courant de la supervision, sans rien de nominatif (reporting).
+    /// Modules actifs et disponibles (onglet Modules, outil MCP `modules`).
+    pub(crate) fn modules_json(&self) -> Value {
+        let (mandat, identite) = {
+            let interne = self.interne.lock().expect("verrou");
+            (interne.superviseur.mandat.mandat.clone(), interne.autorite.identite().clone())
+        };
+        let clients = crate::reporting::charger(&self.reporting).map(|c| c.clients.len()).unwrap_or(0);
+        let diffusion = crate::diffusion::charger(&self.fichier_diffusion).ok().flatten();
+        let instance = crate::modules::Instance {
+            clients_reporting: clients,
+            diffusion: diffusion.as_ref(),
+            identite,
+            canaux: self.canaux.as_deref(),
+            panneaux: self.panneaux.as_ref().map_or(0, |p| p.panneaux.len()),
+        };
+        let etapes: Vec<Value> = aplomb_core::modules::Etape::TOUTES.iter().map(|e| json!({"etape": e, "libelle": e.libelle(), "decision": e.decision()})).collect();
+        json!({
+            "mandat": {"id": mandat.id, "version": mandat.version, "profil": mandat.profil},
+            "deploiement": aplomb_core::moniteurs::profil_deploiement(mandat.moniteurs.as_ref()),
+            "etapes": etapes,
+            "modules": crate::modules::tous(&mandat, &instance),
+        })
+    }
+
+    /// Revues en attente, par priorité (outil MCP) : rien de nominatif.
+    pub(crate) fn revues_en_attente(&self) -> Value {
+        let interne = self.interne.lock().expect("verrou");
+        let mut par = std::collections::BTreeMap::<String, u64>::new();
+        let mut plus_ancienne: Option<u64> = None;
+        for r in interne.revues.values() {
+            *par.entry(r.publique["priorite"].as_str().unwrap_or("normale").to_string()).or_default() += 1;
+            let h = r.publique["horodatage"].as_u64().unwrap_or(0);
+            plus_ancienne = Some(plus_ancienne.map_or(h, |x| x.min(h)));
+        }
+        json!({"total": interne.revues.len(), "par_priorite": par,
+               "age_plus_ancienne_s": plus_ancienne.map(|h| maintenant().saturating_sub(h) / 1000),
+               "delai_s": aplomb_core::approbation::delai_s(interne.superviseur.mandat.mandat.approbation.as_ref())})
+    }
+
     pub(crate) fn etat_supervision(&self) -> Value {
         let interne = self.interne.lock().expect("verrou");
         let (gel_global, sessions_gelees) = interne.superviseur.etat_gel();
@@ -562,19 +609,57 @@ pub(crate) fn constater(etat: &Etat, evt: &EvenementOutil, contenu: Value) -> Re
 /// Soumet une action des passerelles à un humain (Aplomb Watch) et attend sa réponse :
 /// le compte qui approuve, ou le motif du refus. Sans réponse dans le délai : refus. L'issue
 /// est journalisée dans la session de l'action.
-pub(crate) async fn demander_revue(etat: &Etat, evt: &EvenementOutil, resume: &str, motif: &str) -> Result<String, String> {
+pub(crate) async fn demander_revue(
+    etat: &Etat,
+    evt: &EvenementOutil,
+    resume: &str,
+    d: &aplomb_core::decision::DecisionFinale,
+) -> Result<String, String> {
+    let motif = d.motif.as_str();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let id = {
+    let (id, delai, notification) = {
         let mut interne = etat.interne.lock().expect("verrou");
         interne.revue_suivante += 1;
         let id = interne.revue_suivante;
-        let publique = json!({"id": id, "session": evt.session, "mode": evt.mode, "outil": evt.outil, "resume": resume,
-            "motif": motif, "horodatage": maintenant(), "appel": evt.appel, "delai": DELAI_REVUE.as_secs()});
+        // Demande enrichie (J3) et priorité (J2) : de quoi décider sans fouiller le journal.
+        let m = &interne.superviseur.mandat.mandat;
+        let delai = aplomb_core::approbation::delai_s(m.approbation.as_ref());
+        let (systeme, intention) = (m.id.clone(), m.intention.clone());
+        let action = interne.superviseur.normaliser(evt);
+        let signaux = interne.superviseur.profil().signaux(evt, &action);
+        let (priorite, raisons) = aplomb_core::approbation::priorite(&action.verbe, &d.avis, &signaux);
+        let avis: Vec<Value> = d
+            .avis
+            .iter()
+            .filter(|a| a.niveau != aplomb_core::decision::Niveau::Conforme)
+            .map(|a| json!({"moniteur": a.moniteur, "niveau": a.niveau, "motif": a.motif}))
+            .collect();
+        let historique: Vec<Value> = interne
+            .historique
+            .iter()
+            .rev()
+            .filter(|e| e["session"] == json!(evt.session) && e["type"] == "decision")
+            // La première est la décision de cette revue, publiée juste avant.
+            .skip(1)
+            .take(5)
+            .map(|e| json!({"outil": e["detail"]["outil"], "verbe": e["detail"]["verbe"], "verdict": e["detail"]["verdict"]}))
+            .collect();
+        let provenance = interne.superviseur.influences(&evt.session).to_vec();
+        let publique = json!({"id": id, "session": evt.session, "mode": evt.mode, "outil": evt.outil, "verbe": action.verbe,
+            "resume": resume, "motif": motif, "horodatage": maintenant(), "appel": evt.appel, "delai": delai,
+            "systeme": systeme, "intention": intention, "priorite": priorite, "raisons": raisons, "avis": avis,
+            "historique": historique, "provenance": provenance, "regle": d.politique.regle,
+            "consequences": aplomb_core::approbation::consequences(delai)});
         interne.revues.insert(id, Revue { publique: publique.clone(), reponse: tx });
         etat.publier(&mut interne, json!({"type": "revue", "horodatage": maintenant(), "session": evt.session, "detail": publique}));
-        id
+        (id, delai, publique)
     };
-    let (approuvee, par) = match tokio::time::timeout(DELAI_REVUE, rx).await {
+    if let Some(c) = etat.canaux.clone() {
+        let e = etat.clone();
+        let instance = aplomb_core::indicateurs::identifiant_instance(&etat.cle_publique());
+        crate::canaux::prevenir(c, notification, instance, Arc::new(move |d| e.journaliser_alerte(d)));
+    }
+    let (approuvee, par) = match tokio::time::timeout(std::time::Duration::from_secs(delai), rx).await {
         Ok(Ok(r)) => r,
         _ => {
             let mut interne = etat.interne.lock().expect("verrou");
@@ -593,7 +678,7 @@ pub(crate) async fn demander_revue(etat: &Etat, evt: &EvenementOutil, resume: &s
         "revue": issue, "par": par}));
     match issue {
         "approuvée" => Ok(par),
-        "expirée" => Err(format!("revue sans réponse en {} s : refus", DELAI_REVUE.as_secs())),
+        "expirée" => Err(format!("revue sans réponse en {delai} s : refus")),
         _ => Err(format!("revue refusée par {par}")),
     }
 }
@@ -712,23 +797,61 @@ struct ParamGouvernance {
 /// l'agrégat signé par l'instance, prêt à fédérer.
 /// Onglet « Modules » : ce qui est actif à chaque étape et comment ajouter le reste.
 async fn modules_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
-    let (mandat, identite) = {
+    if compte_web(&mut etat.interne.lock().expect("verrou"), &entetes).is_none() {
+        return non_connecte();
+    }
+    Json(etat.modules_json()).into_response()
+}
+
+/// Onglet « Tableaux » : panneaux déclarés, calculés sur les indicateurs agrégés.
+async fn panneaux_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    use aplomb_core::{indicateurs, panneaux as pn};
+    let dossier = {
         let mut interne = etat.interne.lock().expect("verrou");
         if compte_web(&mut interne, &entetes).is_none() {
             return non_connecte();
         }
-        (interne.superviseur.mandat.mandat.clone(), interne.autorite.identite().clone())
+        interne.journal.dossier().to_path_buf()
     };
-    let clients = crate::reporting::charger(&etat.reporting).map(|c| c.clients.len()).unwrap_or(0);
-    let diffusion = crate::diffusion::charger(&etat.fichier_diffusion).ok().flatten();
-    let etapes: Vec<Value> = aplomb_core::modules::Etape::TOUTES.iter().map(|e| json!({"etape": e, "libelle": e.libelle(), "decision": e.decision()})).collect();
-    Json(json!({
-        "mandat": {"id": mandat.id, "version": mandat.version, "profil": mandat.profil},
-        "deploiement": aplomb_core::moniteurs::profil_deploiement(mandat.moniteurs.as_ref()),
-        "etapes": etapes,
-        "modules": crate::modules::tous(&mandat, clients, diffusion.as_ref(), &identite),
-    }))
-    .into_response()
+    let Some(cfg) = etat.panneaux.clone() else {
+        return Json(json!({"panneaux": [], "aide": "Aucun panneau : déclarer panneaux.yaml (docs/APPROBATION.md#panneaux), puis redémarrer serve."})).into_response();
+    };
+    let instance = indicateurs::identifiant_instance(&etat.signataire.verifying_key());
+    let r = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, String> {
+        let fin = maintenant();
+        let calcul = |debut: u64, fin: u64| {
+            let c = indicateurs::Calcul { instance: &instance, systeme: None, periode: indicateurs::Periode { debut, fin }, seuil_k: indicateurs::SEUIL_K_DEFAUT };
+            indicateurs::calculer(&dossier, &c).map(|a| pn::source(&a))
+        };
+        let mut v = Vec::new();
+        for p in &cfg.panneaux {
+            let duree = p.heures * 3_600_000;
+            let debut = fin.saturating_sub(duree);
+            let donnees = match p.type_ {
+                pn::TypePanneau::Compteur => json!({"valeur": pn::nombre(&calcul(debut, fin)?, &p.mesure)}),
+                pn::TypePanneau::Repartition => {
+                    json!({"lignes": pn::repartition(&calcul(debut, fin)?, &p.mesure, p.lignes).into_iter().map(|(k, n)| json!({"cle": k, "valeur": n})).collect::<Vec<_>>()})
+                }
+                pn::TypePanneau::Serie => {
+                    let pas = duree / u64::from(p.points);
+                    let mut points = Vec::new();
+                    for i in 0..u64::from(p.points) {
+                        let (a, b) = (debut + i * pas, debut + (i + 1) * pas - 1);
+                        points.push(json!({"debut": a, "valeur": pn::nombre(&calcul(a, b)?, &p.mesure)}));
+                    }
+                    json!({"points": points})
+                }
+            };
+            v.push(json!({"titre": p.titre, "type": p.type_, "mesure": p.mesure, "heures": p.heures, "donnees": donnees}));
+        }
+        Ok(v)
+    })
+    .await;
+    match r {
+        Ok(Ok(v)) => Json(json!({"panneaux": v})).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"erreur": e}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"erreur": e.to_string()}))).into_response(),
+    }
 }
 
 async fn diffusion_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
@@ -962,7 +1085,13 @@ async fn revues(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
         return non_connecte();
     }
     let mut liste: Vec<Value> = interne.revues.values().map(|r| r.publique.clone()).collect();
-    liste.sort_by_key(|r| r["id"].as_u64());
+    // Priorité d'abord, puis la plus ancienne (J2).
+    let rang = |r: &Value| match r["priorite"].as_str() {
+        Some("critique") => 0,
+        Some("haute") => 1,
+        _ => 2,
+    };
+    liste.sort_by_key(|r| (rang(r), r["id"].as_u64()));
     Json(Value::Array(liste)).into_response()
 }
 
@@ -1198,6 +1327,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let agents = crate::agents::charger(&opts.agents)?;
     // Diffusion (option) : configuration et jetons vérifiés avant de démarrer.
     let config_diffusion = crate::diffusion::charger(&opts.diffusion)?;
+    let config_canaux = crate::canaux::charger(&opts.approbation)?;
+    let config_panneaux = crate::panneaux::charger(&opts.panneaux)?;
     if let Some(c) = &config_diffusion {
         crate::diffusion::jetons_presents(c)?;
     }
@@ -1234,6 +1365,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         siem: Arc::new(std::sync::OnceLock::new()),
         fichier_diffusion: Arc::new(opts.diffusion.clone()),
         sso: config_identite.sso.clone().map(Arc::new),
+        canaux: config_canaux.clone().map(Arc::new),
+        panneaux: config_panneaux.clone().map(Arc::new),
     };
     for (compte, derniere) in &suspensions {
         etat.journaliser_alerte(json!({"action": "compte-suspendu", "compte": compte, "derniere_activite": derniere, "cause": "inactivité"}));
@@ -1266,6 +1399,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/gouvernance", get(gouvernance))
         .route("/admin/modules", get(modules_admin))
         .route("/admin/diffusion", get(diffusion_admin))
+        .route("/admin/panneaux", get(panneaux_admin))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(etat.clone());
     let reglages_reporting = crate::reporting::Reglages {
@@ -1371,7 +1505,16 @@ pub fn lancer(opts: Options) -> Result<(), String> {
                 }
             });
         }
+        eprintln!(
+            "  approbation        : revue {} s ; canaux : {}",
+            aplomb_core::approbation::delai_s(etat_scellement.mandat().mandat.approbation.as_ref()),
+            crate::canaux::annonce(config_canaux.as_ref())
+        );
         eprintln!("  diffusion (SIEM)   : {}", crate::diffusion::annonce(config_diffusion.as_ref()));
+        eprintln!(
+            "  panneaux           : {}",
+            config_panneaux.as_ref().map_or("aucun (option : panneaux.yaml)".to_string(), |p| format!("{} panneau(x) dans l'onglet Tableaux", p.panneaux.len()))
+        );
         if let Some(c) = config_diffusion {
             let e = etat_scellement.clone();
             let etats = crate::diffusion::lancer(c, dossier_journal.clone(), Arc::new(move |d| e.journaliser_alerte(d)));

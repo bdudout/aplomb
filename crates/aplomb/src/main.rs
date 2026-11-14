@@ -21,6 +21,7 @@
 
 mod admin;
 mod agents;
+mod canaux;
 mod cle_maitresse;
 mod gouverner;
 mod evaluer;
@@ -36,8 +37,10 @@ mod mcp;
 #[allow(unsafe_code)]
 mod presence;
 mod modele;
+mod panneaux;
 mod passerelle;
 mod preuves;
+mod rapport;
 mod protocole;
 mod reporting;
 mod serveur;
@@ -167,6 +170,12 @@ enum Commande {
         /// Comptes de l'instance (options d'identité).
         #[arg(long, default_value = "comptes.yaml")]
         comptes: PathBuf,
+        /// Canaux d'approbation de l'instance (option).
+        #[arg(long, default_value = "approbation.yaml")]
+        approbation: PathBuf,
+        /// Panneaux d'Aplomb Watch (option).
+        #[arg(long, default_value = "panneaux.yaml")]
+        panneaux: PathBuf,
         /// Montrer aussi les modules intégrés toujours actifs.
         #[arg(long)]
         tout: bool,
@@ -265,6 +274,9 @@ enum Commande {
         #[command(subcommand)]
         commande: CommandePreuves,
     },
+    /// Rapport réglementaire : DORA, ISO/IEC 42001 ou NIS 2, exigence par exigence, d'après
+    /// l'état mesuré de l'instance. `--pousser` l'envoie, signé, à un outil GRC (ACRA…).
+    Rapport(rapport::Options),
     /// Reporting MCP en lecture seule : donner à un outil de gouvernance (ACRA, GRC…) l'accès
     /// à l'état de conformité et aux indicateurs.
     Reporting {
@@ -580,8 +592,8 @@ fn main() -> ExitCode {
             CommandeDiffusion::Apercu { config, journal } => diffusion::apercu(&config, &journal),
             CommandeDiffusion::Tester { config, destination } => diffusion::tester(&config, &destination),
         },
-        Commande::Modules { mandat, reporting, diffusion, comptes, tout } => match mandat.or_else(|| mandats_par_defaut().into_iter().next()) {
-            Some(m) => modules::afficher(&m, &reporting, &diffusion, &comptes, tout),
+        Commande::Modules { mandat, reporting, diffusion, comptes, approbation, panneaux, tout } => match mandat.or_else(|| mandats_par_defaut().into_iter().next()) {
+            Some(m) => modules::afficher(&m, &reporting, &diffusion, &comptes, &approbation, &panneaux, tout),
             None => Err("aucun mandat dans mandats/ : aplomb modules --mandat <fichier>".into()),
         },
         Commande::Hook { perimetre, cle_serveur, branchement } => {
@@ -633,6 +645,10 @@ fn main() -> ExitCode {
         },
         Commande::Preuves { commande: CommandePreuves::Exporter { mandat, sortie, journal, heures, confiance, comptes, cle } } => {
             preuves::exporter(preuves::OptionsExport { mandat, sortie, journal, heures, confiance, comptes, cle })
+        }
+        Commande::Rapport(mut o) => {
+            o.mandat = o.mandat.or_else(|| mandats_par_defaut().into_iter().next());
+            rapport::executer(o)
         }
         Commande::Preuves { commande: CommandePreuves::Verifier { dossier, cle_pub } } => preuves::verifier(&dossier, cle_pub.as_deref()),
         Commande::Gouvernance { commande } => match commande {

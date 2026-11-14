@@ -22,11 +22,11 @@ son en-tête, la liste des modules actifs sur la décision, avec leur version et
 | 3 | filtrage de contenu | secrets, packs `bancaire`, `identifiant_national`, `sante`, `coordonnees`, packs de l'organisation |
 | 4 | moniteurs | juge, sonde, raisonnement, enchaînements, provenance, moniteurs externes |
 | 5 | décision | règles Cedar, bornes, agrégation |
-| 6 | approbation | file de revue d'Aplomb Watch, quatre yeux |
+| 6 | approbation | file de revue priorisée et enrichie, délai au mandat, canaux Slack, Teams, ITSM, courriel, webhook (voir [APPROBATION.md](APPROBATION.md)) |
 | 7 | journal | chaîne de hachage, scellement |
 | 8 | diffusion | export SIEM : ECS, Splunk HEC, syslog, CEF, LEEF, OTLP, webhook (voir [DIFFUSION.md](DIFFUSION.md)) |
-| 9 | reporting | reporting MCP, dossier de preuves AI Act, indicateurs |
-| 10 | visualisation | Aplomb Watch, vue gouvernance |
+| 9 | reporting | reporting MCP, dossier de preuves AI Act, rapports DORA, ISO/IEC 42001, NIS 2, envoi signé à un outil GRC, indicateurs |
+| 10 | visualisation | Aplomb Watch, vue gouvernance, panneaux déclarés (`panneaux.yaml`) |
 | 11 | identité | comptes à quatre yeux, MFA TOTP, SSO OpenID Connect, revue des comptes (voir [IDENTITE.md](IDENTITE.md)) |
 
 ## La règle d'or
