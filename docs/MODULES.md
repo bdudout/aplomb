@@ -24,7 +24,7 @@ son en-tête, la liste des modules actifs sur la décision, avec leur version et
 | 5 | décision | règles Cedar, bornes, agrégation |
 | 6 | approbation | file de revue d'Aplomb Watch, quatre yeux |
 | 7 | journal | chaîne de hachage, scellement |
-| 8 | diffusion | (J9 : export SIEM) |
+| 8 | diffusion | export SIEM : ECS, Splunk HEC, syslog, CEF, LEEF, OTLP, webhook (voir [DIFFUSION.md](DIFFUSION.md)) |
 | 9 | reporting | reporting MCP, dossier de preuves AI Act, indicateurs |
 | 10 | visualisation | Aplomb Watch, vue gouvernance |
 | 11 | identité | comptes à quatre yeux (J10 : SSO, MFA) |

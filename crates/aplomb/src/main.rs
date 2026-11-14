@@ -30,6 +30,7 @@ mod hook;
 mod juge;
 #[allow(unsafe_code)]
 mod deverrouillage;
+mod diffusion;
 mod mcp;
 #[allow(unsafe_code)]
 mod presence;
@@ -42,7 +43,7 @@ mod serveur;
 mod sonde;
 mod vue_gouvernance;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -159,9 +160,23 @@ enum Commande {
         /// Clients de reporting de l'instance.
         #[arg(long, default_value = "reporting.yaml")]
         reporting: PathBuf,
+        /// Diffusion vers le SIEM de l'instance (option).
+        #[arg(long, default_value = "diffusion.yaml")]
+        diffusion: PathBuf,
         /// Montrer aussi les modules intégrés toujours actifs.
         #[arg(long)]
         tout: bool,
+    },
+    /// Diffusion du journal vers le SIEM (option, désactivée par défaut) : Elastic,
+    /// Splunk, syslog, CEF, LEEF, OpenTelemetry, webhook.
+    Diffusion {
+        #[command(subcommand)]
+        commande: CommandeDiffusion,
+    },
+    /// Conservation du journal (EF-I5) : archiver les sessions anciennes.
+    Journal {
+        #[command(subcommand)]
+        commande: CommandeJournal,
     },
     /// Vérifie le journal : chaînes, scellés signés, et copie d'ancrage si fournie.
     Verify {
@@ -409,6 +424,52 @@ enum CommandeAgent {
 }
 
 #[derive(Subcommand)]
+enum CommandeJournal {
+    /// Déplace vers un dossier d'archive les sessions sans activité depuis N jours et déjà
+    /// scellées. Le journal reste vérifiable (registre de rétention scellé), même après
+    /// destruction de l'archive à la fin de la durée de conservation.
+    Archiver {
+        #[arg(long, default_value = "journal")]
+        journal: PathBuf,
+        /// Ancienneté minimale de la dernière entrée, en jours.
+        #[arg(long, required_unless_present = "avant")]
+        jours: Option<u64>,
+        /// Date limite exacte en millisecondes Unix (essais).
+        #[arg(long, hide = true)]
+        avant: Option<u64>,
+        /// Dossier d'archive (autre disque, stockage froid).
+        #[arg(long)]
+        vers: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommandeDiffusion {
+    /// Affiche un diffusion.yaml commenté (Elastic, Splunk, syslog, OTLP, webhook, fichier).
+    Exemple,
+    /// Vérifie diffusion.yaml et les variables des jetons ; dit ce qui partira.
+    Verifier {
+        #[arg(long, default_value = "diffusion.yaml")]
+        config: PathBuf,
+    },
+    /// Montre la dernière décision du journal dans chaque format.
+    Apercu {
+        #[arg(long, default_value = "diffusion.yaml")]
+        config: PathBuf,
+        #[arg(long, default_value = "journal")]
+        journal: PathBuf,
+    },
+    /// Envoie un événement de test à une destination.
+    Tester {
+        #[arg(long, default_value = "diffusion.yaml")]
+        config: PathBuf,
+        /// Identifiant de la destination.
+        #[arg(long)]
+        destination: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum CommandePhrase {
     /// Première installation : choisir la phrase de passe (reprend une ancienne clé du trousseau).
     Initialiser,
@@ -477,8 +538,18 @@ fn main() -> ExitCode {
             println!("Vérifier un mandat sans le signer : aplomb evaluer --mandat <fichier> --sans-juge");
             Ok(())
         }
-        Commande::Modules { mandat, reporting, tout } => match mandat.or_else(|| mandats_par_defaut().into_iter().next()) {
-            Some(m) => modules::afficher(&m, &reporting, tout),
+        Commande::Journal { commande: CommandeJournal::Archiver { journal, jours, avant, vers } } => archiver(&journal, jours, avant, &vers),
+        Commande::Diffusion { commande } => match commande {
+            CommandeDiffusion::Exemple => {
+                print!("{}", aplomb_core::diffusion::EXEMPLE);
+                Ok(())
+            }
+            CommandeDiffusion::Verifier { config } => diffusion::verifier(&config),
+            CommandeDiffusion::Apercu { config, journal } => diffusion::apercu(&config, &journal),
+            CommandeDiffusion::Tester { config, destination } => diffusion::tester(&config, &destination),
+        },
+        Commande::Modules { mandat, reporting, diffusion, tout } => match mandat.or_else(|| mandats_par_defaut().into_iter().next()) {
+            Some(m) => modules::afficher(&m, &reporting, &diffusion, tout),
             None => Err("aucun mandat dans mandats/ : aplomb modules --mandat <fichier>".into()),
         },
         Commande::Hook { perimetre, cle_serveur, branchement } => {
@@ -571,6 +642,24 @@ fn mandats_par_defaut() -> Vec<PathBuf> {
 /// Dernière ancre utilisée, retenue pour que `aplomb verify` la confronte sans option.
 const ANCRE_CONNUE: &str = "scelles/derniere-ancre";
 
+fn archiver(journal: &Path, jours: Option<u64>, avant: Option<u64>, vers: &Path) -> Result<(), String> {
+    if jours == Some(0) {
+        return Err("--jours au moins 1 : une session active ne s'archive pas".into());
+    }
+    let maintenant = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let avant = avant.unwrap_or_else(|| maintenant.saturating_sub(jours.unwrap_or(0) * 86_400_000));
+    let b = aplomb_core::scellement::archiver(journal, vers, avant, maintenant)?;
+    println!("{} session(s) archivée(s) vers {}", b.archivees.len(), vers.display());
+    for f in &b.archivees {
+        println!("  {f}");
+    }
+    if b.non_scellees > 0 {
+        println!("{} session(s) attendent le prochain scellé (serve scelle toutes les minutes)", b.non_scellees);
+    }
+    println!("vérifier : aplomb verify --journal {} (et l'archive : aplomb verify --journal {})", journal.display(), vers.display());
+    Ok(())
+}
+
 fn verifier(journal: &std::path::Path, ancre: Option<&std::path::Path>, cle_serveur: &std::path::Path) -> Result<(), String> {
     use aplomb_core::scellement;
     let j = aplomb_core::journal::Journal::ouvrir(journal).map_err(|e| e.to_string())?;
@@ -588,6 +677,9 @@ fn verifier(journal: &std::path::Path, ancre: Option<&std::path::Path>, cle_serv
             "scellés : {} signés et chaînés ; {} session(s) conforme(s) au dernier, {} nouvelle(s) depuis",
             r.scelles, r.sessions_scellees, r.sessions_nouvelles
         );
+        if r.sessions_archivees > 0 {
+            println!("archivées : {} session(s) scellée(s) puis archivée(s), inscrites au registre de rétention", r.sessions_archivees);
+        }
         println!("témoin du dernier scellé : {}", r.temoin.unwrap_or_default());
     }
     let ancre = ancre

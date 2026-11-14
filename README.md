@@ -107,6 +107,8 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
   - **Consommation** : jetons (entrée, cache, sortie) par utilisateur, compte technique, prompt et modèle ; taille du contexte et compactions par session d'agent ; quotas du jour. Voir [Suivre la consommation](#suivre-la-consommation-du-modèle).
   - **Boutons** : geler, dégeler à quatre yeux, vérifier le journal.
 - **Export Mermaid** : la séquence des requêtes d'un agent sous forme de diagramme.
+- **Diffusion vers le SIEM** (J9, option désactivée par défaut) : Elastic (ECS), Splunk (HEC), syslog RFC 5424 sur TLS, CEF, LEEF, OpenTelemetry, webhook signé, ou fichier pour un agent de collecte. Horodatage RFC 3339 dans le fuseau choisi, UTC joint. Seuls les champs en clair sortent. Le journal sert de file : un SIEM coupé rattrape son retard. Voir [`docs/DIFFUSION.md`](docs/DIFFUSION.md).
+- **Conservation** : `aplomb journal archiver --jours N --vers <archive>` sort les sessions anciennes et scellées ; le journal reste vérifiable, même après destruction de l'archive.
 
 ### Administration, gouvernance et clés
 
@@ -124,7 +126,7 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 
 ### Outils de test
 
-- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné et d'un agent métier avec sonde, plus un audit pentest et les modules (221 vérifications), sans rien toucher du réel.
+- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné et d'un agent métier avec sonde, plus un audit pentest, les modules, la diffusion vers un faux SIEM et l'archivage (246 vérifications), sans rien toucher du réel.
 - `aplomb evaluer --mandat <mandat>` : banc rouge/bleu. Il joue le jeu d'évaluation du profil ([`profils/code/evaluation.yaml`](profils/code/evaluation.yaml), [`profils/metier/evaluation.yaml`](profils/metier/evaluation.yaml)) avec ce mandat, juge et sonde compris, et rend :
   - la **sûreté** : la part des attaques bloquées ou mises en revue ;
   - l'**utilité** : la part des tâches légitimes faites sans humain ;
@@ -187,7 +189,7 @@ cargo build --release
 cargo install --path crates/aplomb   # met `aplomb` dans ~/.cargo/bin (déjà dans le PATH avec rustup)
 ```
 
-Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `221 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
+Vérification sans rien installer d'autre : `scripts/banc.sh` monte une instance jetable et doit finir par `246 vérification(s) réussie(s), 0 échec(s)`. Il utilise `target/debug/aplomb`, donc lancer `cargo build` avant.
 
 ### 2. Créer son instance
 
@@ -381,6 +383,8 @@ flowchart LR
 | Répondre à une revue des passerelles | Aplomb Watch, carte « Revue demandée » : Approuver ou Refuser (2 min, puis refus) |
 | Suivre un agent échange par échange | Aplomb Watch, onglet « Vue chaînée » : appels au modèle, outils demandés, décisions, trafic ; écarts en rouge |
 | Modifier un mandat, des règles, les comptes | Éditer, puis `aplomb cosigner <fichier> --compte alice --compte bob` (sinon `serve` refuse de démarrer et dit qui doit signer). Pour un mandat, la cosignature rejoue d'abord le banc rouge/bleu sans juge. Elle est refusée si une attaque passe moins bien qu'à la cosignature précédente ; on peut l'assumer avec `--accepter-regression`. |
+| Envoyer le journal au SIEM (option) | `aplomb diffusion exemple > diffusion.yaml`, l'adapter, `aplomb diffusion verifier`, puis redémarrer `serve` |
+| Archiver les sessions anciennes | `aplomb journal archiver --jours 180 --vers /mnt/archive/aplomb` |
 | Mesurer un mandat avant de le signer | `aplomb evaluer --mandat <mandat>` (sûreté, utilité, budget d'audit, coût du juge) |
 | Mesurer ce qu'apporte la sonde | `aplomb evaluer --mandat <mandat> --sans-sonde --sortie sans.json`, puis `aplomb evaluer --mandat <mandat> --reference sans.json` (et `--seuil-sonde` pour essayer un seuil) |
 | Comparer les protocoles AI control | `aplomb evaluer --mandat <mandat> --protocole report` (ou `reechantillonnage`, `surveillance`) |
@@ -501,7 +505,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 194 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, profil M métier et sonde, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 202 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, profil M métier et sonde, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -531,6 +535,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Preuves AI Act (J6, lot 2) | `aplomb preuves exporter` : dossier signé par système (mandat, gouvernance, banc rouge/bleu, indicateurs, intégrité du journal), statut constaté par article de l'AI Act et correspondance NIST AI RMF, ISO/IEC 42001, OWASP, ANSSI, CRA ; `aplomb preuves verifier` pour l'auditeur. J6 terminé |
 | Vue gouvernance (J6, lots 1 et 3) | Onglet « Gouvernance » d'Aplomb Watch (export de l'agrégat signé), `aplomb gouvernance` et `GET /admin/gouvernance` : indicateurs agrégés sans rien de nominatif, seuil de publication k, sessions rompues écartées (EF-P3) ; agrégats signés par l'instance, fédération vérifiée (instance connue, signature, pas de double compte) (EF-P6) |
 | Socle modulaire (J8) | 11 étapes, catalogue des modules (`aplomb modules`, onglet Modules, `GET /admin/modules`), modules actifs et empreintes dans l'en-tête de chaque session ; le socle ne lit plus aucun verbe de profil (signaux fournis par le profil) ; filtres de contenu intégrés et en fichier (empreinte cosignée) ; moniteurs externes, contrat v1, en parallèle, plafonnés, plancher en panne, contenus seulement s'ils sont déclarés ; agrégation par escalade ; plancher du juge réglable. Audit et feuille de route : [`docs/AUDIT-2026-11.md`](docs/AUDIT-2026-11.md) |
+| Diffusion SIEM et conservation (J9) | Schéma pivot versionné `aplomb/1` ; ECS (`_bulk`, dédoublonné par `_id`), Splunk HEC, syslog RFC 5424 sur TLS ou TCP local, CEF, LEEF, OTLP/HTTP JSON, webhook HMAC-SHA256, fichier ; RFC 3339 avec fuseau IANA et UTC joint ; journal utilisé comme file persistante (curseurs par destination, reprise après coupure et redémarrage, testée au banc sans perte ni doublon) ; jetons par variables d'environnement ; alertes au journal (échec prolongé, dérive d'horloge) ; `aplomb diffusion exemple / verifier / apercu / tester`, `GET /admin/diffusion`. Archivage des sessions scellées avec registre de rétention scellé (EF-I5). Désactivé par défaut (EF-N6) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |

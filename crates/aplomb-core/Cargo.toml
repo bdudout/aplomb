@@ -20,6 +20,7 @@ hmac = "0.12"
 argon2 = "0.5"
 getrandom = "0.2"
 regex = "1"
+jiff = "0.2"
 
 [dev-dependencies]
 proptest = "1"

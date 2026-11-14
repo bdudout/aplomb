@@ -154,6 +154,74 @@ pub struct Rapport {
     /// Sessions apparues depuis le dernier scellé (normal entre deux scellés).
     pub sessions_nouvelles: usize,
     pub temoin: Option<String>,
+    /// Sessions scellées puis archivées (registre de rétention, EF-I5).
+    pub sessions_archivees: usize,
+}
+
+/// Session du journal qui tient le registre des archivages (EF-I5) : chaînée et scellée
+/// comme les autres, elle prouve qu'une session absente a été archivée, et dans quel état.
+pub const SESSION_RETENTION: &str = "_retention";
+
+/// Sessions archivées : fichier → (dernier numéro, dernière empreinte).
+fn archivees(dossier_journal: &Path) -> std::collections::HashMap<String, (u64, String)> {
+    let mut m = std::collections::HashMap::new();
+    let chemin = dossier_journal.join(journal::nom_fichier(SESSION_RETENTION));
+    for l in std::fs::read_to_string(chemin).unwrap_or_default().lines() {
+        let Ok(e) = serde_json::from_str::<Entree>(l) else { continue };
+        let c = &e.contenu;
+        if c.get("action").and_then(|x| x.as_str()) == Some("archivage") {
+            let s = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            m.insert(s("fichier"), (c.get("seq").and_then(|x| x.as_u64()).unwrap_or(0), s("empreinte")));
+        }
+    }
+    m
+}
+
+/// Bilan d'un archivage.
+#[derive(Debug, Default)]
+pub struct BilanArchivage {
+    pub archivees: Vec<String>,
+    /// Sessions assez anciennes mais pas encore couvertes par un scellé : au prochain passage.
+    pub non_scellees: usize,
+}
+
+/// Archive les sessions dont la dernière entrée est antérieure à `avant_ms` et que le
+/// dernier scellé couvre (EF-I5) : copie vérifiée vers `vers`, inscription au registre de
+/// rétention, puis retrait du journal actif. Le journal reste vérifiable, et les scellés
+/// restent valables même après destruction de l'archive.
+pub fn archiver(dossier_journal: &Path, vers: &Path, avant_ms: u64, maintenant: u64) -> Result<BilanArchivage, String> {
+    let chaine = lire_chaine(&chemin_chaine(dossier_journal))?;
+    let scelle: Vec<Tete> = chaine.last().map(|(_, s)| s.sessions.clone()).unwrap_or_default();
+    let registre = journal::nom_fichier(SESSION_RETENTION);
+    let mut j = journal::Journal::ouvrir(dossier_journal).map_err(|e| e.to_string())?;
+    let mut bilan = BilanArchivage::default();
+    for t in tetes(dossier_journal)? {
+        if t.fichier == registre {
+            continue;
+        }
+        let chemin = dossier_journal.join(&t.fichier);
+        let Some(der) = journal::verifier(&chemin).map_err(|e| format!("{} : {e}", t.fichier))? else { continue };
+        if der.horodatage >= avant_ms {
+            continue;
+        }
+        if !scelle.contains(&t) {
+            bilan.non_scellees += 1;
+            continue;
+        }
+        std::fs::create_dir_all(vers).map_err(|e| format!("{} : {e}", vers.display()))?;
+        let copie = vers.join(&t.fichier);
+        std::fs::copy(&chemin, &copie).map_err(|e| format!("{} : {e}", copie.display()))?;
+        std::fs::File::open(&copie).and_then(|f| f.sync_all()).map_err(|e| e.to_string())?;
+        match journal::verifier(&copie) {
+            Ok(Some(e)) if e.empreinte == t.empreinte => {}
+            _ => return Err(format!("copie de {} incorrecte : archivage arrêté, rien n'est retiré", t.fichier)),
+        }
+        let detail = serde_json::json!({"action": "archivage", "fichier": t.fichier, "seq": t.seq, "empreinte": t.empreinte, "derniere_entree": der.horodatage});
+        j.ajouter(SESSION_RETENTION, "administration", detail, maintenant).map_err(|e| e.to_string())?;
+        std::fs::remove_file(&chemin).map_err(|e| format!("{} : {e}", chemin.display()))?;
+        bilan.archivees.push(t.fichier);
+    }
+    Ok(bilan)
 }
 
 fn entree_a(chemin: &Path, seq: u64) -> Option<Entree> {
@@ -182,10 +250,17 @@ pub fn verifier(dossier_journal: &Path, cle: &VerifyingKey) -> Result<Rapport, S
     }
     let mut r = Rapport { scelles: chaine.len() as u64, ..Default::default() };
     let Some((ligne, dernier)) = chaine.last() else { return Ok(r) };
+    let archives = archivees(dossier_journal);
     for t in &dernier.sessions {
         let chemin = dossier_journal.join(&t.fichier);
         if !chemin.exists() {
-            return Err(format!("session {} scellée puis supprimée", t.fichier));
+            match archives.get(&t.fichier) {
+                Some((seq, emp)) if *seq > t.seq || (*seq == t.seq && *emp == t.empreinte) => {
+                    r.sessions_archivees += 1;
+                    continue;
+                }
+                _ => return Err(format!("session {} scellée puis supprimée", t.fichier)),
+            }
         }
         match entree_a(&chemin, t.seq) {
             Some(e) if e.empreinte == t.empreinte => {}
@@ -260,6 +335,33 @@ mod tests {
             }
         }
         j
+    }
+
+    #[test]
+    fn archivage_sans_perte_de_verifiabilite() {
+        let d = std::env::temp_dir().join(format!("aplomb-retention-{}", std::process::id()));
+        let a = d.with_extension("archive");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&a);
+        let mut j = journal::Journal::ouvrir(&d).unwrap();
+        j.ajouter("vieille", "decision", serde_json::json!({}), 1_000).unwrap();
+        j.ajouter("recente", "decision", serde_json::json!({}), 9_000).unwrap();
+        sceller(&d, &cle(), 9_500).unwrap();
+        j.ajouter("pas-scellee", "decision", serde_json::json!({}), 1_000).unwrap();
+        let b = archiver(&d, &a, 5_000, 10_000).unwrap();
+        assert_eq!(b.archivees, vec![journal::nom_fichier("vieille")]);
+        assert_eq!(b.non_scellees, 1, "une session non scellée attend le prochain scellé");
+        assert!(a.join(journal::nom_fichier("vieille")).exists());
+        let r = verifier(&d, &cle().verifying_key()).unwrap();
+        assert_eq!(r.sessions_archivees, 1);
+        // L'archive détruite plus tard (purge) : le journal reste vérifiable.
+        std::fs::remove_dir_all(&a).unwrap();
+        sceller(&d, &cle(), 11_000).unwrap();
+        assert!(verifier(&d, &cle().verifying_key()).is_ok());
+        // Une suppression hors registre reste détectée.
+        std::fs::remove_file(d.join(journal::nom_fichier("recente"))).unwrap();
+        assert!(verifier(&d, &cle().verifying_key()).unwrap_err().contains("supprimée"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

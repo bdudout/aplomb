@@ -106,6 +106,10 @@ pub struct Options {
     /// Clients du reporting (`aplomb reporting nouveau`), relus à chaque requête.
     #[arg(long, default_value = crate::reporting::FICHIER)]
     reporting: PathBuf,
+    /// Diffusion du journal vers le SIEM (option) : absent, rien ne sort
+    /// (`aplomb diffusion exemple > diffusion.yaml`).
+    #[arg(long, default_value = "diffusion.yaml")]
+    diffusion: PathBuf,
     #[arg(long, default_value = "127.0.0.1:7700")]
     ecoute_decision: SocketAddr,
     #[arg(long, default_value = "127.0.0.1:7701")]
@@ -183,6 +187,10 @@ pub(crate) struct Etat {
     sonde: Option<Arc<crate::sonde::Sonde>>,
     /// Clients de reporting (relus pour l'onglet Modules).
     reporting: Arc<std::path::PathBuf>,
+    /// Diffusion vers le SIEM : état des destinations, si l'option est active.
+    siem: Arc<std::sync::OnceLock<crate::diffusion::Etats>>,
+    /// Fichier de diffusion (pour l'onglet Modules).
+    fichier_diffusion: Arc<PathBuf>,
 }
 
 impl Etat {
@@ -197,6 +205,15 @@ impl Etat {
 
     pub(crate) fn signer_agregat(&self, a: aplomb_core::indicateurs::Agregat) -> aplomb_core::indicateurs::AgregatSigne {
         aplomb_core::indicateurs::signer(a, &self.signataire)
+    }
+
+    /// Journalise une alerte de la diffusion (dérive d'horloge, destination en échec).
+    pub(crate) fn journaliser_alerte(&self, detail: Value) {
+        let mut interne = self.interne.lock().expect("verrou");
+        let t = maintenant();
+        if interne.journal.ajouter(SESSION_ADMIN, "administration", detail.clone(), t).is_ok() {
+            self.publier(&mut interne, json!({"type": "administration", "horodatage": t, "session": SESSION_ADMIN, "detail": detail}));
+        }
     }
 
     /// Journalise un appel de reporting (client technique, outil, issue).
@@ -692,14 +709,22 @@ async fn modules_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response
         interne.superviseur.mandat.mandat.clone()
     };
     let clients = crate::reporting::charger(&etat.reporting).map(|c| c.clients.len()).unwrap_or(0);
+    let diffusion = crate::diffusion::charger(&etat.fichier_diffusion).ok().flatten();
     let etapes: Vec<Value> = aplomb_core::modules::Etape::TOUTES.iter().map(|e| json!({"etape": e, "libelle": e.libelle(), "decision": e.decision()})).collect();
     Json(json!({
         "mandat": {"id": mandat.id, "version": mandat.version, "profil": mandat.profil},
         "deploiement": aplomb_core::moniteurs::profil_deploiement(mandat.moniteurs.as_ref()),
         "etapes": etapes,
-        "modules": crate::modules::tous(&mandat, clients),
+        "modules": crate::modules::tous(&mandat, clients, diffusion.as_ref()),
     }))
     .into_response()
+}
+
+async fn diffusion_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
+    if compte_web(&mut etat.interne.lock().expect("verrou"), &entetes).is_none() {
+        return non_connecte();
+    }
+    Json(crate::diffusion::etat_json(etat.siem.get())).into_response()
 }
 
 async fn gouvernance(State(etat): State<Etat>, entetes: HeaderMap, Query(p): Query<ParamGouvernance>) -> Response {
@@ -1027,6 +1052,11 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         format!("comptes refusés : {e} — faire cosigner : aplomb cosigner {} --compte <id>", opts.comptes.display())
     })?;
     let agents = crate::agents::charger(&opts.agents)?;
+    // Diffusion (option) : configuration et jetons vérifiés avant de démarrer.
+    let config_diffusion = crate::diffusion::charger(&opts.diffusion)?;
+    if let Some(c) = &config_diffusion {
+        crate::diffusion::jetons_presents(c)?;
+    }
     let consommation = relire_consommation(&journal, &coffre);
     let dossier_journal = opts.journal.clone();
     let cle_scelles = signataire.clone();
@@ -1054,6 +1084,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         juge,
         sonde,
         reporting: Arc::new(opts.reporting.clone()),
+        siem: Arc::new(std::sync::OnceLock::new()),
+        fichier_diffusion: Arc::new(opts.diffusion.clone()),
     };
 
     let api_decision = Router::new()
@@ -1080,6 +1112,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/consommation", get(consommation_admin))
         .route("/admin/gouvernance", get(gouvernance))
         .route("/admin/modules", get(modules_admin))
+        .route("/admin/diffusion", get(diffusion_admin))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(etat.clone());
     let reglages_reporting = crate::reporting::Reglages {
@@ -1168,6 +1201,12 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             opts.ecoute_reporting,
             if clients_reporting == 0 { "aucun client : aplomb reporting nouveau --id acra".to_string() } else { format!("{clients_reporting} client(s)") }
         );
+        eprintln!("  diffusion (SIEM)   : {}", crate::diffusion::annonce(config_diffusion.as_ref()));
+        if let Some(c) = config_diffusion {
+            let e = etat_scellement.clone();
+            let etats = crate::diffusion::lancer(c, dossier_journal.clone(), Arc::new(move |d| e.journaliser_alerte(d)));
+            let _ = etat_scellement.siem.set(etats);
+        }
         eprintln!("  scellement         : toutes les {} s, et à l'arrêt", opts.scellement);
         eprintln!("  réponses signées   : clé publique {}", opts.cle_reponses.with_extension("pub").display());
         eprintln!("  connexion à la vue : aplomb admin connexion --compte <id>");
