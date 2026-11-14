@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preuves et conformité</title>
+<meta name="description" content="Journal scellé, vue gouvernance fédérée et dossier de preuves AI Act signé : ce qu'Aplomb remet à ceux qui contrôlent.">
+<link rel="icon" href="assets/aplomb.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="top"><div class="wrap">
+<nav class="top" aria-label="Navigation principale">
+  <a class="logo" href="index.html"><img src="assets/aplomb.svg" alt="">Aplomb</a>
+  <ul>
+    <li><a href="index.html">L'histoire</a></li>
+    <li><a href="fonctionnement.html">Comment ça marche</a></li>
+    <li><a href="deployer.html">Déployer</a></li>
+    <li><a href="conformite.html" aria-current="page">Preuves &amp; conformité</a></li>
+    <li><a href="deployer.html#demarrer">Démarrer</a></li>
+  </ul>
+  <a class="gh" href="https://github.com/bdudout/aplomb">GitHub ↗</a>
+</nav>
+</div></header>
+
+<div class="wrap">
+
+<section class="hero">
+  <div class="kicker">Preuves et conformité</div>
+  <h1>Montrer, pas affirmer.</h1>
+  <p class="lead" style="margin-top:24px">Aplomb produit trois choses pour ceux qui contrôlent : un journal dont toute altération se voit, des indicateurs qui ne désignent personne, et un dossier de preuves qu'un auditeur vérifie sans Aplomb.</p>
+</section>
+
+<section id="journal">
+  <div class="kicker">Le journal</div>
+  <h2>Scellé, minimisé, effaçable.</h2>
+  <div class="acts">
+    <div class="act">
+      <div class="bar" style="background:var(--prv)"></div>
+      <h3>Intègre</h3>
+      <div class="sub">chaîne de hachage</div>
+      <ul>
+        <li>Une chaîne par session</li>
+        <li>Racine de Merkle signée toutes les 60 s et à l'arrêt</li>
+        <li>Ancrage hors de la machine (<code>aplomb ancrer</code>)</li>
+        <li>Troncature, suppression, réécriture détectées</li>
+      </ul>
+    </div>
+    <div class="act">
+      <div class="bar" style="background:var(--dec)"></div>
+      <h3>Minimisé</h3>
+      <div class="sub">chiffré par session</div>
+      <ul>
+        <li>Métadonnées en clair</li>
+        <li>Commande, chemin, domaine et prompt chiffrés</li>
+        <li>Secrets masqués dans les extraits</li>
+      </ul>
+    </div>
+    <div class="act">
+      <div class="bar" style="background:var(--mon)"></div>
+      <h3>Effaçable</h3>
+      <div class="sub">aplomb effacer</div>
+      <ul>
+        <li>La clé de la session est détruite</li>
+        <li>Les contenus deviennent illisibles</li>
+        <li>La chaîne reste vérifiable</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="gouvernance">
+  <div class="kicker">La vue gouvernance</div>
+  <h2>Comment se comporte l'agent, sans dire qui a fait quoi.</h2>
+  <div class="prose">
+    <p>Pour le RSSI, le DPO ou le comité IA : sessions, verdicts, taux de revue et de gel, règles déclenchées, avis des moniteurs, activité du juge, revues humaines, jetons, versions de mandat en vigueur.</p>
+    <ul>
+      <li><b>Jamais nominatif</b> : ni session, ni utilisateur, ni ressource, ni prompt. Elle ne lit que les métadonnées en clair.</li>
+      <li><b>Seuil de publication</b> : un cas vu moins de 5 fois est regroupé sous « autres », pour qu'un cas rare ne désigne personne.</li>
+      <li><b>Signée et fédérable</b> : chaque instance signe son agrégat ; <code>aplomb gouvernance federer</code> les additionne, refuse un agrégat modifié, une instance inconnue ou un double compte.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="preuves">
+  <div class="kicker">Le dossier de preuves AI Act</div>
+  <h2>Un dossier par système, article par article.</h2>
+  <div class="prose">
+    <p><code>aplomb preuves exporter --mandat &lt;mandat&gt;</code> produit, pour un mandat cosigné, un dossier signé à remettre à un auditeur. Les statuts « couvert », « partiel » ou « hors périmètre » se déduisent de ce qui est mesuré à l'export, jamais d'une déclaration : l'article 12 n'est couvert que si le journal est intact et scellé, l'article 14 que si le mandat et les comptes sont cosignés à quatre yeux.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Pièce</th><th>Contenu</th></tr></thead>
+      <tbody>
+        <tr><td><code>LISEZMOI.md</code></td><td>Le système, son mandat, et un tableau article par article : statut, constat, ce qui reste à l'organisation</td></tr>
+        <tr><td><code>correspondance.json</code></td><td>Statut des articles 9 à 15, 17, 19, 26, 72 et 73 ; correspondance avec NIST AI RMF, ISO/IEC 42001, OWASP, ANSSI, CRA</td></tr>
+        <tr><td><code>mandat/</code></td><td>Le mandat tel que cosigné, et ses règles</td></tr>
+        <tr><td><code>gouvernance/</code></td><td>Clés publiques, seuil, comptes et rôles, sans clé privée</td></tr>
+        <tr><td><code>evaluation.json</code></td><td>Le banc rouge/bleu rejoué au moment de l'export</td></tr>
+        <tr><td><code>indicateurs.json</code></td><td>Les indicateurs agrégés du système, signés</td></tr>
+        <tr><td><code>journal.json</code></td><td>Intégrité, scellés, ancre, période couverte</td></tr>
+        <tr><td><code>manifeste.json</code></td><td>Empreinte SHA-256 de chaque pièce, signé par l'instance</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose" style="margin-top:24px">
+    <p>L'auditeur vérifie avec <code>aplomb preuves verifier</code>, ou sans Aplomb en recalculant les SHA-256.</p>
+  </div>
+</section>
+
+<section id="limites">
+  <div class="kicker">Ce qu'Aplomb ne fait pas</div>
+  <h2>Des mesures techniques, pas une conformité clé en main.</h2>
+  <div class="promise">
+    <div><span class="x">!</span><span><b>Correspondances indicatives.</b> À vérifier article par article avant tout usage réglementaire.</span></div>
+    <div><span class="x">!</span><span><b>L'organisation garde sa part.</b> Gestion des risques, qualité et procédures restent à sa charge.</span></div>
+    <div><span class="x">!</span><span><b>Un modèle n'est pas rendu aligné.</b> Aplomb borne des actions et produit des signaux.</span></div>
+    <div><span class="x">!</span><span><b>MVP.</b> Le juge et les protocoles n'ont pas encore été mesurés avec de vrais modèles.</span></div>
+  </div>
+  <div class="next">
+    <a class="btn ghost" href="deployer.html">← Déployer</a>
+    <a class="btn" href="https://github.com/bdudout/aplomb">Voir le code →</a>
+  </div>
+</section>
+</div>
+
+<footer>
+  <div class="wrap cols">
+    <span>Aplomb — superviseur d'alignement pour agents d'IA. MVP.</span>
+    <span><a href="https://github.com/bdudout/aplomb">GitHub</a> · <a href="https://github.com/bdudout/aplomb/blob/main/LICENSE">Licences</a> · <a href="https://github.com/bdudout/aplomb/blob/main/CONTRIBUTING.md">Contribuer</a></span>
+  </div>
+</footer>
+</body>
+</html>

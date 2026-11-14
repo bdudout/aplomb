@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Déployer Aplomb</title>
+<meta name="description" content="Niveaux d'assurance, architectures de déploiement et premiers pas avec Aplomb en 15 minutes.">
+<link rel="icon" href="assets/aplomb.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="top"><div class="wrap">
+<nav class="top" aria-label="Navigation principale">
+  <a class="logo" href="index.html"><img src="assets/aplomb.svg" alt="">Aplomb</a>
+  <ul>
+    <li><a href="index.html">L'histoire</a></li>
+    <li><a href="fonctionnement.html">Comment ça marche</a></li>
+    <li><a href="deployer.html" aria-current="page">Déployer</a></li>
+    <li><a href="conformite.html">Preuves &amp; conformité</a></li>
+    <li><a href="#demarrer">Démarrer</a></li>
+  </ul>
+  <a class="gh" href="https://github.com/bdudout/aplomb">GitHub ↗</a>
+</nav>
+</div></header>
+
+<div class="wrap">
+
+<section class="hero">
+  <div class="kicker">Déployer</div>
+  <h1>Qu'est-ce qui empêche l'agent de passer à côté&nbsp;?</h1>
+  <p class="lead" style="margin-top:24px">Chaque déploiement répond à trois questions : où tourne l'agent, où tourne le modèle, et ce qui l'empêche de contourner le superviseur. Plus la réponse à la troisième est solide, plus le niveau d'assurance est élevé.</p>
+</section>
+
+<section id="niveaux">
+  <div class="kicker">Niveaux d'assurance</div>
+  <h2>De la coopération au confinement.</h2>
+  <div class="ladder">
+    <div class="rung"><div class="n">Niveau 1</div><h3>Coopératif</h3><p>Le hook de Claude Code soumet chaque action. Un script lancé par l'agent peut sortir sans être vu.</p></div>
+    <div class="rung"><div class="n">Niveau 2</div><h3>Sur le chemin</h3><p>Le proxy LLM et la passerelle MCP voient ce que demande le modèle : raisonnement, secrets, contrôle croisé.</p></div>
+    <div class="rung"><div class="n">Niveau 3</div><h3>Confiné</h3><p>L'agent tourne dans un conteneur sans route vers l'extérieur. Ses seules sorties sont les passerelles.</p></div>
+  </div>
+</section>
+
+<section id="architectures">
+  <div class="kicker">Architectures</div>
+  <h2>Sept façons de le placer.</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Cas</th><th>Ce qui retient l'agent</th><th>Pour</th><th>État</th></tr></thead>
+      <tbody>
+        <tr><td>1. Hook seul, même poste</td><td>La bonne volonté de l'agent</td><td>Découvrir, démontrer</td><td>testé</td></tr>
+        <tr><td>2. Hook en paramètres gérés</td><td>Configuration propriété de root</td><td>Poste personnel sans Docker</td><td>prêt, à installer soi-même</td></tr>
+        <tr><td>3. Passerelles sans conteneur</td><td>Variables d'environnement, contournables</td><td>Observer le trafic du modèle</td><td>testé au banc</td></tr>
+        <tr class="reco"><td><b>4. Conteneur isolé, même poste</b></td><td><b>Réseau Docker interne : seules sorties, les passerelles</b></td><td><b>Usage courant, recommandé</b></td><td>isolement vérifié, recette réelle en cours</td></tr>
+        <tr><td>5. + modèle local</td><td>Rien ne quitte la machine</td><td>Données sensibles, hors ligne</td><td>testé au banc, pas avec un vrai modèle</td></tr>
+        <tr><td>6. Zones cloisonnées (VM, hôtes)</td><td>Pare-feu entre zones</td><td>Environnement régulé, équipe</td><td>cible : pas encore de TLS entre zones</td></tr>
+        <tr><td>7. Sans virtualisation</td><td>Compte système dédié et pare-feu</td><td>Machines sans Docker ni VM</td><td>possible, non outillé</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose" style="margin-top:20px">
+    <p>Un schéma par cas dans <a href="https://github.com/bdudout/aplomb/blob/main/docs/DEPLOIEMENTS.md">docs/DEPLOIEMENTS.md</a>.</p>
+  </div>
+</section>
+
+<section id="demarrer">
+  <div class="kicker">Démarrer</div>
+  <h2>Un premier projet supervisé en 15 minutes.</h2>
+  <p class="lead" style="margin-top:18px">Niveau 1 d'abord. Le confinement se met en place ensuite, quand le hook marche. Il faut macOS ou Linux, Rust 1.80 ou plus et Claude Code.</p>
+  <ol class="steps">
+    <li><b>Construire</b>
+<pre><code>git clone https://github.com/bdudout/aplomb.git
+cd aplomb
+cargo build --release
+cargo install --path crates/aplomb</code></pre>
+      Pour tout vérifier sans rien toucher du réel : <code>scripts/banc.sh</code> monte une instance jetable et doit finir par 104 vérifications réussies.</li>
+    <li><b>Créer son instance</b>
+<pre><code>mkdir -p ~/aplomb-instance/mandats &amp;&amp; cd ~/aplomb-instance
+cp -R &lt;clone&gt;/profils .
+cp &lt;clone&gt;/exemples/mandat.yaml mandats/mon-projet.yaml</code></pre>
+      Puis adapter le mandat : racine du dépôt, domaines autorisés, intention.</li>
+    <li><b>Initialiser la gouvernance</b>
+<pre><code>aplomb init --membre alice --membre bob</code></pre>
+      Une phrase de passe, deux comptes, un seuil de deux signatures, mandats cosignés.</li>
+    <li><b>Lancer le superviseur</b>
+<pre><code>aplomb serve --mandat mandats/mon-projet.yaml</code></pre>
+      Il vérifie les signatures et crée <code>cles/reponses.pub</code>, la clé qui signe ses réponses.</li>
+    <li><b>Brancher Claude Code</b>
+      Déclarer <code>aplomb hook --cle-serveur …/cles/reponses.pub</code> en <code>PreToolUse</code> et <code>PostToolUse</code> dans <code>.claude/settings.json</code> du dépôt.</li>
+    <li><b>Vérifier</b>
+      Demander à Claude Code de lancer les tests (autorisé), puis <code>curl https://example.com</code> (refusé). Ouvrir Aplomb Watch avec <code>aplomb admin --compte alice connexion</code>, puis <code>aplomb verify --journal journal</code>.</li>
+  </ol>
+  <div class="prose" style="margin-top:28px">
+    <p>Pas à pas complet, confinement, modèle local, serveurs MCP et juge : <a href="https://github.com/bdudout/aplomb#installation">installation dans le README</a>.</p>
+  </div>
+</section>
+
+<section id="ports">
+  <div class="kicker">Repères</div>
+  <h2>Les ports.</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Port</th><th>Service</th><th>Qui le joint</th></tr></thead>
+      <tbody>
+        <tr><td><code>7700</code></td><td>Décision</td><td>le hook</td></tr>
+        <tr><td><code>7701</code></td><td>Administration, Aplomb Watch</td><td>les humains seulement, jamais l'agent</td></tr>
+        <tr><td><code>7702</code></td><td>Aplomb Gate (<code>HTTPS_PROXY</code>)</td><td>l'agent</td></tr>
+        <tr><td><code>7703</code></td><td>Proxy LLM (<code>ANTHROPIC_BASE_URL</code>)</td><td>l'agent</td></tr>
+        <tr><td><code>7704</code></td><td>Passerelle MCP</td><td>l'agent</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="next">
+    <a class="btn ghost" href="fonctionnement.html">← Comment ça marche</a>
+    <a class="btn" href="conformite.html">Preuves et conformité →</a>
+  </div>
+</section>
+</div>
+
+<footer>
+  <div class="wrap cols">
+    <span>Tout écoute sur la boucle locale (<code>127.0.0.1</code>).</span>
+    <span><a href="https://github.com/bdudout/aplomb">GitHub</a> · <a href="https://github.com/bdudout/aplomb/blob/main/conteneur/README.md">Conteneur</a> · <a href="https://github.com/bdudout/aplomb/blob/main/deploiement/README.md">Paramètres gérés</a></span>
+  </div>
+</footer>
+</body>
+</html>

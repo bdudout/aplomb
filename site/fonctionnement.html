@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comment marche Aplomb</title>
+<meta name="description" content="Mandat signé, règles Cedar, moniteurs, juge, passerelles et journal : comment Aplomb décide de chaque action d'un agent d'IA.">
+<link rel="icon" href="assets/aplomb.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="top"><div class="wrap">
+<nav class="top" aria-label="Navigation principale">
+  <a class="logo" href="index.html"><img src="assets/aplomb.svg" alt="">Aplomb</a>
+  <ul>
+    <li><a href="index.html">L'histoire</a></li>
+    <li><a href="fonctionnement.html" aria-current="page">Comment ça marche</a></li>
+    <li><a href="deployer.html">Déployer</a></li>
+    <li><a href="conformite.html">Preuves &amp; conformité</a></li>
+    <li><a href="deployer.html#demarrer">Démarrer</a></li>
+  </ul>
+  <a class="gh" href="https://github.com/bdudout/aplomb">GitHub ↗</a>
+</nav>
+</div></header>
+
+<div class="wrap">
+
+<section class="hero">
+  <div class="kicker">Comment ça marche</div>
+  <h1>Une action, un mandat, un verdict.</h1>
+  <p class="lead" style="margin-top:24px">Avant chaque action de l'agent, Aplomb rassemble ce qu'il sait : le mandat signé, les règles du profil, l'avis des moniteurs, les bornes de la session. Il retient le verdict le plus strict, l'applique, puis l'inscrit au journal.</p>
+  <pre><code>action de l'agent ─▶ profil (outil → effet) ─▶ mandat + règles Cedar ─▶ moniteurs, juge, bornes
+                                                                         │
+                     journal chaîné ◀── Allow · Review · Deny · Gel ◀────┘  (le plus strict l'emporte)</code></pre>
+</section>
+
+<section id="coeur">
+  <div class="kicker">Aplomb — le cœur de décision</div>
+  <h2>Ce que l'agent a le droit de faire.</h2>
+  <div class="prose">
+    <h3>Le mandat</h3>
+    <p>Un fichier YAML par projet : la racine du dépôt, les domaines joignables, les branches protégées, le modèle, les serveurs MCP et les bornes de la session. Il porte aussi une <b>intention</b> en langue naturelle, que le juge utilise.</p>
+    <p>Le mandat est cosigné par deux membres au moins, avec les empreintes des règles. Un mandat ou une règle modifiés sans nouvelle cosignature : le superviseur refuse de démarrer.</p>
+    <pre><code>id: mon-projet
+profil: code
+intention: Développer et tester mon-projet, sans rien toucher en dehors du dépôt.
+perimetre:
+  racine: /Users/moi/code/mon-projet
+  domaines_autorises: [pypi.org, files.pythonhosted.org]
+  branches_protegees: [main]
+bornes: {refus: 5, revues: 20, domaines: 10, envois: 3, actions: 2000}</code></pre>
+
+    <h3>Les profils</h3>
+    <p>Un profil traduit chaque outil d'un type d'agent en effet : lire, écrire, exécuter, réseau, outil MCP, déléguer. Deux fichiers de règles <a href="https://www.cedarpolicy.com">Cedar</a> : <code>regles.cedar</code> permet ou refuse, <code>revue.cedar</code> désigne ce qui demande un humain. Le premier profil, « agent de code », couvre Claude Code.</p>
+
+    <h3>Les moniteurs déterministes</h3>
+    <ul>
+      <li><b>Provenance</b> : après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt), les actions sensibles passent en revue.</li>
+      <li><b>Secrets</b> : une clé privée ou un jeton d'API dans une action la met en revue, ou gèle la session s'il quitte la machine.</li>
+      <li><b>Enchaînements</b> : télécharger puis exécuter, viser par un autre outil une destination refusée, lire un fichier sensible puis envoyer des données.</li>
+      <li><b>Contrôle croisé</b> : une action qui ne correspond à aucun appel demandé par le modèle est signalée.</li>
+    </ul>
+
+    <h3>Le juge (facultatif)</h3>
+    <p>Un modèle, local de préférence, juge l'écart entre l'action et l'intention du mandat. Il n'est consulté que pour les actions qui comptent (exécution, réseau, MCP, délégation) et sur un échantillon des autres. Ce qui vient de l'agent lui est présenté comme donnée, jamais comme instruction. Sans réponse dans le délai, l'action passe en revue.</p>
+
+    <h3>Raisonnement et protocoles <i>AI control</i></h3>
+    <p>Quand le modèle produit un raisonnement explicite, le proxy LLM le lit : une intention de contourner la supervision, d'agir à l'insu des humains ou d'exfiltrer met en revue les actions qui suivent. Deux protocoles peuvent retenir une réponse suspecte avant que l'agent la reçoive : <code>report</code> (<i>defer to trusted</i>, un modèle de confiance répond à la place) et <code>reechantillonnage</code>.</p>
+
+    <h3>Bornes, gel et délégation</h3>
+    <p>Refus, revues, domaines et envois sont comptés par session ; un dépassement gèle la session. Un sous-agent est jugé par son propre mandat, inclus dans celui du parent, et par le mandat parent : le plus strict l'emporte.</p>
+
+    <h3>Le hook Claude Code</h3>
+    <p><code>aplomb hook</code> soumet chaque action avant exécution. Il n'accepte que des réponses signées sur son nonce : un faux superviseur ou un rejeu est refusé. Si le superviseur ne répond pas, l'action est refusée.</p>
+  </div>
+</section>
+
+<section id="gate">
+  <div class="kicker">Aplomb Gate — les passerelles</div>
+  <h2>Rien ne sort sans passer par là.</h2>
+  <div class="prose">
+    <p>Le hook dépend de la coopération de l'agent. Les passerelles, elles, sont sur le chemin du trafic : dans le conteneur, ce sont les seules sorties.</p>
+  </div>
+  <div class="acts">
+    <div class="act">
+      <div class="bar" style="background:var(--mon)"></div>
+      <h3>Réseau sortant</h3>
+      <div class="sub">127.0.0.1:7702 · HTTPS_PROXY</div>
+      <ul>
+        <li>Chaque destination est jugée</li>
+        <li>Adresses internes refusées après résolution</li>
+        <li>Envoi plafonné par connexion</li>
+        <li>Volume échangé journalisé</li>
+      </ul>
+    </div>
+    <div class="act">
+      <div class="bar" style="background:var(--mon)"></div>
+      <h3>Proxy LLM</h3>
+      <div class="sub">127.0.0.1:7703 · ANTHROPIC_BASE_URL</div>
+      <ul>
+        <li>Seulement vers le modèle du mandat</li>
+        <li>Clé de l'agent retirée, jeton d'Aplomb injecté</li>
+        <li>Secrets masqués avant envoi au modèle</li>
+        <li>Jetons imputés à un compte technique, quotas</li>
+      </ul>
+    </div>
+    <div class="act">
+      <div class="bar" style="background:var(--mon)"></div>
+      <h3>Passerelle MCP</h3>
+      <div class="sub">127.0.0.1:7704/mcp/&lt;nom&gt;</div>
+      <ul>
+        <li>Aplomb lance lui-même les serveurs du mandat</li>
+        <li>Chaque appel d'outil est jugé</li>
+        <li>Définitions épinglées : une description qui change, l'outil est refusé</li>
+      </ul>
+    </div>
+  </div>
+  <div class="prose" style="margin-top:28px">
+    <p>Quand une passerelle obtient un verdict Review, l'action attend deux minutes la réponse d'un humain dans Aplomb Watch, puis elle est refusée.</p>
+  </div>
+</section>
+
+<section id="watch">
+  <div class="kicker">Aplomb Watch — voir et répondre</div>
+  <h2>Ce que voient les humains.</h2>
+  <div class="prose">
+    <p>Une interface sur la boucle locale (<code>127.0.0.1:7701</code>), réservée aux humains et jamais joignable par l'agent. On s'y connecte par un lien à usage unique.</p>
+    <ul>
+      <li><b>Flux en direct</b> des décisions, avec les compteurs de la session.</li>
+      <li><b>File de revue</b> : approuver ou refuser une action en attente.</li>
+      <li><b>Vue chaînée</b> : chaque échange avec le modèle, les outils demandés et les actions réellement exécutées, avec les écarts en rouge.</li>
+      <li><b>Consommation</b> : jetons par utilisateur, compte technique, prompt et modèle ; contexte et compactions.</li>
+      <li><b>Gouvernance</b> : indicateurs agrégés, sans rien de nominatif.</li>
+      <li><b>Boutons</b> : geler, dégeler à quatre yeux, vérifier le journal.</li>
+    </ul>
+    <p>Les comptes sont nominatifs, à clé ed25519, avec trois rôles : lecteur, opérateur, approbateur. Un compte seul peut geler ; dégeler en demande deux.</p>
+  </div>
+</section>
+
+<section id="banc">
+  <div class="kicker">Mesurer avant de signer</div>
+  <h2>Le banc rouge/bleu.</h2>
+  <div class="prose">
+    <p><code>aplomb evaluer --mandat &lt;mandat&gt;</code> joue 39 scénarios du profil (10 tâches légitimes, 29 attaques) contre le vrai superviseur et rend :</p>
+    <ul>
+      <li>la <b>sûreté</b> : la part des attaques bloquées ou mises en revue ;</li>
+      <li>l'<b>utilité</b> : la part des tâches légitimes faites sans humain ;</li>
+      <li>le <b>budget d'audit</b> : le taux de revue du trafic légitime, comparé à ce qu'un humain peut revoir ;</li>
+      <li>le <b>coût du juge</b>.</li>
+    </ul>
+    <p>Chaque cosignature de mandat rejoue le banc et refuse une régression. Sur le mandat d'exemple, sans juge, 80 % des attaques sont arrêtées ; avec le protocole <code>report</code> et un juge factice, 72 % sans aucun humain. Ces chiffres viennent du banc, pas encore de vrais modèles.</p>
+  </div>
+  <div class="next">
+    <a class="btn ghost" href="index.html">← L'histoire</a>
+    <a class="btn" href="deployer.html">Déployer Aplomb →</a>
+  </div>
+</section>
+</div>
+
+<footer>
+  <div class="wrap cols">
+    <span>Détails et limites : <a href="https://github.com/bdudout/aplomb/blob/main/docs/ARCHITECTURE-MVP.md">architecture du MVP</a>.</span>
+    <span><a href="https://github.com/bdudout/aplomb">GitHub</a> · <a href="https://github.com/bdudout/aplomb/blob/main/CONTRIBUTING.md">Contribuer</a></span>
+  </div>
+</footer>
+</body>
+</html>

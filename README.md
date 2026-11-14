@@ -2,6 +2,8 @@
 
 # Aplomb — superviseur d'alignement pour agents d'IA (MVP)
 
+**Présentation : [bdudout.github.io/aplomb](https://bdudout.github.io/aplomb/)**
+
 Superviseur générique d'agents d'IA : chaque action est décidée **avant** exécution
 (Allow / Review / Deny / Gel) selon un **mandat signé**, puis **journalisée** dans une
 chaîne de hachage. Premier cas : **Claude Code** (profil C « agent de code »), branché
