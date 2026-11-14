@@ -13,7 +13,8 @@
 //! - `aplomb agent` — comptes techniques des agents : consommation et quotas du modèle ;
 //! - `aplomb gouvernance` — indicateurs agrégés, signés et fédérables (J6, EF-P3, EF-P6) ;
 //! - `aplomb preuves` — dossier de preuves AI Act d'un système, signé ; sa vérification (J6) ;
-//! - `aplomb reporting` — clients du reporting MCP en lecture seule (ACRA, GRC…).
+//! - `aplomb reporting` — clients du reporting MCP en lecture seule (ACRA, GRC…) ;
+//! - `aplomb profils` — profils de domaine connus (code, pentest), référentiels, modèles.
 // Pas de code `unsafe`, sauf les appels système des deux modules qui en ont besoin
 // (identité du pair d'un socket, Touch ID) ; le cœur `aplomb-core` l'interdit tout à fait.
 #![deny(unsafe_code)]
@@ -137,6 +138,9 @@ enum Commande {
         #[arg(long, value_parser = protocole)]
         protocole: Option<aplomb_core::moniteurs::ModeProtocole>,
     },
+    /// Profils de domaine connus (code, pentest…) : à quoi ils servent, leurs référentiels,
+    /// le modèle de mandat à copier.
+    Profils,
     /// Vérifie le journal : chaînes, scellés signés, et copie d'ancrage si fournie.
     Verify {
         #[arg(long, default_value = "journal")]
@@ -439,6 +443,18 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let res = match cli.commande {
         Commande::Serve(opts) => serveur::lancer(opts),
+        Commande::Profils => {
+            for p in aplomb_core::profils::PROFILS {
+                let modele = if p.nom() == "code" { "exemples/mandat.yaml".to_string() } else { format!("exemples/mandat-{}.yaml", p.nom()) };
+                println!("{} — {}", p.nom(), p.description());
+                println!("  règles et jeu d'évaluation : profils/{}/ ; modèle de mandat : {modele}", p.nom());
+                for r in p.referentiels() {
+                    println!("  référentiel : {r}");
+                }
+            }
+            println!("Vérifier un mandat sans le signer : aplomb evaluer --mandat <fichier> --sans-juge");
+            Ok(())
+        }
         Commande::Hook { perimetre, cle_serveur, branchement } => {
             return hook::executer(&perimetre, cle_serveur.as_deref(), &branchement)
         }

@@ -92,6 +92,7 @@ mod tests {
                 serveurs_mcp: vec![ServeurMcp { nom: "fs".into(), commande: vec!["fs".into()], outils: vec!["lire".into()], fiable: false }],
             },
             politique: FichiersPolitique { regles: "r".into(), revue: "v".into(), regles_sha256: String::new(), revue_sha256: String::new() },
+            extension: None,
             bornes: None,
             moniteurs: None,
             signature: None,

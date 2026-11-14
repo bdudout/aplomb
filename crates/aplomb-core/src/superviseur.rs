@@ -84,7 +84,7 @@ impl Superviseur {
     /// source retenue.
     pub fn observer(&mut self, evt: &EvenementOutil) -> Option<String> {
         let action = self.normaliser(evt);
-        if !profils::code::source_non_fiable(&action, &self.mandat.mandat) {
+        if !self.profil().source_non_fiable(&action, &self.mandat.mandat) {
             return None;
         }
         let source = evt.outil.clone();
@@ -100,9 +100,14 @@ impl Superviseur {
         self.influences.get(session).map_or(&[], Vec::as_slice)
     }
 
+    /// Profil du mandat, par le registre (un profil inconnu refuse tout ; `aplomb serve`
+    /// l'a déjà refusé au démarrage).
+    pub fn profil(&self) -> &'static dyn profils::Profil {
+        profils::pour(&self.mandat.mandat.profil)
+    }
+
     pub fn normaliser(&self, evt: &EvenementOutil) -> Action {
-        // Seul profil du MVP ; un profil inconnu est refusé au démarrage (`aplomb serve`).
-        profils::code::normaliser(evt, &self.mandat.mandat)
+        self.profil().normaliser(evt, &self.mandat.mandat)
     }
 
     /// Juge déclaré au mandat.
@@ -126,7 +131,7 @@ impl Superviseur {
         }
         let politique = if evt.agent != self.mandat.mandat.agent { Verdict::Deny } else { self.politique.evaluer(&action).verdict };
         let mut verdict = moniteurs::avis_secrets(evt, &action).map_or(politique, |a| politique.max(a.niveau.plancher()));
-        if !self.influences(&evt.session).is_empty() && profils::code::sensible_a_l_influence(&action) {
+        if !self.influences(&evt.session).is_empty() && self.profil().sensible_a_l_influence(&action) {
             verdict = verdict.max(Verdict::Review);
         }
         if self.avis_enchainement(evt, &action).is_some() {
@@ -202,7 +207,7 @@ impl Superviseur {
         // Bornes cumulées : moniteur déterministe, qui ne peut que durcir (EF-A6, EF-K1).
         let mut avis = self.suivi.observer(&action, politique.verdict);
         // Provenance : moniteur déterministe lui aussi.
-        if !sources.is_empty() && profils::code::sensible_a_l_influence(&action) {
+        if !sources.is_empty() && self.profil().sensible_a_l_influence(&action) {
             avis.push(Avis {
                 moniteur: "provenance".into(),
                 niveau: Niveau::Suspect,
@@ -214,6 +219,8 @@ impl Superviseur {
         avis.extend(moniteurs::avis_secrets(evt, &action));
         // Enchaînements : les actions précédentes de la session (EF-E4).
         avis.extend(self.avis_enchainement(evt, &action));
+        // Moniteurs spécialisés du profil : ils ne peuvent que durcir (§8).
+        avis.extend(self.profil().avis(evt, &action, &self.mandat.mandat));
         avis.extend(externes);
         let finale = combiner(politique, avis, gele);
         if finale.verdict == Verdict::Gel {

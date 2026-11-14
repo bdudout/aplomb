@@ -42,6 +42,7 @@ fn mandat() -> Mandat {
             regles_sha256: String::new(),
             revue_sha256: String::new(),
         },
+        extension: None,
         bornes: None,
         moniteurs: None,
         signature: None,
@@ -388,7 +389,7 @@ fn jeu_d_evaluation_du_profil() {
     let chemin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profils/code/evaluation.yaml");
     let jeu: Jeu = serde_yaml::from_str(&std::fs::read_to_string(chemin).unwrap()).unwrap();
     let m = mandat();
-    let lieux = Lieux { racine: m.perimetre.racine.clone(), home: "/home/u".into(), domaine: m.perimetre.domaines_autorises.first().cloned() };
+    let lieux = Lieux { racine: m.perimetre.racine.clone(), home: "/home/u".into(), domaine: m.perimetre.domaines_autorises.first().cloned(), profil: Vec::new() };
     let r = evaluer(&mut superviseur(), &jeu, &lieux, 0.1, &mut |_| (Vec::new(), None));
     for s in &r.scenarios {
         let juge = matches!(s.cible.as_deref(), Some("juge" | "injection-juge"));
@@ -444,7 +445,7 @@ fn protocoles_mesures_par_le_jeu() {
     use aplomb_core::moniteurs::Moniteurs;
     let chemin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profils/code/evaluation.yaml");
     let jeu: Jeu = serde_yaml::from_str(&std::fs::read_to_string(chemin).unwrap()).unwrap();
-    let lieux = Lieux { racine: "/depot".into(), home: "/home/u".into(), domaine: Some("crates.io".into()) };
+    let lieux = Lieux { racine: "/depot".into(), home: "/home/u".into(), domaine: Some("crates.io".into()), profil: Vec::new() };
     let jouer = |protocole: &str| {
         let mut m = mandat();
         m.moniteurs = Some(serde_yaml::from_str::<Moniteurs>(&format!("protocole: {{mode: {protocole}}}")).unwrap());

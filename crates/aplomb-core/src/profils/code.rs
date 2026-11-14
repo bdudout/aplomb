@@ -34,6 +34,30 @@ use serde_json::{json, Map, Value};
 use crate::action::{Action, EvenementOutil};
 use crate::mandat::Mandat;
 
+/// Profil C inscrit au registre ([`super::PROFILS`]).
+pub struct ProfilCode;
+
+impl super::Profil for ProfilCode {
+    fn nom(&self) -> &'static str {
+        "code"
+    }
+    fn description(&self) -> &'static str {
+        "agent de code (Claude Code) : dépôt, branches, commandes, domaines"
+    }
+    fn normaliser(&self, evt: &EvenementOutil, mandat: &Mandat) -> Action {
+        normaliser(evt, mandat)
+    }
+    fn source_non_fiable(&self, action: &Action, mandat: &Mandat) -> bool {
+        source_non_fiable(action, mandat)
+    }
+    fn sensible_a_l_influence(&self, action: &Action) -> bool {
+        sensible_a_l_influence(action)
+    }
+    fn referentiels(&self) -> &'static [&'static str] {
+        &["Recommandations ANSSI/BSI sur les assistants de programmation (2024)"]
+    }
+}
+
 /// Verbe du profil pour un outil Claude Code.
 pub fn verbe(outil: &str) -> &'static str {
     match outil {
@@ -80,7 +104,7 @@ pub fn sensible_a_l_influence(action: &Action) -> bool {
 }
 
 /// Normalisation lexicale (`.` et `..`), sans accès disque.
-fn normaliser_chemin(base: &Path, chemin: &str) -> PathBuf {
+pub(crate) fn normaliser_chemin(base: &Path, chemin: &str) -> PathBuf {
     let brut = if chemin.starts_with('~') {
         PathBuf::from(chemin) // laissé tel quel : jamais sous la racine du dépôt
     } else {
@@ -99,7 +123,7 @@ fn normaliser_chemin(base: &Path, chemin: &str) -> PathBuf {
     sortie
 }
 
-fn sous(chemin: &Path, racine: &Path) -> bool {
+pub(crate) fn sous(chemin: &Path, racine: &Path) -> bool {
     chemin.starts_with(racine)
 }
 
@@ -108,7 +132,7 @@ const MOTIFS_SENSIBLES: &[&str] = &[
     ".key", ".netrc", ".npmrc", ".pypirc", "secrets", "sal.cle", "journal-cles", ".config/aplomb/", ".config/sal/",
 ];
 
-fn est_sensible(texte: &str) -> bool {
+pub(crate) fn est_sensible(texte: &str) -> bool {
     let t = texte.to_ascii_lowercase();
     MOTIFS_SENSIBLES.iter().any(|m| t.contains(m))
 }
@@ -350,7 +374,7 @@ fn cibles_suppression_recursive<'a>(commande: &'a str) -> Option<Vec<&'a str>> {
     res
 }
 
-fn touche_supervision(texte: &str) -> bool {
+pub(crate) fn touche_supervision(texte: &str) -> bool {
     let t = texte.to_ascii_lowercase();
     t.contains(":7701")
         || t.contains("/admin/")
@@ -393,7 +417,7 @@ fn texte_ecrit(entree: &Value) -> String {
     s
 }
 
-fn chaine(entree: &Value, cles: &[&str]) -> String {
+pub(crate) fn chaine(entree: &Value, cles: &[&str]) -> String {
     cles.iter()
         .find_map(|c| entree.get(*c).and_then(Value::as_str))
         .unwrap_or("")
@@ -547,6 +571,7 @@ mod tests {
                 regles_sha256: String::new(),
                 revue_sha256: String::new(),
             },
+            extension: None,
             bornes: None,
             moniteurs: None,
             signature: None,

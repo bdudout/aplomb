@@ -39,6 +39,7 @@ fn lieux(m: &MandatCharge) -> Lieux {
         racine: m.mandat.perimetre.racine.clone(),
         home: std::env::var("HOME").unwrap_or_else(|_| "/home/utilisateur".into()),
         domaine: m.mandat.perimetre.domaines_autorises.first().cloned(),
+        profil: aplomb_core::profils::pour(&m.mandat.profil).substitutions(&m.mandat),
     }
 }
 
@@ -55,6 +56,7 @@ fn imposer_protocole(m: &mut MandatCharge, mode: ModeProtocole) {
 }
 
 fn jouer(m: MandatCharge, jeu: &Jeu, budget: f64, juge: Option<&crate::juge::Juge>) -> Result<Rapport, String> {
+    aplomb_core::profils::verifier_mandat(&m.mandat)?;
     if jeu.profil != m.mandat.profil {
         return Err(format!("jeu du profil « {} », mandat du profil « {} »", jeu.profil, m.mandat.profil));
     }

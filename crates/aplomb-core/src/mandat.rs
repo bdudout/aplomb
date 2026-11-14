@@ -93,6 +93,12 @@ pub struct Mandat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     pub politique: FichiersPolitique,
+    /// Extension de schéma propre au profil (§8), couverte par la signature : la fiche
+    /// d'autorisation du profil `pentest`, par exemple. Le profil la lit et la vérifie
+    /// (`profils::Profil::valider`). Absente du texte signé quand elle est vide : les
+    /// mandats antérieurs restent valides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension: Option<serde_json::Value>,
     /// Bornes cumulées par session (EF-A6) ; absentes : valeurs par défaut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bornes: Option<crate::bornes::Bornes>,
@@ -271,6 +277,7 @@ mod tests {
                 regles_sha256: String::new(),
                 revue_sha256: String::new(),
             },
+            extension: None,
             bornes: None,
             moniteurs: None,
             signature: None,
