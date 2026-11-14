@@ -6,7 +6,11 @@ use std::path::Path;
 use aplomb_core::modules::{modules_du_mandat, Capacites, Etape, Facon, Module};
 
 /// Modules propres à l'instance (hors mandat) : reporting, preuves, vue gouvernance.
-pub fn modules_instance(clients_reporting: usize, diffusion: Option<&aplomb_core::diffusion::ConfigDiffusion>) -> Vec<Module> {
+pub fn modules_instance(
+    clients_reporting: usize,
+    diffusion: Option<&aplomb_core::diffusion::ConfigDiffusion>,
+    identite: &aplomb_core::identite::ConfigIdentite,
+) -> Vec<Module> {
     let m = |id: &str, etape, facon, description: &str, actif, reglage: &str| Module {
         id: id.into(),
         etape,
@@ -33,6 +37,24 @@ pub fn modules_instance(clients_reporting: usize, diffusion: Option<&aplomb_core
         m("watch-gouvernance", Etape::Visualisation, Facon::Integre, "onglets Flux, Vue chaînée, Consommation, Gouvernance, Modules", true, "toujours actif"),
         m("comptes-quatre-yeux", Etape::Identite, Facon::Integre, "comptes cosignés, rôles, quatre yeux, Touch ID pour la clé", true, "aplomb compte …"),
     ];
+    // Identité (étape 11) : options cosignées dans comptes.yaml.
+    v.push(m("mfa-totp", Etape::Identite, Facon::Integre, "second facteur TOTP : connexion à la vue, dégel, réactivation", identite.mfa_exigee(), "identite: {mfa: {}} dans comptes.yaml, puis aplomb compte mfa --compte <id>"));
+    v.push(m(
+        "sso-oidc",
+        Etape::Identite,
+        Facon::Integre,
+        &identite.sso.as_ref().map(|s| format!("connexion par OpenID Connect ({}), groupes → rôles", s.emetteur)).unwrap_or_else(|| "connexion par OpenID Connect, groupes de l'annuaire → rôles".into()),
+        identite.sso.is_some(),
+        "identite.sso dans comptes.yaml (docs/IDENTITE.md)",
+    ));
+    v.push(m(
+        "revue-comptes",
+        Etape::Identite,
+        Facon::Integre,
+        &identite.revue.as_ref().map(|r| format!("suspension après {} j d'inactivité, réactivation à quatre yeux", r.inactivite_jours)).unwrap_or_else(|| "suspension des comptes inactifs, campagnes de revue cosignées".into()),
+        identite.revue.is_some(),
+        "identite: {revue: {inactivite_jours: 90}} dans comptes.yaml",
+    ));
     // Diffusion vers le SIEM (étape 8) : une ligne par destination, ou l'option disponible.
     let destinations = diffusion.map(|c| c.destinations.as_slice()).unwrap_or_default();
     if destinations.is_empty() {
@@ -54,9 +76,14 @@ pub fn modules_instance(clients_reporting: usize, diffusion: Option<&aplomb_core
 }
 
 /// Tous les modules, triés par étape.
-pub fn tous(mandat: &aplomb_core::mandat::Mandat, clients_reporting: usize, diffusion: Option<&aplomb_core::diffusion::ConfigDiffusion>) -> Vec<Module> {
+pub fn tous(
+    mandat: &aplomb_core::mandat::Mandat,
+    clients_reporting: usize,
+    diffusion: Option<&aplomb_core::diffusion::ConfigDiffusion>,
+    identite: &aplomb_core::identite::ConfigIdentite,
+) -> Vec<Module> {
     let mut v = modules_du_mandat(mandat);
-    v.extend(modules_instance(clients_reporting, diffusion));
+    v.extend(modules_instance(clients_reporting, diffusion, identite));
     v.sort_by_key(|m| m.etape);
     v
 }
@@ -70,11 +97,16 @@ fn facon(f: Facon) -> &'static str {
 }
 
 /// `aplomb modules` : la liste lisible.
-pub fn afficher(mandat: &Path, reporting: &Path, diffusion: &Path, tout: bool) -> Result<(), String> {
+pub fn afficher(mandat: &Path, reporting: &Path, diffusion: &Path, comptes: &Path, tout: bool) -> Result<(), String> {
     let m = aplomb_core::mandat::charger_candidat(mandat).map_err(|e| format!("{} : {e}", mandat.display()))?.mandat;
     let clients = crate::reporting::charger(reporting).map(|c| c.clients.len()).unwrap_or(0);
     let diffusion = crate::diffusion::charger(diffusion)?;
-    let v = tous(&m, clients, diffusion.as_ref());
+    let identite = std::fs::read_to_string(comptes)
+        .ok()
+        .and_then(|t| serde_yaml::from_str::<aplomb_core::autorite::FichierComptes>(&t).ok())
+        .map(|f| f.identite)
+        .unwrap_or_default();
+    let v = tous(&m, clients, diffusion.as_ref(), &identite);
     println!("Modules — mandat {} v{} (profil {}), déploiement {}", m.id, m.version, m.profil, aplomb_core::moniteurs::profil_deploiement(m.moniteurs.as_ref()));
     println!("● actif  ○ disponible — sur le chemin de décision (étapes 1 à 6), un module ne peut que durcir.");
     for (i, e) in Etape::TOUTES.iter().enumerate() {

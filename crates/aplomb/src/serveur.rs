@@ -106,6 +106,9 @@ pub struct Options {
     /// Clients du reporting (`aplomb reporting nouveau`), relus à chaque requête.
     #[arg(long, default_value = crate::reporting::FICHIER)]
     reporting: PathBuf,
+    /// Activité des comptes (revue des comptes inactifs, EF-N5).
+    #[arg(long, default_value = "activite-comptes.json")]
+    activite: PathBuf,
     /// Diffusion du journal vers le SIEM (option) : absent, rien ne sort
     /// (`aplomb diffusion exemple > diffusion.yaml`).
     #[arg(long, default_value = "diffusion.yaml")]
@@ -139,6 +142,12 @@ struct Interne {
     stats_protocole: StatsProtocole,
     /// Utilisateur à qui imputer les appels quand aucun compte technique n'est déclaré.
     utilisateur_local: String,
+    /// Seconds facteurs des comptes (si la MFA est exigée).
+    mfa: crate::identite::Mfa,
+    /// Activité des comptes et suspensions.
+    activite: crate::identite::Activite,
+    /// Connexions SSO en cours.
+    sso_attente: crate::identite::AttentesSso,
 }
 
 /// Compte auquel imputer un appel au modèle.
@@ -191,6 +200,8 @@ pub(crate) struct Etat {
     siem: Arc<std::sync::OnceLock<crate::diffusion::Etats>>,
     /// Fichier de diffusion (pour l'onglet Modules).
     fichier_diffusion: Arc<PathBuf>,
+    /// Fournisseur d'identité (SSO), si déclaré dans comptes.yaml.
+    sso: Option<Arc<aplomb_core::identite::ConfigSso>>,
 }
 
 impl Etat {
@@ -701,12 +712,12 @@ struct ParamGouvernance {
 /// l'agrégat signé par l'instance, prêt à fédérer.
 /// Onglet « Modules » : ce qui est actif à chaque étape et comment ajouter le reste.
 async fn modules_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
-    let mandat = {
+    let (mandat, identite) = {
         let mut interne = etat.interne.lock().expect("verrou");
         if compte_web(&mut interne, &entetes).is_none() {
             return non_connecte();
         }
-        interne.superviseur.mandat.mandat.clone()
+        (interne.superviseur.mandat.mandat.clone(), interne.autorite.identite().clone())
     };
     let clients = crate::reporting::charger(&etat.reporting).map(|c| c.clients.len()).unwrap_or(0);
     let diffusion = crate::diffusion::charger(&etat.fichier_diffusion).ok().flatten();
@@ -715,7 +726,7 @@ async fn modules_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response
         "mandat": {"id": mandat.id, "version": mandat.version, "profil": mandat.profil},
         "deploiement": aplomb_core::moniteurs::profil_deploiement(mandat.moniteurs.as_ref()),
         "etapes": etapes,
-        "modules": crate::modules::tous(&mandat, clients, diffusion.as_ref()),
+        "modules": crate::modules::tous(&mandat, clients, diffusion.as_ref(), &identite),
     }))
     .into_response()
 }
@@ -881,6 +892,11 @@ fn appliquer(etat: &Etat, interne: &mut Interne, issue: &Issue, compte: &str, se
             interne.superviseur.degeler(session);
             json!({"action": "degel", "session": session, "demandeur": demandeur, "approbateur": approbateur})
         }
+        Issue::ReactivationEnAttente => json!({"action": "demande-reactivation", "compte": compte}),
+        Issue::Reactivation { cible, demandeur, approbateur } => {
+            interne.activite.reactiver(cible, t);
+            json!({"action": "reactivation", "cible": cible, "demandeur": demandeur, "approbateur": approbateur})
+        }
     };
     let _ = interne.journal.ajouter(session.unwrap_or(SESSION_ADMIN), "administration", detail.clone(), t);
     etat.publier(interne, json!({"type": "administration", "horodatage": t, "session": session, "detail": detail}));
@@ -889,6 +905,8 @@ fn appliquer(etat: &Etat, interne: &mut Interne, issue: &Issue, compte: &str, se
         Issue::DegelEnAttente => "degel-en-attente",
         Issue::Degel { .. } => "degel",
         Issue::Ticket(_) => "ticket",
+        Issue::ReactivationEnAttente => "reactivation-en-attente",
+        Issue::Reactivation { .. } => "reactivation",
     };
     json!({"issue": issue, "detail": detail})
 }
@@ -896,7 +914,15 @@ fn appliquer(etat: &Etat, interne: &mut Interne, issue: &Issue, compte: &str, se
 /// Requête signée par la clé d'un compte (`aplomb admin`).
 async fn requete_signee(State(etat): State<Etat>, Json(r): Json<RequeteSignee>) -> Response {
     let mut interne = etat.interne.lock().expect("verrou");
-    match interne.autorite.traiter(&r, maintenant()) {
+    let t = maintenant();
+    let issue = {
+        let Interne { autorite, mfa, .. } = &mut *interne;
+        autorite.traiter_avec(&r, t, &mut |c, code| mfa.verifier(c, code))
+    };
+    if issue.is_ok() {
+        interne.activite.noter(&r.corps.compte, t);
+    }
+    match issue {
         Ok(Issue::Ticket(ticket)) => Json(json!({"issue": "ticket", "ticket": ticket})).into_response(),
         Ok(issue) => {
             let s = r.corps.session.clone();
@@ -913,6 +939,7 @@ async fn action_web(etat: Etat, entetes: HeaderMap, demande: DemandeGel, operati
     }
     let mut interne = etat.interne.lock().expect("verrou");
     let Some(compte) = compte_web(&mut interne, &entetes) else { return non_connecte() };
+    interne.activite.noter(&compte, maintenant());
     let session = demande.session;
     match interne.autorite.agir(&compte, operation, session.clone(), maintenant()) {
         Ok(issue) => Json(appliquer(&etat, &mut interne, &issue, &compte, session.as_deref())).into_response(),
@@ -956,6 +983,7 @@ async fn repondre_revue(State(etat): State<Etat>, entetes: HeaderMap, Json(r): J
     if !interne.autorite.roles(&compte).iter().any(|x| matches!(x, Role::Operateur | Role::Approbateur)) {
         return (StatusCode::FORBIDDEN, Json(json!({"erreur": "rôle opérateur ou approbateur requis"}))).into_response();
     }
+    interne.activite.noter(&compte, maintenant());
     let Some(revue) = interne.revues.remove(&r.id) else {
         return (StatusCode::NOT_FOUND, Json(json!({"erreur": "revue inconnue ou déjà close"}))).into_response();
     };
@@ -977,15 +1005,117 @@ struct Ticket {
 /// Échange un ticket de connexion contre un cookie de session, puis renvoie vers la vue.
 async fn connexion(State(etat): State<Etat>, Query(q): Query<Ticket>) -> Response {
     let mut interne = etat.interne.lock().expect("verrou");
+    // Avec la MFA, le ticket n'est échangé qu'avec le code (formulaire).
+    if interne.autorite.mfa_a_la_connexion() {
+        return Html(crate::identite::page_code(&q.ticket, None)).into_response();
+    }
     match interne.autorite.ouvrir_session_web(&q.ticket, maintenant()) {
-        Ok((jeton, _)) => {
-            let cookie = format!(
-                "{COOKIE}={jeton}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
-                aplomb_core::autorite::SESSION_WEB_MS / 1000
-            );
-            ([("set-cookie", cookie)], Redirect::to("/")).into_response()
+        Ok((jeton, compte)) => {
+            interne.activite.noter(&compte, maintenant());
+            avec_cookie(&jeton)
         }
         Err(e) => (StatusCode::FORBIDDEN, e.to_string()).into_response(),
+    }
+}
+
+fn avec_cookie(jeton: &str) -> Response {
+    let cookie = format!("{COOKIE}={jeton}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}", aplomb_core::autorite::SESSION_WEB_MS / 1000);
+    ([("set-cookie", cookie)], Redirect::to("/")).into_response()
+}
+
+#[derive(Deserialize)]
+struct TicketCode {
+    ticket: String,
+    code: String,
+}
+
+/// Ticket et code du second facteur (formulaire de connexion avec la MFA).
+async fn connexion_code(State(etat): State<Etat>, axum::Form(f): axum::Form<TicketCode>) -> Response {
+    let mut interne = etat.interne.lock().expect("verrou");
+    let t = maintenant();
+    let r = {
+        let Interne { autorite, mfa, .. } = &mut *interne;
+        autorite.ouvrir_session_web_avec(&f.ticket, Some(&f.code), t, &mut |c, code| mfa.verifier(c, code))
+    };
+    match r {
+        Ok((jeton, compte)) => {
+            interne.activite.noter(&compte, t);
+            avec_cookie(&jeton)
+        }
+        Err(e) => {
+            let detail = json!({"action": "connexion-refusee", "cause": e.to_string()});
+            let _ = interne.journal.ajouter(SESSION_ADMIN, "administration", detail, t);
+            (StatusCode::FORBIDDEN, Html(format!("<p>{e}. Demander un nouveau lien : aplomb admin --compte &lt;id&gt; connexion</p>"))).into_response()
+        }
+    }
+}
+
+/// SSO : renvoie vers le fournisseur d'identité.
+async fn sso_debut(State(etat): State<Etat>) -> Response {
+    let Some(cfg) = etat.sso.clone() else {
+        return (StatusCode::NOT_FOUND, "SSO non configuré (identite.sso dans comptes.yaml)").into_response();
+    };
+    let url = etat.interne.lock().expect("verrou").sso_attente.debut(&cfg, maintenant());
+    Redirect::to(&url).into_response()
+}
+
+#[derive(Deserialize)]
+struct RetourSso {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+/// SSO : retour du fournisseur ; le code est échangé contre le jeton d'identité.
+async fn sso_retour(State(etat): State<Etat>, Query(q): Query<RetourSso>) -> Response {
+    let Some(cfg) = etat.sso.clone() else { return StatusCode::NOT_FOUND.into_response() };
+    let refus = |e: String| {
+        etat.journaliser_alerte(json!({"action": "connexion-sso-refusee", "cause": e}));
+        (StatusCode::FORBIDDEN, Html(format!("<p>Connexion refusée : {e}</p><p><a href=\"/sso/debut\">Réessayer</a></p>"))).into_response()
+    };
+    if let Some(e) = q.error {
+        return refus(format!("le fournisseur d'identité répond {e}"));
+    }
+    let (Some(code), Some(etat_sso)) = (q.code, q.state) else { return refus("réponse incomplète".into()) };
+    let Some((nonce, verif)) = etat.interne.lock().expect("verrou").sso_attente.prendre(&etat_sso, maintenant()) else {
+        return refus("connexion inconnue ou expirée".into());
+    };
+    let id = match crate::identite::retour(&cfg, &code, &nonce, &verif).await {
+        Ok(id) => id,
+        Err(e) => return refus(e),
+    };
+    let mut interne = etat.interne.lock().expect("verrou");
+    if interne.autorite.identite().mfa_exigee() && !id.mfa {
+        drop(interne);
+        return refus(format!("{} : le fournisseur d'identité n'atteste pas de second facteur (amr), exigé par Aplomb", id.compte));
+    }
+    let t = maintenant();
+    let roles: Vec<String> = id.roles.iter().map(|r| format!("{r:?}").to_lowercase()).collect();
+    let jeton = interne.autorite.ouvrir_session_sso(&id.compte, id.roles.clone(), t);
+    let detail = json!({"action": "connexion-sso", "compte": id.compte, "roles": roles, "mfa": id.mfa});
+    let _ = interne.journal.ajouter(SESSION_ADMIN, "administration", detail.clone(), t);
+    etat.publier(&mut interne, json!({"type": "administration", "horodatage": t, "session": SESSION_ADMIN, "detail": detail}));
+    // Retour d'un autre site : cookie Lax, sinon le navigateur ne l'enverrait pas.
+    let cookie = format!("{COOKIE}={jeton}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}", aplomb_core::autorite::SESSION_WEB_MS / 1000);
+    ([("set-cookie", cookie)], Redirect::to("/")).into_response()
+}
+
+fn annonce_identite(c: &aplomb_core::identite::ConfigIdentite, etat: &Etat) -> String {
+    let mut v = Vec::new();
+    if c.mfa_exigee() {
+        let i = etat.interne.lock().expect("verrou");
+        v.push(format!("MFA exigée (TOTP : {}/{} compte(s) enrôlé(s))", i.mfa.enroles(), i.autorite.comptes().len()));
+    }
+    if let Some(s) = &c.sso {
+        v.push(format!("SSO {} (/sso/debut)", s.emetteur));
+    }
+    if let Some(r) = &c.revue {
+        v.push(format!("comptes suspendus après {} j d'inactivité", r.inactivite_jours));
+    }
+    if v.is_empty() {
+        "comptes à clé (options : MFA, SSO, revue des comptes, voir docs/IDENTITE.md)".into()
+    } else {
+        v.join(" ; ")
     }
 }
 
@@ -1040,6 +1170,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let journal = Journal::ouvrir(&opts.journal).map_err(|e| e.to_string())?;
     let maitre = crate::cle_maitresse::cle_maitresse()?;
     let coffre = Coffre::ouvrir(&opts.coffre).map_err(|e| format!("coffre : {e}"))?.avec_maitre(maitre);
+    let maitre: aplomb_core::confidentiel::Cle = maitre;
     let signataire = cle_reponses(&opts.cle_reponses)?;
     let jeton = crate::cle_maitresse::jeton_modele()?;
     let juge = superviseur.juge().cloned().map(|cfg| crate::juge::Juge::nouveau(cfg, jeton.clone()).map(Arc::new)).transpose()?;
@@ -1051,6 +1182,19 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let (autorite, signataires_comptes) = Autorite::depuis_yaml_cosigne(&texte_comptes, &confiance).map_err(|e| {
         format!("comptes refusés : {e} — faire cosigner : aplomb cosigner {} --compte <id>", opts.comptes.display())
     })?;
+    // Identité (options cosignées dans comptes.yaml) : seconds facteurs, activité, SSO.
+    let config_identite = autorite.identite().clone();
+    let mfa = if config_identite.mfa_exigee() {
+        crate::identite::Mfa::charger(&maitre, &autorite.comptes())?
+    } else {
+        Default::default()
+    };
+    if let Some(s) = &config_identite.sso {
+        crate::identite::verifier_sso(s)?;
+    }
+    let mut autorite = autorite;
+    let mut activite = crate::identite::Activite::charger(&opts.activite)?;
+    let suspensions = activite.appliquer(&mut autorite, maintenant());
     let agents = crate::agents::charger(&opts.agents)?;
     // Diffusion (option) : configuration et jetons vérifiés avant de démarrer.
     let config_diffusion = crate::diffusion::charger(&opts.diffusion)?;
@@ -1078,6 +1222,9 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             agents: agents.clone(),
             utilisateur_local: std::env::var("USER").unwrap_or_else(|_| "local".into()),
             stats_protocole: StatsProtocole::default(),
+            mfa,
+            activite,
+            sso_attente: Default::default(),
         })),
         diffusion,
         signataire: Arc::new(signataire),
@@ -1086,7 +1233,11 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         reporting: Arc::new(opts.reporting.clone()),
         siem: Arc::new(std::sync::OnceLock::new()),
         fichier_diffusion: Arc::new(opts.diffusion.clone()),
+        sso: config_identite.sso.clone().map(Arc::new),
     };
+    for (compte, derniere) in &suspensions {
+        etat.journaliser_alerte(json!({"action": "compte-suspendu", "compte": compte, "derniere_activite": derniere, "cause": "inactivité"}));
+    }
 
     let api_decision = Router::new()
         .route("/v1/decide", post(decider))
@@ -1102,7 +1253,9 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         .route("/admin/verify", get(verifier_journal))
         .route("/admin/sessions", get(sessions))
         .route("/admin/chaine", get(chaine))
-        .route("/connexion", get(connexion))
+        .route("/connexion", get(connexion).post(connexion_code))
+        .route("/sso/debut", get(sso_debut))
+        .route("/sso/retour", get(sso_retour))
         .route("/admin/requete", post(requete_signee))
         .route("/admin/deconnexion", post(deconnexion))
         .route("/admin/gel", post(gel))
@@ -1201,6 +1354,23 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             opts.ecoute_reporting,
             if clients_reporting == 0 { "aucun client : aplomb reporting nouveau --id acra".to_string() } else { format!("{clients_reporting} client(s)") }
         );
+        eprintln!("  identité           : {}", annonce_identite(&config_identite, &etat_scellement));
+        if config_identite.revue.is_some() {
+            let e = etat_scellement.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    let nouvelles = {
+                        let mut i = e.interne.lock().expect("verrou");
+                        let Interne { autorite, activite, .. } = &mut *i;
+                        activite.appliquer(autorite, maintenant())
+                    };
+                    for (compte, derniere) in nouvelles {
+                        e.journaliser_alerte(json!({"action": "compte-suspendu", "compte": compte, "derniere_activite": derniere, "cause": "inactivité"}));
+                    }
+                }
+            });
+        }
         eprintln!("  diffusion (SIEM)   : {}", crate::diffusion::annonce(config_diffusion.as_ref()));
         if let Some(c) = config_diffusion {
             let e = etat_scellement.clone();

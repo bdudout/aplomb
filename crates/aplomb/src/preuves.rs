@@ -182,6 +182,21 @@ pub fn exporter(o: OptionsExport) -> Result<(), String> {
     };
     ecrire(&s.join("gouvernance/confiance.yaml"), &lire(&o.confiance)?)?;
     ecrire(&s.join("gouvernance/comptes.json"), &json_joli(&comptes)?)?;
+    // Campagnes de revue des comptes cosignées (EF-N5), dans revues/ à côté des comptes.
+    let revues = o.comptes.parent().unwrap_or(Path::new(".")).join("revues");
+    let confiance = aplomb_core::gouvernance::Confiance::depuis_yaml(&lire(&o.confiance)?)?;
+    let mut campagnes = 0;
+    for f in std::fs::read_dir(&revues).into_iter().flatten().filter_map(|e| e.ok().map(|e| e.path())) {
+        let Ok(texte) = std::fs::read_to_string(&f) else { continue };
+        let Ok(c) = serde_yaml::from_str::<crate::gouverner::CampagneRevue>(&texte) else { continue };
+        if confiance.verifier(&c.octets_signes(), &c.signatures).is_ok() {
+            ecrire(&s.join("gouvernance/revues").join(nom(&f)), &texte)?;
+            campagnes += 1;
+        }
+    }
+    if campagnes > 0 {
+        println!("  {campagnes} campagne(s) de revue des comptes cosignée(s) jointe(s)");
+    }
     if let Some(r) = &evaluation {
         ecrire(&s.join("evaluation.json"), &json_joli(r)?)?;
     }

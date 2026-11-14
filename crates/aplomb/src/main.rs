@@ -27,6 +27,7 @@ mod evaluer;
 mod externes;
 mod modules;
 mod hook;
+mod identite;
 mod juge;
 #[allow(unsafe_code)]
 mod deverrouillage;
@@ -163,6 +164,9 @@ enum Commande {
         /// Diffusion vers le SIEM de l'instance (option).
         #[arg(long, default_value = "diffusion.yaml")]
         diffusion: PathBuf,
+        /// Comptes de l'instance (options d'identité).
+        #[arg(long, default_value = "comptes.yaml")]
+        comptes: PathBuf,
         /// Montrer aussi les modules intégrés toujours actifs.
         #[arg(long)]
         tout: bool,
@@ -289,6 +293,24 @@ enum CommandeCompte {
         fichier: PathBuf,
         #[arg(long)]
         dossier: Option<PathBuf>,
+    },
+    /// Second facteur TOTP : sans --code, affiche le secret à ajouter à l'application ;
+    /// avec --code, le confirme et l'active.
+    Mfa {
+        #[arg(long)]
+        compte: String,
+        #[arg(long)]
+        code: Option<String>,
+    },
+    /// Revue des comptes : rôles, dernière activité, inactifs ; --attestation écrit la
+    /// campagne à faire cosigner, versée au dossier de preuves.
+    Revue {
+        #[arg(long, default_value = "comptes.yaml")]
+        fichier: PathBuf,
+        #[arg(long, default_value = "activite-comptes.json")]
+        activite: PathBuf,
+        #[arg(long)]
+        attestation: Option<PathBuf>,
     },
 }
 
@@ -509,6 +531,16 @@ enum OperationAdmin {
     Degel {
         #[arg(long)]
         session: Option<String>,
+        /// Code du second facteur, si la MFA est exigée.
+        #[arg(long)]
+        code: Option<String>,
+    },
+    /// Demande ou approuve la réactivation d'un compte suspendu (deux autres comptes).
+    Reactiver {
+        #[arg(long)]
+        cible: String,
+        #[arg(long)]
+        code: Option<String>,
     },
 }
 
@@ -548,8 +580,8 @@ fn main() -> ExitCode {
             CommandeDiffusion::Apercu { config, journal } => diffusion::apercu(&config, &journal),
             CommandeDiffusion::Tester { config, destination } => diffusion::tester(&config, &destination),
         },
-        Commande::Modules { mandat, reporting, diffusion, tout } => match mandat.or_else(|| mandats_par_defaut().into_iter().next()) {
-            Some(m) => modules::afficher(&m, &reporting, &diffusion, tout),
+        Commande::Modules { mandat, reporting, diffusion, comptes, tout } => match mandat.or_else(|| mandats_par_defaut().into_iter().next()) {
+            Some(m) => modules::afficher(&m, &reporting, &diffusion, &comptes, tout),
             None => Err("aucun mandat dans mandats/ : aplomb modules --mandat <fichier>".into()),
         },
         Commande::Hook { perimetre, cle_serveur, branchement } => {
@@ -585,6 +617,8 @@ fn main() -> ExitCode {
         Commande::Cles { commande: CommandeCles::Migrer { coffre, comptes, cles } } => {
             migrer(&coffre, &comptes.unwrap_or_else(admin::dossier_cles), &cles)
         }
+        Commande::Compte { commande: CommandeCompte::Mfa { compte, code } } => identite::enroler(&compte, code.as_deref()),
+        Commande::Compte { commande: CommandeCompte::Revue { fichier, activite, attestation } } => identite::revue(&fichier, &activite, attestation.as_deref()),
         Commande::Compte { commande: CommandeCompte::Nouveau { id, roles, fichier, dossier } } => {
             admin::nouveau_compte(&id, &roles, &dossier.unwrap_or_else(admin::dossier_cles), &fichier)
         }
@@ -610,12 +644,13 @@ fn main() -> ExitCode {
         },
         Commande::Admin { compte, cle, url, operation } => {
             use aplomb_core::autorite::Operation;
-            let (op, session) = match operation {
-                OperationAdmin::Connexion => (Operation::Connexion, None),
-                OperationAdmin::Gel { session } => (Operation::Gel, session),
-                OperationAdmin::Degel { session } => (Operation::Degel, session),
+            let (op, session, code, cible) = match operation {
+                OperationAdmin::Connexion => (Operation::Connexion, None, None, None),
+                OperationAdmin::Gel { session } => (Operation::Gel, session, None, None),
+                OperationAdmin::Degel { session, code } => (Operation::Degel, session, code, None),
+                OperationAdmin::Reactiver { cible, code } => (Operation::Reactiver, None, code, Some(cible)),
             };
-            admin::envoyer(&compte, cle.as_deref(), &url, op, session)
+            admin::envoyer(&compte, cle.as_deref(), &url, op, session, code, cible)
         }
     };
     match res {

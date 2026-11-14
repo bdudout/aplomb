@@ -69,7 +69,13 @@ pub fn cosigner(fichier: &Path, compte: &str, cle: Option<&Path>, confiance: &Pa
     }
     let texte = lire(fichier)?;
     let valeur: serde_yaml::Value = serde_yaml::from_str(&texte).map_err(|e| e.to_string())?;
-    let statut = if valeur.get("comptes").is_some() {
+    let statut = if valeur.get("campagne").is_some() {
+        let mut c: CampagneRevue = serde_yaml::from_value(valeur).map_err(|e| e.to_string())?;
+        let o = c.octets_signes();
+        poser(&mut c.signatures, signer(compte, &privee, &o));
+        ecrire_yaml(fichier, &c)?;
+        format!("campagne de revue des comptes cosignée par {compte} — {}", etat(c_conf(&conf), &membres, &o, &c.signatures))
+    } else if valeur.get("comptes").is_some() {
         let mut f: FichierComptes = serde_yaml::from_value(valeur).map_err(|e| e.to_string())?;
         let o = f.octets_signes();
         poser(&mut f.signatures, signer(compte, &privee, &o));
@@ -111,7 +117,7 @@ pub fn init(membres: &[String], comptes: &Path, mandats: &[PathBuf], confiance: 
     // 1. Comptes : créés s'ils n'existent pas (le premier opère, le second approuve).
     let existants: FichierComptes = match std::fs::read_to_string(comptes) {
         Ok(t) => serde_yaml::from_str(&t).map_err(|e| e.to_string())?,
-        Err(_) => FichierComptes { comptes: Vec::new(), signatures: Vec::new() },
+        Err(_) => FichierComptes { comptes: Vec::new(), signatures: Vec::new(), identite: Default::default() },
     };
     for (i, id) in membres.iter().enumerate() {
         if !existants.comptes.iter().any(|c| &c.id == id) {
@@ -151,4 +157,23 @@ pub fn init(membres: &[String], comptes: &Path, mandats: &[PathBuf], confiance: 
         membres[0], membres[1]
     );
     Ok(())
+}
+
+/// Campagne de revue des comptes (EF-N5) : constat des réviseurs, cosigné, versé au dossier
+/// de preuves.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CampagneRevue {
+    pub campagne: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signatures: Vec<aplomb_core::gouvernance::SignatureNommee>,
+}
+
+impl CampagneRevue {
+    pub fn octets_signes(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.campagne).expect("JSON")
+    }
+}
+
+fn c_conf(conf: &Option<(aplomb_core::gouvernance::Confiance, Vec<String>)>) -> Option<&aplomb_core::gouvernance::Confiance> {
+    conf.as_ref().map(|(c, _)| c)
 }

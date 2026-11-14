@@ -793,6 +793,94 @@ cp "$REGISTRE" retention.sauve
 sed -i.bak '$d' "$REGISTRE"
 verifier "registre de rétention tronqué : détecté" '! "$APLOMB" verify --journal journal-diff > /dev/null 2>&1'
 cp retention.sauve "$REGISTRE"
+echo "--- Identité (J10) : MFA, revue des comptes, SSO"
+# Ports ${Q}1x. Comptes de l'instance copiés, plus carole, avec les options d'identité
+# (cosignées comme la liste des comptes).
+cp comptes.yaml comptes-id.yaml
+"$APLOMB" compte nouveau --id carole --role operateur --fichier comptes-id.yaml > /dev/null
+cat >> comptes-id.yaml <<EOF
+identite:
+  mfa: {}
+  revue: {inactivite_jours: 30}
+  sso:
+    emetteur: "http://127.0.0.1:${Q}18"
+    client_id: aplomb-banc
+    secret_env: APLOMB_BANC_SSO
+    autorisation: "http://127.0.0.1:${Q}18/auth"
+    jeton: "http://127.0.0.1:${Q}18/token"
+    redirection: "http://127.0.0.1:${Q}11/sso/retour"
+    roles: {secops: [operateur], dsi: [approbateur]}
+EOF
+verifier "options d'identité cosignées avec les comptes" \
+  '"$APLOMB" cosigner comptes-id.yaml --compte alice --compte bob > cosigner-id.log 2>&1 && grep -q "identite:" comptes-id.yaml'
+verifier "aplomb modules : MFA, SSO et revue des comptes actifs" \
+  '"$APLOMB" modules --mandat mandats/banc.yaml --comptes comptes-id.yaml > modules-id.log && grep -q "● mfa-totp" modules-id.log && grep -q "● sso-oidc" modules-id.log && grep -q "● revue-comptes" modules-id.log'
+verifier "aplomb modules par défaut : options d'identité proposées, non actives" \
+  '"$APLOMB" modules --mandat mandats/banc.yaml > modules-def.log && grep -q "○ mfa-totp" modules-def.log && grep -q "○ sso-oidc" modules-def.log'
+# Second facteur d'alice et de carole ; codes calculés comme le ferait leur téléphone.
+totp() {  # secret base32, décalage en pas de 30 s
+  python3 -c "import base64,hashlib,hmac,struct,sys,time
+s=base64.b32decode(sys.argv[1]+'='*(-len(sys.argv[1])%8)); p=int(time.time())//30+int(sys.argv[2])
+h=hmac.new(s,struct.pack('>Q',p),hashlib.sha1).digest(); o=h[19]&15
+print('%06d'%((struct.unpack('>I',h[o:o+4])[0]&0x7fffffff)%1000000))" "$1" "$2"
+}
+SECRET_A="$("$APLOMB" compte mfa --compte alice | sed -n 's/.*saisir la clé : //p')"
+SECRET_C="$("$APLOMB" compte mfa --compte carole | sed -n 's/.*saisir la clé : //p')"
+verifier "aplomb compte mfa : mauvais code refusé" '! "$APLOMB" compte mfa --compte alice --code 000000 > /dev/null 2>&1'
+verifier "aplomb compte mfa : second facteur confirmé" \
+  '"$APLOMB" compte mfa --compte alice --code "$(totp "$SECRET_A" 0)" | grep -q "second facteur actif" && "$APLOMB" compte mfa --compte carole --code "$(totp "$SECRET_C" 0)" | grep -q "second facteur actif"'
+# bob n'a rien fait depuis 40 jours.
+python3 -c "import json,time; json.dump({'bob': {'derniere': int(time.time()*1000) - 40*86400000}}, open('activite-id.json','w'))"
+verifier "serve sans le secret du client SSO : refus et variable nommée" \
+  '! "$APLOMB" serve --mandat mandats/banc.yaml --comptes comptes-id.yaml --activite activite-id.json --ecoute-decision 127.0.0.1:${Q}10 --ecoute-admin 127.0.0.1:${Q}11 --ecoute-passerelle 127.0.0.1:${Q}12 --ecoute-llm 127.0.0.1:${Q}13 --ecoute-mcp 127.0.0.1:${Q}15 --ecoute-reporting 127.0.0.1:${Q}17 --journal journal-id --coffre coffre-id > serve-id0.log 2>&1 && grep -q "APLOMB_BANC_SSO" serve-id0.log'
+export APLOMB_BANC_SSO=secret-sso-du-banc
+echo '{"email": "paul@banc.test", "groups": ["secops"], "amr": ["pwd", "mfa"]}' > idp-profil.json
+python3 "$RACINE/scripts/faux-idp.py" "${Q}18" idp-profil.json & PIDS="$PIDS $!"
+"$APLOMB" serve --mandat mandats/banc.yaml --comptes comptes-id.yaml --activite activite-id.json --ecoute-decision "127.0.0.1:${Q}10" --ecoute-admin "127.0.0.1:${Q}11" \
+  --ecoute-passerelle "127.0.0.1:${Q}12" --ecoute-llm "127.0.0.1:${Q}13" --ecoute-mcp "127.0.0.1:${Q}15" --ecoute-reporting "127.0.0.1:${Q}17" \
+  --journal journal-id --coffre coffre-id > serve-id.log 2>&1 &
+SERVE_ID=$!; PIDS="$PIDS $SERVE_ID"
+for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${Q}11/" && curl -s -o /dev/null "http://127.0.0.1:${Q}18/" && break; sleep 0.1; done
+verifier "serve annonce MFA, SSO et revue" 'grep -q "MFA exigée (TOTP : 2/3 compte(s) enrôlé(s))" serve-id.log && grep -q "SSO http://127.0.0.1:${Q}18" serve-id.log && grep -q "30 j d.inactivité" serve-id.log'
+verifier "compte inactif suspendu au démarrage, journalisé" 'grep -q "compte-suspendu" journal-id/_administration-*.jsonl && grep -q "\"bob\"" journal-id/_administration-*.jsonl'
+ADM="http://127.0.0.1:${Q}11"
+verifier "compte suspendu : plus aucune requête" '"$APLOMB" admin --compte bob --url "$ADM" gel 2>&1 | grep -q "suspendu pour inactivité"'
+verifier "geler reste possible sans second facteur (durcir)" '"$APLOMB" admin --compte alice --url "$ADM" gel | grep -q "gel appliqué"'
+verifier "dégel sans code : second facteur requis" '"$APLOMB" admin --compte alice --url "$ADM" degel 2>&1 | grep -q "second facteur requis"'
+verifier "dégel avec un mauvais code : refusé" '"$APLOMB" admin --compte alice --url "$ADM" degel --code 000000 2>&1 | grep -q "code du second facteur invalide"'
+# Codes : trois pas utilisables par compte (-1, 0, +1), en ordre croissant ; on évite la
+# fin d'un pas de 30 s.
+python3 -c "import time; r=time.time()%30; time.sleep(31-r if r>18 else 0)"
+LIEN_ID="$("$APLOMB" admin --compte alice --url "$ADM" connexion | grep -o 'http://[^ ]*ticket=[^ ]*')"
+verifier "connexion à la vue : le lien demande le code" 'curl -s "$LIEN_ID" | grep -q "Second facteur"'
+TICKET_ID="${LIEN_ID##*ticket=}"
+verifier "connexion à la vue : mauvais code refusé, lien consommé" \
+  '[ "$(curl -s -o /dev/null -w "%{http_code}" -d "ticket=$TICKET_ID&code=000000" "$ADM/connexion")" = 403 ] && [ "$(curl -s -o /dev/null -w "%{http_code}" -d "ticket=$TICKET_ID&code=$(totp "$SECRET_A" -1)" "$ADM/connexion")" = 403 ]'
+LIEN_ID="$("$APLOMB" admin --compte alice --url "$ADM" connexion | grep -o 'http://[^ ]*ticket=[^ ]*')"
+curl -s -c cookies-id.txt -d "ticket=${LIEN_ID##*ticket=}&code=$(totp "$SECRET_A" -1)" "$ADM/connexion" > /dev/null
+verifier "connexion à la vue avec le bon code" '[ "$(curl -s -b cookies-id.txt -o /dev/null -w "%{http_code}" "$ADM/admin/modules")" = 200 ]'
+verifier "dégel à quatre yeux, chacun avec son code" \
+  '"$APLOMB" admin --compte alice --url "$ADM" degel --code "$(totp "$SECRET_A" 0)" | grep -q "dégel demandé" && "$APLOMB" admin --compte carole --url "$ADM" degel --code "$(totp "$SECRET_C" -1)" | grep -q "dégel appliqué"'
+verifier "code déjà utilisé : refusé (rejeu)" '"$APLOMB" admin --compte carole --url "$ADM" degel --code "$(totp "$SECRET_C" -1)" 2>&1 | grep -q "invalide ou déjà utilisé"'
+verifier "réactivation : le compte visé ne peut pas se réactiver" '"$APLOMB" admin --compte bob --url "$ADM" reactiver --cible bob 2>&1 | grep -q "suspendu"'
+verifier "réactivation à quatre yeux" \
+  '"$APLOMB" admin --compte alice --url "$ADM" reactiver --cible bob --code "$(totp "$SECRET_A" 1)" | grep -q "réactivation demandée" && "$APLOMB" admin --compte carole --url "$ADM" reactiver --cible bob --code "$(totp "$SECRET_C" 0)" | grep -q "compte réactivé"'
+verifier "compte réactivé : à nouveau utilisable, journalisé" '"$APLOMB" admin --compte bob --url "$ADM" connexion | grep -q "ticket=" && grep -q "\"reactivation\"" journal-id/_administration-*.jsonl'
+verifier "SSO : connexion par le fournisseur d'identité (PKCE, nonce)" \
+  'curl -s -L -c cookies-sso.txt -b cookies-sso.txt -o /dev/null "$ADM/sso/debut" && [ "$(curl -s -b cookies-sso.txt -o /dev/null -w "%{http_code}" "$ADM/admin/modules")" = 200 ] && grep -q "sso:paul@banc.test" journal-id/_administration-*.jsonl'
+verifier "SSO : le rôle vient du groupe, les quatre yeux restent" \
+  'curl -s -b cookies-sso.txt -H "X-Aplomb: 1" -X POST "$ADM/admin/degel" | grep -q "degel-en-attente" && curl -s -b cookies-sso.txt -H "X-Aplomb: 1" -X POST "$ADM/admin/degel" | grep -q "quatre yeux"'
+echo '{"email": "jean@banc.test", "groups": ["secops"], "amr": ["pwd"]}' > idp-profil.json
+verifier "SSO sans second facteur attesté : refusé quand la MFA est exigée" 'curl -s -L "$ADM/sso/debut" | grep -q "n.atteste pas de second facteur"'
+echo '{"email": "lea@banc.test", "groups": ["compta"], "amr": ["mfa"]}' > idp-profil.json
+verifier "SSO : groupe sans rôle dans Aplomb, refusé" 'curl -s -L "$ADM/sso/debut" | grep -q "aucun de ses groupes"'
+verifier "SSO : retour forgé (état inconnu) refusé" 'curl -s "$ADM/sso/retour?code=x&state=forge" | grep -q "inconnue ou expirée"'
+kill -INT "$SERVE_ID"; wait "$SERVE_ID" 2>/dev/null
+verifier "aplomb compte revue : comptes, dernière activité, statut" \
+  '"$APLOMB" compte revue --fichier comptes-id.yaml --activite activite-id.json --attestation revues/revue-banc.yaml > revue.log && grep -q "carole" revue.log && grep -q "seuil d.inactivité : 30 jours" revue.log'
+verifier "campagne de revue cosignée, jointe au dossier de preuves" \
+  '"$APLOMB" cosigner revues/revue-banc.yaml --compte alice --compte bob > /dev/null 2>&1 && "$APLOMB" preuves exporter --mandat mandats/banc.yaml --journal journal-id --comptes comptes-id.yaml --sortie preuves-id > preuves-id.log 2>&1 && ls preuves-id/gouvernance/revues/revue-banc.yaml > /dev/null'
+verifier "anciennes signatures des comptes toujours valables (comptes.yaml sans identité)" '! grep -q "identite" comptes.yaml && "$APLOMB" modules --mandat mandats/banc.yaml > /dev/null'
 echo "--- Déverrouillage"
 SOCKET="$HOME/.config/aplomb/agent.sock"
 "$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1

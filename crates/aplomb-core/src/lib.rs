@@ -18,6 +18,7 @@ pub mod delegation;
 pub mod evaluation;
 pub mod diffusion;
 pub mod filtres;
+pub mod identite;
 pub mod decision;
 pub mod gouvernance;
 pub mod indicateurs;

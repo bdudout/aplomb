@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aplomb_core::autorite::{requete, Compte, FichierComptes, Operation, Role};
+use aplomb_core::autorite::{requete_complete, Compte, FichierComptes, Operation, Role};
 use serde_json::Value;
 
 /// Dossier par défaut des clés privées des comptes.
@@ -25,7 +25,7 @@ pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) 
     }
     let mut comptes = match std::fs::read_to_string(fichier) {
         Ok(t) => serde_yaml::from_str::<FichierComptes>(&t).map_err(|e| e.to_string())?,
-        Err(_) => FichierComptes { comptes: Vec::new(), signatures: Vec::new() },
+        Err(_) => FichierComptes { comptes: Vec::new(), signatures: Vec::new(), identite: Default::default() },
     };
     if comptes.comptes.iter().any(|c| c.id == id) {
         return Err(format!("le compte {id} existe déjà"));
@@ -58,11 +58,19 @@ pub fn nouveau_compte(id: &str, roles: &[Role], dossier: &Path, fichier: &Path) 
     Ok(())
 }
 
-pub fn envoyer(compte: &str, cle: Option<&Path>, url: &str, operation: Operation, session: Option<String>) -> Result<(), String> {
+pub fn envoyer(
+    compte: &str,
+    cle: Option<&Path>,
+    url: &str,
+    operation: Operation,
+    session: Option<String>,
+    code: Option<String>,
+    cible: Option<String>,
+) -> Result<(), String> {
     let chemin = cle.map(Path::to_path_buf).unwrap_or_else(|| dossier_cles().join(format!("{compte}.cle")));
     let privee = crate::cle_maitresse::lire_cle_privee(&chemin, &format!("compte:{compte}"))?;
     let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-    let r = requete(compte, &privee, operation, session, t);
+    let r = requete_complete(compte, &privee, operation, session, code, cible, t);
     let reponse: Value = match ureq::post(&format!("{url}/admin/requete")).send_json(&r) {
         Ok(rep) => rep.into_json().map_err(|e| e.to_string())?,
         Err(ureq::Error::Status(_, rep)) => {
@@ -79,6 +87,8 @@ pub fn envoyer(compte: &str, cle: Option<&Path>, url: &str, operation: Operation
         Some("gel") => println!("gel appliqué"),
         Some("degel-en-attente") => println!("dégel demandé : un second compte doit l'approuver (10 minutes)"),
         Some("degel") => println!("dégel appliqué (quatre yeux)"),
+        Some("reactivation-en-attente") => println!("réactivation demandée : un autre compte doit l'approuver (10 minutes)"),
+        Some("reactivation") => println!("compte réactivé (quatre yeux)"),
         _ => println!("{reponse}"),
     }
     Ok(())

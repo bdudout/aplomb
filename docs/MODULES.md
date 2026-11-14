@@ -27,7 +27,7 @@ son en-tête, la liste des modules actifs sur la décision, avec leur version et
 | 8 | diffusion | export SIEM : ECS, Splunk HEC, syslog, CEF, LEEF, OTLP, webhook (voir [DIFFUSION.md](DIFFUSION.md)) |
 | 9 | reporting | reporting MCP, dossier de preuves AI Act, indicateurs |
 | 10 | visualisation | Aplomb Watch, vue gouvernance |
-| 11 | identité | comptes à quatre yeux (J10 : SSO, MFA) |
+| 11 | identité | comptes à quatre yeux, MFA TOTP, SSO OpenID Connect, revue des comptes (voir [IDENTITE.md](IDENTITE.md)) |
 
 ## La règle d'or
 

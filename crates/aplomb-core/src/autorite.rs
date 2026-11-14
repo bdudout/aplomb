@@ -49,6 +49,10 @@ pub struct Compte {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FichierComptes {
     pub comptes: Vec<Compte>,
+    /// Options d'identité (MFA, SSO, revue des comptes), cosignées avec les comptes :
+    /// personne ne peut retirer seul le second facteur.
+    #[serde(default, skip_serializing_if = "crate::identite::ConfigIdentite::est_vide")]
+    pub identite: crate::identite::ConfigIdentite,
     /// Signatures de la gouvernance sur la liste des comptes (quatre yeux, EF-S2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signatures: Vec<crate::gouvernance::SignatureNommee>,
@@ -57,7 +61,12 @@ pub struct FichierComptes {
 impl FichierComptes {
     /// Octets couverts par les signatures : la liste des comptes, sans les signatures.
     pub fn octets_signes(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.comptes).expect("sérialisation JSON")
+        if self.identite.est_vide() {
+            // Forme d'origine : les signatures existantes restent valables.
+            serde_json::to_vec(&self.comptes).expect("sérialisation JSON")
+        } else {
+            serde_json::to_vec(&serde_json::json!({"comptes": self.comptes, "identite": self.identite})).expect("sérialisation JSON")
+        }
     }
 }
 
@@ -68,6 +77,8 @@ pub enum Operation {
     Connexion,
     Gel,
     Degel,
+    /// Réactiver un compte suspendu pour inactivité (quatre yeux, EF-N5).
+    Reactiver,
 }
 
 /// Corps signé d'une requête d'administration.
@@ -81,6 +92,13 @@ pub struct Corps {
     /// Millisecondes depuis l'époque Unix.
     pub horodatage: u64,
     pub nonce: String,
+    /// Code du second facteur (TOTP), pour les actions qui assouplissent quand la MFA est
+    /// exigée (EF-N4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// Compte visé (réactivation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cible: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,6 +138,14 @@ pub enum Refus {
     Session,
     #[error("fichier de comptes invalide : {0}")]
     Fichier(String),
+    #[error("compte suspendu pour inactivité : le faire réactiver par deux autres comptes (aplomb admin … reactiver --cible <compte>)")]
+    Suspendu,
+    #[error("second facteur requis : ajouter --code <code de l'application d'authentification>")]
+    CodeRequis,
+    #[error("code du second facteur invalide ou déjà utilisé")]
+    CodeInvalide,
+    #[error("{0}")]
+    Cible(String),
 }
 
 /// Issue d'une requête d'administration acceptée.
@@ -133,7 +159,14 @@ pub enum Issue {
     DegelEnAttente,
     /// Dégel approuvé par un second compte : à appliquer. (demandeur, approbateur)
     Degel { demandeur: String, approbateur: String },
+    /// Réactivation demandée, en attente d'un second compte.
+    ReactivationEnAttente,
+    /// Réactivation approuvée par un second compte : à appliquer.
+    Reactivation { cible: String, demandeur: String, approbateur: String },
 }
+
+/// Second facteur : vérifie le code d'un compte (rend faux s'il manque ou ne va pas).
+pub type VerifCode<'a> = &'a mut dyn FnMut(&str, &str) -> bool;
 
 struct Demande {
     compte: String,
@@ -146,6 +179,11 @@ pub struct Autorite {
     demandes: HashMap<Option<String>, Demande>,
     tickets: HashMap<String, (String, u64)>,
     sessions_web: HashMap<String, (String, u64)>,
+    /// Identités venues du SSO et leurs rôles (le temps de leur session).
+    externes: HashMap<String, Vec<Role>>,
+    /// Comptes suspendus pour inactivité.
+    suspendus: HashSet<String>,
+    identite: crate::identite::ConfigIdentite,
 }
 
 fn aleatoire() -> String {
@@ -158,7 +196,7 @@ impl Autorite {
     pub fn nouvelle(fichier: FichierComptes) -> Result<Self, Refus> {
         let mut comptes = HashMap::new();
         let mut cles = HashSet::new();
-        for c in fichier.comptes {
+        for c in fichier.comptes.iter().cloned() {
             let cle = cle_publique(&c.cle_publique).map_err(|e| Refus::Fichier(format!("{} : {e}", c.id)))?;
             // Deux comptes avec la même clé annuleraient les quatre yeux.
             if !cles.insert(cle.to_bytes()) {
@@ -174,12 +212,16 @@ impl Autorite {
         if comptes.is_empty() {
             return Err(Refus::Fichier("aucun compte".into()));
         }
+        fichier.identite.verifier().map_err(Refus::Fichier)?;
         Ok(Self {
             comptes,
             nonces: HashMap::new(),
             demandes: HashMap::new(),
             tickets: HashMap::new(),
             sessions_web: HashMap::new(),
+            externes: HashMap::new(),
+            suspendus: HashSet::new(),
+            identite: fichier.identite,
         })
     }
 
@@ -197,7 +239,44 @@ impl Autorite {
     }
 
     pub fn roles(&self, compte: &str) -> Vec<Role> {
-        self.comptes.get(compte).map(|(c, _)| c.roles.clone()).unwrap_or_default()
+        if self.suspendus.contains(compte) {
+            return Vec::new();
+        }
+        self.comptes
+            .get(compte)
+            .map(|(c, _)| c.roles.clone())
+            .or_else(|| self.externes.get(compte).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Options d'identité cosignées.
+    pub fn identite(&self) -> &crate::identite::ConfigIdentite {
+        &self.identite
+    }
+
+    /// Comptes déclarés (hors SSO).
+    pub fn comptes(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.comptes.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    pub fn suspendre(&mut self, compte: &str) {
+        self.suspendus.insert(compte.to_string());
+        self.sessions_web.retain(|_, (c, _)| c != compte);
+    }
+
+    pub fn est_suspendu(&self, compte: &str) -> bool {
+        self.suspendus.contains(compte)
+    }
+
+    pub fn reactiver(&mut self, compte: &str) {
+        self.suspendus.remove(compte);
+    }
+
+    /// Opérations qui assouplissent : second facteur exigé quand la MFA est active.
+    fn exige_code(&self, operation: Operation) -> bool {
+        self.identite.mfa_exigee() && matches!(operation, Operation::Degel | Operation::Reactiver)
     }
 
     fn exiger(&self, compte: &str, roles: &'static [Role]) -> Result<(), Refus> {
@@ -220,6 +299,9 @@ impl Autorite {
     fn authentifier(&mut self, r: &RequeteSignee, maintenant: u64) -> Result<(), Refus> {
         self.purger(maintenant);
         let (_, cle) = self.comptes.get(&r.corps.compte).ok_or(Refus::CompteInconnu)?;
+        if self.suspendus.contains(&r.corps.compte) {
+            return Err(Refus::Suspendu);
+        }
         let octets = hex::decode(&r.signature).map_err(|_| Refus::Signature)?;
         let tab: [u8; 64] = octets.try_into().map_err(|_| Refus::Signature)?;
         cle.verify(&r.corps.octets(), &Signature::from_bytes(&tab)).map_err(|_| Refus::Signature)?;
@@ -233,10 +315,55 @@ impl Autorite {
         Ok(())
     }
 
-    /// Traite une requête signée (outil en ligne de commande).
+    /// Traite une requête signée (outil en ligne de commande), sans second facteur.
     pub fn traiter(&mut self, r: &RequeteSignee, maintenant: u64) -> Result<Issue, Refus> {
+        self.traiter_avec(r, maintenant, &mut |_, _| false)
+    }
+
+    /// Traite une requête signée ; `verif` contrôle le code du second facteur quand
+    /// l'opération l'exige (après l'authentification par la clé, jamais avant).
+    pub fn traiter_avec(&mut self, r: &RequeteSignee, maintenant: u64, verif: VerifCode) -> Result<Issue, Refus> {
         self.authentifier(r, maintenant)?;
-        self.agir(&r.corps.compte.clone(), r.corps.operation, r.corps.session.clone(), maintenant)
+        let compte = r.corps.compte.clone();
+        if self.exige_code(r.corps.operation) {
+            let code = r.corps.code.as_deref().ok_or(Refus::CodeRequis)?;
+            if !verif(&compte, code) {
+                return Err(Refus::CodeInvalide);
+            }
+        }
+        if r.corps.operation == Operation::Reactiver {
+            return self.demander_reactivation(&compte, r.corps.cible.as_deref().unwrap_or_default(), maintenant);
+        }
+        self.agir(&compte, r.corps.operation, r.corps.session.clone(), maintenant)
+    }
+
+    /// Réactivation d'un compte suspendu : un compte la demande, un autre l'approuve ;
+    /// ni l'un ni l'autre ne peut être le compte visé.
+    pub fn demander_reactivation(&mut self, compte: &str, cible: &str, maintenant: u64) -> Result<Issue, Refus> {
+        self.purger(maintenant);
+        self.exiger(compte, &[Role::Operateur, Role::Approbateur])?;
+        if !self.comptes.contains_key(cible) {
+            return Err(Refus::Cible(format!("compte « {cible} » inconnu")));
+        }
+        if !self.suspendus.contains(cible) {
+            return Err(Refus::Cible(format!("le compte {cible} n'est pas suspendu")));
+        }
+        if compte == cible {
+            return Err(Refus::QuatreYeux);
+        }
+        let cle = Some(format!("reactiver:{cible}"));
+        match self.demandes.get(&cle) {
+            Some(d) if d.compte == compte => Err(Refus::QuatreYeux),
+            Some(_) => {
+                let d = self.demandes.remove(&cle).expect("présente");
+                self.suspendus.remove(cible);
+                Ok(Issue::Reactivation { cible: cible.to_string(), demandeur: d.compte, approbateur: compte.to_string() })
+            }
+            None => {
+                self.demandes.insert(cle, Demande { compte: compte.to_string(), expire: maintenant + DEMANDE_MS });
+                Ok(Issue::ReactivationEnAttente)
+            }
+        }
     }
 
     /// Applique une opération pour un compte déjà authentifié (requête signée ou session
@@ -260,6 +387,9 @@ impl Autorite {
                 self.exiger(compte, &[Role::Operateur])?;
                 Ok(Issue::Gel)
             }
+            Operation::Reactiver => {
+                Err(Refus::Cible("réactivation : par requête signée (aplomb admin … reactiver --cible <compte>)".into()))
+            }
             Operation::Degel => {
                 self.exiger(compte, &[Role::Operateur, Role::Approbateur])?;
                 match self.demandes.get(&session) {
@@ -280,16 +410,46 @@ impl Autorite {
         }
     }
 
-    /// Échange un ticket (usage unique) contre un jeton de session de navigateur.
+    /// Vrai si l'ouverture d'une session de la vue demande le second facteur.
+    pub fn mfa_a_la_connexion(&self) -> bool {
+        self.identite.mfa_exigee()
+    }
+
+    /// Échange un ticket (usage unique) contre un jeton de session de navigateur, sans
+    /// second facteur.
     pub fn ouvrir_session_web(&mut self, ticket: &str, maintenant: u64) -> Result<(String, String), Refus> {
+        self.ouvrir_session_web_avec(ticket, None, maintenant, &mut |_, _| false)
+    }
+
+    /// Échange un ticket contre une session ; avec la MFA, le code est exigé. Un code faux
+    /// consomme le ticket (pas d'essais répétés).
+    pub fn ouvrir_session_web_avec(&mut self, ticket: &str, code: Option<&str>, maintenant: u64, verif: VerifCode) -> Result<(String, String), Refus> {
         self.purger(maintenant);
         let (compte, _) = self.tickets.remove(ticket).ok_or(Refus::Session)?;
+        if self.suspendus.contains(&compte) {
+            return Err(Refus::Suspendu);
+        }
+        if self.identite.mfa_exigee() {
+            let code = code.ok_or(Refus::CodeRequis)?;
+            if !verif(&compte, code) {
+                return Err(Refus::CodeInvalide);
+            }
+        }
         let jeton = aleatoire();
         self.sessions_web.insert(jeton.clone(), (compte.clone(), maintenant + SESSION_WEB_MS));
         Ok((jeton, compte))
     }
 
     /// Compte associé à un jeton de session de navigateur valide.
+    /// Session ouverte par le SSO pour une identité de l'annuaire et ses rôles.
+    pub fn ouvrir_session_sso(&mut self, compte: &str, roles: Vec<Role>, maintenant: u64) -> String {
+        self.purger(maintenant);
+        self.externes.insert(compte.to_string(), roles);
+        let jeton = aleatoire();
+        self.sessions_web.insert(jeton.clone(), (compte.to_string(), maintenant + SESSION_WEB_MS));
+        jeton
+    }
+
     pub fn session_web(&mut self, jeton: &str, maintenant: u64) -> Result<String, Refus> {
         self.purger(maintenant);
         self.sessions_web.get(jeton).map(|(c, _)| c.clone()).ok_or(Refus::Session)
@@ -309,7 +469,20 @@ impl Autorite {
 
 /// Fabrique une requête signée (côté client).
 pub fn requete(compte: &str, cle: &SigningKey, operation: Operation, session: Option<String>, maintenant: u64) -> RequeteSignee {
-    Corps { compte: compte.into(), operation, session, horodatage: maintenant, nonce: aleatoire() }.signer(cle)
+    Corps { compte: compte.into(), operation, session, horodatage: maintenant, nonce: aleatoire(), code: None, cible: None }.signer(cle)
+}
+
+/// Requête signée avec code du second facteur et compte visé.
+pub fn requete_complete(
+    compte: &str,
+    cle: &SigningKey,
+    operation: Operation,
+    session: Option<String>,
+    code: Option<String>,
+    cible: Option<String>,
+    maintenant: u64,
+) -> RequeteSignee {
+    Corps { compte: compte.into(), operation, session, horodatage: maintenant, nonce: aleatoire(), code, cible }.signer(cle)
 }
 
 #[cfg(test)]
@@ -330,6 +503,7 @@ mod tests {
         };
         Autorite::nouvelle(FichierComptes {
             signatures: Vec::new(),
+            identite: Default::default(),
             comptes: vec![
                 compte("alice", 1, vec![Role::Operateur]),
                 compte("bob", 2, vec![Role::Approbateur]),
@@ -410,6 +584,50 @@ mod tests {
         assert_eq!(a.ouvrir_session_web(&t, T), Err(Refus::Session));
         assert_eq!(a.session_web(&jeton, T + 1).unwrap(), "carla");
         assert_eq!(a.session_web(&jeton, T + SESSION_WEB_MS + 1), Err(Refus::Session));
+    }
+
+    #[test]
+    fn mfa_suspension_reactivation() {
+        let mut a = autorite();
+        a.identite = serde_yaml::from_str("{mfa: {}}").unwrap();
+        let mut verif = |c: &str, code: &str| c == "alice" && code == "123456";
+        // Durcir reste possible seul et sans code ; assouplir exige le code.
+        assert_eq!(a.traiter_avec(&req("alice", 1, Operation::Gel), T, &mut verif), Ok(Issue::Gel));
+        assert_eq!(a.traiter_avec(&req("alice", 1, Operation::Degel), T, &mut verif), Err(Refus::CodeRequis));
+        let avec = |code: &str| requete_complete("alice", &cle(1), Operation::Degel, Some("s".into()), Some(code.into()), None, T);
+        assert_eq!(a.traiter_avec(&avec("000000"), T, &mut verif), Err(Refus::CodeInvalide));
+        assert_eq!(a.traiter_avec(&avec("123456"), T, &mut verif), Ok(Issue::DegelEnAttente));
+        // Connexion à la vue : ticket puis code.
+        let Ok(Issue::Ticket(t)) = a.traiter(&req("carla", 3, Operation::Connexion), T) else { panic!() };
+        assert_eq!(a.ouvrir_session_web(&t, T), Err(Refus::CodeRequis));
+        // Suspension : plus de requête, plus de rôle, sessions fermées.
+        a.suspendre("dan");
+        assert_eq!(a.traiter(&req("dan", 4, Operation::Gel), T), Err(Refus::Suspendu));
+        assert!(a.roles("dan").is_empty());
+        let reac = |qui: &str, n: u8, cible: &str| requete_complete(qui, &cle(n), Operation::Reactiver, None, Some("123456".into()), Some(cible.into()), T);
+        let mut tout = |_: &str, code: &str| code == "123456";
+        assert!(matches!(a.traiter_avec(&reac("alice", 1, "carla"), T, &mut tout), Err(Refus::Cible(_))), "carla n'est pas suspendue");
+        assert_eq!(a.traiter_avec(&reac("alice", 1, "dan"), T, &mut tout), Ok(Issue::ReactivationEnAttente));
+        assert_eq!(a.traiter_avec(&reac("alice", 1, "dan"), T, &mut tout), Err(Refus::QuatreYeux));
+        assert_eq!(
+            a.traiter_avec(&reac("bob", 2, "dan"), T, &mut tout),
+            Ok(Issue::Reactivation { cible: "dan".into(), demandeur: "alice".into(), approbateur: "bob".into() })
+        );
+        assert!(!a.est_suspendu("dan"));
+        // SSO : rôles le temps de la session, quatre yeux inchangés.
+        let j = a.ouvrir_session_sso("sso:paul@ex.fr", vec![Role::Operateur], T);
+        assert_eq!(a.session_web(&j, T).unwrap(), "sso:paul@ex.fr");
+        assert_eq!(a.agir("sso:paul@ex.fr", Operation::Degel, Some("x".into()), T), Ok(Issue::DegelEnAttente));
+        assert_eq!(a.agir("sso:paul@ex.fr", Operation::Degel, Some("x".into()), T), Err(Refus::QuatreYeux));
+    }
+
+    #[test]
+    fn signature_des_comptes_inchangee_sans_identite() {
+        let f: FichierComptes = serde_yaml::from_str("comptes: []").unwrap();
+        assert_eq!(f.octets_signes(), b"[]");
+        let g: FichierComptes = serde_yaml::from_str("comptes: []\nidentite: {mfa: {}}").unwrap();
+        assert!(String::from_utf8(g.octets_signes()).unwrap().contains("identite"));
+        assert!(!serde_yaml::to_string(&f).unwrap().contains("identite"));
     }
 
     #[test]
