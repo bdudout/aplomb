@@ -303,7 +303,9 @@ pub fn modules_du_mandat(mandat: &crate::mandat::Mandat) -> Vec<Module> {
     let m = mandat.moniteurs.as_ref();
     let cosigner = "au mandat, puis aplomb cosigner";
     let mut v = vec![
-        module("hook-claude-code", Branchement, Integre, "hook PreToolUse de Claude Code (niveau 1)", true, "paramètres gérés de Claude Code (README, « Brancher Claude Code »)"),
+        module("hook-claude-code", Branchement, Integre, "hook PreToolUse de Claude Code (niveau 1)", mandat.agent.starts_with("claude-code"), "paramètres gérés de Claude Code (README, « Brancher Claude Code »)"),
+        module("hook-codex", Branchement, Integre, "hook PreToolUse de Codex CLI (niveau 1)", mandat.agent.starts_with("codex"), "agent: codex au mandat ; aplomb hook --agent codex (docs/AGENTS.md)"),
+        module("hook-cursor", Branchement, Integre, "hooks de Cursor : preToolUse, shell, MCP, lecture (niveau 1)", mandat.agent.starts_with("cursor"), "agent: cursor au mandat ; aplomb hook --agent cursor (docs/AGENTS.md)"),
         module("proxy-llm", Branchement, Integre, "proxy LLM, API Messages (niveau 2)", !mandat.perimetre.domaines_modele.is_empty(), &format!("perimetre.domaines_modele {cosigner}")),
         module("aplomb-gate", Branchement, Integre, "passerelle sortante HTTP(S) (niveau 2)", true, "HTTPS_PROXY de l'agent"),
         module("passerelle-mcp", Branchement, Integre, "passerelle MCP (niveau 2)", !mandat.perimetre.serveurs_mcp.is_empty(), &format!("perimetre.serveurs_mcp {cosigner}")),

@@ -759,6 +759,7 @@ mod tests {
             bornes: None,
             moniteurs: None,
             approbation: None,
+            profil_declaratif: None,
             signature: None,
             signatures: Vec::new(),
         }

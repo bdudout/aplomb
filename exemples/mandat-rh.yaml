@@ -1,0 +1,14 @@
+id: agent-rh
+version: 1
+profil: rh
+profil_declaratif: {fichier: profil-rh/profil.yaml}
+agent: claude-code
+intention: Répondre aux questions des salariés sur leur dossier et préparer les exports vers la paie.
+perimetre:
+  racine: /srv/rh/agent
+  serveurs_mcp:
+  - {nom: sirh, commande: [/srv/outils/sirh-mcp], outils: [lire_dossier, chercher, modifier, exporter]}
+politique:
+  regles: profil-rh/regles.cedar
+  revue: profil-rh/revue.cedar
+bornes: {refus: 5, revues: 20, domaines: 10, envois: 3, actions: 2000}

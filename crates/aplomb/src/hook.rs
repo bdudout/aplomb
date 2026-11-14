@@ -51,18 +51,12 @@ fn contenu_execute(cwd: &str, commande: &str) -> Option<String> {
     (!contenu.is_empty()).then_some(contenu)
 }
 
-fn sortie_pre(decision: &str, motif: &str) -> ExitCode {
-    let mut sortie = json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": decision,
-            "permissionDecisionReason": format!("Aplomb : {motif}"),
-        }
-    });
-    if decision == "allow" {
-        sortie = json!({});
+use aplomb_core::adaptateurs::{self, AgentHook, Reponse};
+
+fn sortie_pre(agent: AgentHook, evenement: &str, r: Reponse, motif: &str) -> ExitCode {
+    if let Some(s) = adaptateurs::sortie(agent, evenement, r, motif) {
+        println!("{s}");
     }
-    println!("{sortie}");
     ExitCode::SUCCESS
 }
 
@@ -82,85 +76,112 @@ fn nonce() -> String {
     hex::encode(o)
 }
 
-pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>, branchement: &str) -> ExitCode {
+/// Verdict le plus dur de plusieurs (correctif sur plusieurs fichiers).
+fn rang(v: &str) -> u8 {
+    match v {
+        "allow" => 0,
+        "review" => 1,
+        "deny" => 2,
+        _ => 3,
+    }
+}
+
+pub fn executer(perimetre: &[PathBuf], cle_serveur: Option<&Path>, branchement: Option<&str>, agent: &str) -> ExitCode {
+    let agent = match AgentHook::depuis(agent) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("aplomb hook : {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let branchement = branchement.unwrap_or(agent.branchement()).to_string();
+    let refuser = |motif: &str| sortie_pre(agent, "", Reponse::Refuser, motif);
     let cle_serveur = match cle_serveur.map(|p| std::fs::read_to_string(p).map_err(|e| e.to_string())) {
         None => None,
         Some(Ok(t)) => match aplomb_core::mandat::cle_publique(&t) {
             Ok(c) => Some(c),
-            Err(_) => return sortie_pre("deny", "clé publique du superviseur illisible (fail-closed)"),
+            Err(_) => return refuser("clé publique du superviseur illisible (fail-closed)"),
         },
-        Some(Err(_)) => return sortie_pre("deny", "clé publique du superviseur introuvable (fail-closed)"),
+        Some(Err(_)) => return refuser("clé publique du superviseur introuvable (fail-closed)"),
     };
     let mut brut = String::new();
     if std::io::stdin().read_to_string(&mut brut).is_err() {
-        return sortie_pre("deny", "événement illisible (fail-closed)");
+        return refuser("événement illisible (fail-closed)");
     }
     let evt: Value = match serde_json::from_str(&brut) {
         Ok(v) => v,
-        Err(_) => return sortie_pre("deny", "événement JSON invalide (fail-closed)"),
+        Err(_) => return refuser("événement JSON invalide (fail-closed)"),
     };
-    let s = |k: &str| evt.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let nom_evt = s("hook_event_name");
-    let phase = if nom_evt == "PostToolUse" { "apres" } else { "avant" };
-    let entree = evt.get("tool_input").cloned().unwrap_or(json!({}));
-    let cwd = s("cwd");
-    if !supervise(&cwd, perimetre) {
-        // Hors des dossiers supervisés : aucune décision, Claude Code décide seul.
-        println!("{{}}");
+    let appels = match adaptateurs::normaliser(agent, &evt) {
+        Ok(a) => a,
+        Err(e) => return refuser(&format!("{e} (fail-closed)")),
+    };
+    let Some(premier) = appels.first() else {
+        // Événement sans action à décider (début de session…).
         return ExitCode::SUCCESS;
+    };
+    let evenement = premier.evenement.clone();
+    let refuser = |motif: &str| sortie_pre(agent, &evenement, Reponse::Refuser, motif);
+    if !supervise(&premier.cwd, perimetre) {
+        // Hors des dossiers supervisés : aucune décision, l'agent décide seul.
+        return sortie_pre(agent, &evenement, Reponse::Rien, "");
     }
-    let chemin = ["file_path", "notebook_path", "path"]
-        .iter()
-        .find_map(|k| entree.get(*k).and_then(Value::as_str))
-        .unwrap_or("");
-    let commande = entree.get("command").and_then(Value::as_str).unwrap_or("");
-    let nonce = nonce();
-    let session = s("session_id");
-    let corps = json!({
-        "session": s("session_id"),
-        "agent": std::env::var("APLOMB_AGENT").unwrap_or_else(|_| "claude-code".into()),
-        "mode": branchement,
-        "cwd": cwd,
-        "outil": s("tool_name"),
-        "entree": entree,
-        "phase": phase,
-        "chemin_reel": chemin_reel(&cwd, chemin),
-        "contenu_execute": contenu_execute(&cwd, commande),
-        "nonce": nonce,
-        "appel": evt.get("tool_use_id").and_then(Value::as_str),
-        // Sous-agent (Claude Code : agent_type et agent_id dans un sous-agent).
-        "delegation": evt.get("agent_type").and_then(Value::as_str).filter(|t| !t.is_empty())
-            .map(|t| json!({"type_agent": t, "id": s("agent_id")})),
-    });
     let base = std::env::var("APLOMB_URL").unwrap_or_else(|_| URL_DEFAUT.into());
     // Juge compris (6 s au plus) ; sous les 10 s que Claude Code laisse au hook.
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(8)).build();
-
-    if phase == "apres" {
-        // Observation : best effort, ne bloque jamais l'agent après coup.
-        let _ = agent.post(&format!("{base}/v1/observe")).send_json(corps);
-        return ExitCode::SUCCESS;
-    }
-
-    let reponse: Value = match agent.post(&format!("{base}/v1/decide")).send_json(corps) {
-        Ok(r) => match r.into_json() {
-            Ok(v) => v,
-            Err(_) => return sortie_pre("deny", "réponse du superviseur invalide (fail-closed)"),
-        },
-        Err(e) => return sortie_pre("deny", &format!("superviseur injoignable ({e}) — fail-closed")),
-    };
-    let motif = reponse.get("motif").and_then(Value::as_str).unwrap_or("");
-    if let Some(cle) = &cle_serveur {
-        let champ = |k: &str| reponse.get(k).and_then(Value::as_str).unwrap_or("");
-        if !aplomb_core::reponse::verifier(cle, champ("signature"), &nonce, &session, champ("verdict"), champ("regle")) {
-            return sortie_pre("deny", "réponse non signée par le superviseur attendu (usurpation possible) — fail-closed");
+    let http = ureq::AgentBuilder::new().timeout(Duration::from_secs(8)).build();
+    let nom_agent = std::env::var("APLOMB_AGENT").unwrap_or_else(|_| agent.nom().into());
+    let mut pire: Option<(String, String)> = None;
+    for a in &appels {
+        let chemin = ["file_path", "notebook_path", "path"].iter().find_map(|k| a.entree.get(*k).and_then(Value::as_str)).unwrap_or("");
+        let commande = a.entree.get("command").and_then(Value::as_str).unwrap_or("");
+        let nonce = nonce();
+        let corps = json!({
+            "session": a.session,
+            "agent": nom_agent,
+            "mode": branchement,
+            "cwd": a.cwd,
+            "outil": a.outil,
+            "entree": a.entree,
+            "phase": a.phase,
+            "chemin_reel": chemin_reel(&a.cwd, chemin),
+            "contenu_execute": contenu_execute(&a.cwd, commande),
+            "nonce": nonce,
+            "appel": a.appel,
+            "delegation": a.delegation,
+        });
+        if a.phase == "apres" {
+            // Observation : best effort, ne bloque jamais l'agent après coup.
+            let _ = http.post(&format!("{base}/v1/observe")).send_json(corps);
+            continue;
+        }
+        let reponse: Value = match http.post(&format!("{base}/v1/decide")).send_json(corps) {
+            Ok(r) => match r.into_json() {
+                Ok(v) => v,
+                Err(_) => return refuser("réponse du superviseur invalide (fail-closed)"),
+            },
+            Err(e) => return refuser(&format!("superviseur injoignable ({e}) — fail-closed")),
+        };
+        let champ = |k: &str| reponse.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        if let Some(cle) = &cle_serveur {
+            if !aplomb_core::reponse::verifier(cle, &champ("signature"), &nonce, &a.session, &champ("verdict"), &champ("regle")) {
+                return refuser("réponse non signée par le superviseur attendu (usurpation possible) — fail-closed");
+            }
+        }
+        let verdict = champ("verdict");
+        if !matches!(verdict.as_str(), "allow" | "review" | "deny" | "gel") {
+            return refuser("verdict inconnu (fail-closed)");
+        }
+        if pire.as_ref().is_none_or(|(v, _)| rang(&verdict) > rang(v)) {
+            pire = Some((verdict, champ("motif")));
         }
     }
-    match reponse.get("verdict").and_then(Value::as_str) {
-        Some("allow") => sortie_pre("allow", motif),
-        Some("review") => sortie_pre("ask", motif),
-        Some("deny") => sortie_pre("deny", motif),
-        Some("gel") => sortie_pre("deny", &format!("SESSION GELÉE — {motif}")),
-        _ => sortie_pre("deny", "verdict inconnu (fail-closed)"),
+    match pire {
+        None => ExitCode::SUCCESS,
+        Some((v, motif)) => match v.as_str() {
+            "allow" => sortie_pre(agent, &evenement, Reponse::Rien, &motif),
+            "review" => sortie_pre(agent, &evenement, Reponse::Demander, &motif),
+            "deny" => sortie_pre(agent, &evenement, Reponse::Refuser, &motif),
+            _ => sortie_pre(agent, &evenement, Reponse::Refuser, &format!("SESSION GELÉE — {motif}")),
+        },
     }
 }

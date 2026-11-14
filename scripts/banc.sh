@@ -988,6 +988,136 @@ verifier "dossier de preuves : rapports DORA, ISO 42001, NIS 2 joints" \
   '"$APLOMB" preuves exporter --mandat mandats/approb.yaml --journal journal-approb --sortie preuves-ap > preuves-ap.log 2>&1 && for r in dora iso42001 nis2; do [ -f "preuves-ap/rapports/$r.json" ] && [ -f "preuves-ap/rapports/$r.md" ] || exit 1; done && "$APLOMB" preuves verifier preuves-ap > /dev/null 2>&1'
 verifier "constats : canaux d'approbation et délai mesurés" '[ "$(python3 -c "import json; c=json.load(open(\"preuves-ap/correspondance.json\"))[\"constats\"]; print(c[\"canaux_approbation\"], c[\"delai_revue\"])")" = "5 15" ]'
 rm -f approbation.yaml panneaux.yaml
+echo "--- Industrialisation (J12) : Codex, Cursor, proxy OpenAI, profil déclaratif, MCP 2026-07-28, publication"
+# Ports ${Q}3x, réutilisés par trois instances successives (Codex, Cursor, RH).
+servir_j12() {  # mandat, journal
+  "$APLOMB" serve --mandat "$1" --ecoute-decision "127.0.0.1:${Q}30" --ecoute-admin "127.0.0.1:${Q}31" \
+    --ecoute-passerelle "127.0.0.1:${Q}32" --ecoute-llm "127.0.0.1:${Q}33" --ecoute-mcp "127.0.0.1:${Q}35" --ecoute-reporting "127.0.0.1:${Q}37" \
+    --journal "$2" --coffre "coffre-$2" > "serve-$2.log" 2>&1 &
+  SERVE_J12=$!; PIDS="$PIDS $SERVE_J12"
+  for _ in $(seq 300); do curl -s -o /dev/null "http://127.0.0.1:${Q}31/" && break; sleep 0.1; done
+}
+arreter_j12() { kill -INT "$SERVE_J12"; wait "$SERVE_J12" 2>/dev/null || true; }
+lrq() { python3 -c "import json; L=[json.loads(l) for l in open('$B/requetes.jsonl')]; print($1)"; }
+hook_agent() {  # agent, événement JSON
+  printf '%s' "$2" | APLOMB_URL="http://127.0.0.1:${Q}30" "$APLOMB" hook --agent "$1" --cle-serveur cles/reponses.pub
+}
+mandat_banc codex
+sed -i.bak -e '/^  juge:/d' -e 's/^agent: claude-code$/agent: codex/' "$B/mandats/codex.yaml"
+verifier "mandat agent: codex cosigné" '"$APLOMB" cosigner mandats/codex.yaml --compte alice --compte bob > cosigner-codex.log 2>&1'
+servir_j12 mandats/codex.yaml journal-codex
+SC="codex-$$"
+evt_codex() {  # événement, outil, entrée JSON
+  printf '{"hook_event_name":"%s","session_id":"%s","cwd":"%s","tool_name":"%s","tool_use_id":"call_x","tool_input":%s}' "$1" "$SC" "$B/depot" "$2" "$3"
+}
+verifier "Codex : commande en tableau permise (sortie vide)" '[ "$(hook_agent codex "$(evt_codex PreToolUse shell '"'"'{"command":["bash","-lc","ls"]}'"'"')")" = "{}" ]'
+PATCH_OK='{"input":"*** Begin Patch\n*** Update File: notes.md\n@@\n-a\n+b\n*** End Patch"}'
+PATCH_KO='{"input":"*** Begin Patch\n*** Update File: notes.md\n+b\n*** Update File: /etc/hosts\n+0.0.0.0 x\n*** End Patch"}'
+verifier "Codex : apply_patch dans le dépôt permis" '! hook_agent codex "$(evt_codex PreToolUse apply_patch "$PATCH_OK")" | grep -q deny'
+verifier "Codex : apply_patch qui touche /etc/hosts refusé en entier" \
+  'hook_agent codex "$(evt_codex PreToolUse apply_patch "$PATCH_KO")" | python3 -c "import json,sys; d=json.load(sys.stdin)[\"hookSpecificOutput\"]; assert d[\"permissionDecision\"] == \"deny\""'
+verifier "Codex : branchement hook-codex au journal" 'grep -q "hook-codex" journal-codex/$SC*.jsonl'
+verifier "hook d'un autre agent que celui du mandat : refusé" \
+  'printf "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"cc-$$\",\"cwd\":\"$B/depot\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}" | APLOMB_URL="http://127.0.0.1:${Q}30" "$APLOMB" hook --cle-serveur cles/reponses.pub | grep -q deny'
+# Proxy LLM, API compatible OpenAI (Codex, Ollama, vLLM…).
+curl -s -X POST "http://127.0.0.1:${Q}33/v1/chat/completions" -H "authorization: Bearer $CLE_DEV" \
+  -H "x-codex-session-id: $SC" -H "content-type: application/json" \
+  -d '{"model":"faux-modele","stream":true,"messages":[{"role":"user","content":"liste"}]}' > openai.txt
+verifier "OpenAI : flux relayé jusqu'à [DONE]" 'grep -q "call_banc_" openai.txt && grep -q "\[DONE\]" openai.txt'
+verifier "OpenAI : clé de l'agent (compte technique) retirée" '! grep -q "$CLE_DEV" requetes.jsonl'
+verifier "OpenAI : clé de l'agent remplacée par le jeton d'Aplomb" \
+  '[ "$(lrq "[l[\"authorization\"] for l in L if l[\"chemin\"] == \"/v1/chat/completions\"][-1]")" = "Bearer faux-jeton-du-banc-0123456789" ]'
+verifier "OpenAI : appel d'outil et jetons au journal" 'grep -h "call_banc_" journal-codex/*.jsonl | grep -q "\"jetons_entree\":50"'
+verifier "OpenAI : chemin hors conversation refusé" \
+  '[ "$(curl -s -o /dev/null -w %{http_code} -X POST http://127.0.0.1:${Q}33/v1/embeddings)" = 403 ]'
+# MCP 2026-07-28, sans état.
+MCP_J="http://127.0.0.1:${Q}35/mcp/notes"
+META='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"banc","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}'
+rpc26() {  # méthode, nom (ou vide), params sans _meta (ou vide), version d'en-tête (défaut 2026-07-28)
+  curl -s -w '\n%{http_code}' -X POST "$MCP_J" -H "content-type: application/json" -H "accept: application/json, text/event-stream" \
+    -H "mcp-protocol-version: ${4:-2026-07-28}" -H "mcp-method: $1" ${2:+-H "mcp-name: $2"} \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"c-1\",\"method\":\"$1\",\"params\":{${3:+$3,}$META}}"
+}
+rpc26 server/discover > mcp26-decouverte.txt
+verifier "MCP 2026 : server/discover servi par la passerelle" \
+  'head -1 mcp26-decouverte.txt | python3 -c "import json,sys; r=json.load(sys.stdin)[\"result\"]; assert r[\"resultType\"] == \"complete\" and \"2026-07-28\" in r[\"supportedVersions\"] and \"tools\" in r[\"capabilities\"]"'
+verifier "MCP 2026 : tools/list sans session" 'rpc26 tools/list | head -1 | grep -q chercher'
+rpc26 tools/call chercher '"name":"chercher","arguments":{"q":"x"}' > mcp26-appel.txt
+verifier "MCP 2026 : appel jugé et relayé, identifiant du client rendu" \
+  'head -1 mcp26-appel.txt | python3 -c "import json,sys; r=json.load(sys.stdin); assert r[\"id\"] == \"c-1\" and r[\"result\"][\"resultType\"] == \"complete\" and \"résultat de chercher\" in r[\"result\"][\"content\"][0][\"text\"]"'
+verifier "MCP 2026 : appel journalisé" 'grep -l "mcp__notes__chercher" journal-codex/*.jsonl > /dev/null'
+verifier "MCP 2026 : Mcp-Name différent du corps → 400, -32020" \
+  'rpc26 tools/call lire '"'"'"name":"chercher","arguments":{}'"'"' > mcp26-nom.txt; [ "$(tail -1 mcp26-nom.txt)" = 400 ] && head -1 mcp26-nom.txt | grep -q "\-32020"'
+sans_methode() {
+  curl -s -o /dev/null -w '%{http_code}' -X POST "$MCP_J" -H "content-type: application/json" -H "mcp-protocol-version: 2026-07-28" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{$META}}"
+}
+verifier "MCP 2026 : Mcp-Method absent → 400" '[ "$(sans_methode)" = 400 ]'
+verifier "MCP 2026 : version inconnue → 400, -32022 et versions prises en charge" \
+  'rpc26 tools/list "" "" 2099-01-01 > mcp26-version.txt; [ "$(tail -1 mcp26-version.txt)" = 400 ] && head -1 mcp26-version.txt | grep -q "\-32022" && head -1 mcp26-version.txt | grep -q "2025-11-25"'
+verifier "MCP : origine d'une autre machine → 403" \
+  '[ "$(curl -s -o /dev/null -w %{http_code} -X POST "$MCP_J" -H "origin: https://evil.example" -H "content-type: application/json" -d "$INIT")" = 403 ]'
+verifier "MCP : session à l'ancienne toujours servie" \
+  '[ -n "$(curl -s -D - -o /dev/null -X POST "$MCP_J" -H "origin: http://localhost:3000" -H "content-type: application/json" -d "$INIT" | tr -d "\r" | sed -n "s/^mcp-session-id: //p")" ]'
+arreter_j12
+# Cursor.
+mandat_banc cursor
+sed -i.bak -e '/^  juge:/d' -e 's/^agent: claude-code$/agent: cursor/' "$B/mandats/cursor.yaml"
+"$APLOMB" cosigner mandats/cursor.yaml --compte alice --compte bob > cosigner-cursor.log 2>&1
+servir_j12 mandats/cursor.yaml journal-cursor
+SU="cursor-$$"
+evt_cursor() {  # événement, champs JSON
+  printf '{"hook_event_name":"%s","conversation_id":"%s","generation_id":"g1","workspace_roots":["%s"],%s}' "$1" "$SU" "$B/depot" "$2"
+}
+verifier "Cursor : commande permise → permission allow" \
+  '[ "$(hook_agent cursor "$(evt_cursor beforeShellExecution "\"command\":\"ls\",\"cwd\":\"$B/depot\"")")" = "{\"permission\":\"allow\"}" ]'
+verifier "Cursor : suppression de /etc/hosts refusée, motif pour l'agent" \
+  'hook_agent cursor "$(evt_cursor preToolUse "\"tool_name\":\"Delete\",\"tool_input\":{\"file_path\":\"/etc/hosts\"}")" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d[\"permission\"] == \"deny\" and d[\"agent_message\"].startswith(\"Aplomb\")"'
+verifier "Cursor : outil MCP (entrée en chaîne JSON) jugé sous mcp__<serveur>__<outil>" \
+  'hook_agent cursor "$(evt_cursor beforeMCPExecution "\"mcp_server_name\":\"notes\",\"tool_name\":\"chercher\",\"tool_input\":\"{\\\"q\\\":\\\"x\\\"}\"")" > cursor-mcp.json; grep -q "mcp__notes__chercher" journal-cursor/$SU*.jsonl'
+verifier "Cursor : afterFileEdit journalisé, sans réponse" \
+  '[ -z "$(hook_agent cursor "$(evt_cursor afterFileEdit "\"file_path\":\"$B/depot/notes.md\"")")" ]'
+verifier "Cursor : branchement hook-cursor au journal" 'grep -q "hook-cursor" journal-cursor/$SU*.jsonl'
+arreter_j12
+# Profil déclaratif RH.
+cp -R "$RACINE/exemples/profil-rh" "$B/mandats/"
+sed -e "s#/srv/rh/agent#$B/depot#" -e "s#\[/srv/outils/sirh-mcp\]#[python3, \"$RACINE/scripts/faux-mcp.py\"]#" "$RACINE/exemples/mandat-rh.yaml" > "$B/mandats/rh.yaml"
+verifier "profil déclaratif : mandat RH cosigné, empreinte du profil posée" \
+  '"$APLOMB" cosigner mandats/rh.yaml --compte alice --compte bob > cosigner-rh.log 2>&1 && grep -A2 "profil_declaratif" mandats/rh.yaml | grep -q "sha256: [0-9a-f]\{64\}"'
+verifier "aplomb modules : mandat RH accepté" '"$APLOMB" modules --mandat mandats/rh.yaml > modules-rh.log 2>&1 && grep -qi "rh" modules-rh.log'
+servir_j12 mandats/rh.yaml journal-rh
+SR="rh-$$"
+outil_rh() {  # outil, entrée JSON
+  hook_agent claude-code "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"$SR-$3\",\"cwd\":\"$B/depot\",\"tool_name\":\"$1\",\"tool_input\":$2}"
+}
+verifier "RH : lire un dossier permis" '! outil_rh mcp__sirh__lire_dossier "{\"matricule\":\"A12\"}" a | grep -q "deny\|ask"'
+verifier "RH : outil non déclaré (Bash) refusé" 'outil_rh Bash "{\"command\":\"ls\"}" b | grep -q deny'
+verifier "RH : modifier le salaire refusé (règle Cedar du profil)" 'outil_rh mcp__sirh__modifier "{\"matricule\":\"A12\",\"champ\":\"salaire\"}" c | grep -q deny'
+verifier "RH : modifier l'adresse en revue" 'outil_rh mcp__sirh__modifier "{\"matricule\":\"A12\",\"champ\":\"adresse\"}" d | grep -q ask'
+verifier "RH : export hors de la paie refusé" 'outil_rh mcp__sirh__exporter "{\"destinataire\":\"rh@ailleurs.example\"}" e | grep -q deny'
+verifier "RH : export vers la paie permis" '! outil_rh mcp__sirh__exporter "{\"destinataire\":\"lot@paie.exemple.fr\"}" f | grep -q deny'
+arreter_j12
+printf '\n- {outil: Bash, verbe: lire_dossier}\n' >> "$B/mandats/profil-rh/profil.yaml"
+"$APLOMB" serve --mandat mandats/rh.yaml --ecoute-decision "127.0.0.1:${Q}30" --ecoute-admin "127.0.0.1:${Q}31" \
+  --ecoute-passerelle "127.0.0.1:${Q}32" --ecoute-llm "127.0.0.1:${Q}33" --ecoute-mcp "127.0.0.1:${Q}35" --ecoute-reporting "127.0.0.1:${Q}37" \
+  --journal journal-rh --coffre coffre-rh > serve-rh-modifie.log 2>&1 &
+SERVE_J12=$!; PIDS="$PIDS $SERVE_J12"
+for _ in $(seq 100); do kill -0 "$SERVE_J12" 2>/dev/null || break; sleep 0.1; done
+verifier "profil modifié sans recosigner : serve refuse de démarrer" '! kill -0 "$SERVE_J12" 2>/dev/null && grep -q "modifié depuis la cosignature" serve-rh-modifie.log'
+kill "$SERVE_J12" 2>/dev/null || true; wait "$SERVE_J12" 2>/dev/null || true
+# Publication : nomenclature, signatures à deux, vérification.
+verifier "SBOM CycloneDX 1.6 : composants avec empreintes" \
+  '"$APLOMB" publication sbom --sortie sbom.cdx.json > /dev/null && python3 -c "import json; b=json.load(open(\"sbom.cdx.json\")); assert b[\"bomFormat\"] == \"CycloneDX\" and b[\"specVersion\"] == \"1.6\" and len(b[\"components\"]) > 100 and any(c[\"name\"] == \"ed25519-dalek\" and c[\"hashes\"] for c in b[\"components\"])"'
+verifier "SBOM reproductible avec SOURCE_DATE_EPOCH" \
+  'SOURCE_DATE_EPOCH=1700000000 "$APLOMB" publication sbom > sbom1.json && SOURCE_DATE_EPOCH=1700000000 "$APLOMB" publication sbom > sbom2.json && cmp -s sbom1.json sbom2.json && grep -q "2023-11-14T22:13:20Z" sbom1.json'
+cp "$APLOMB" livrable
+"$APLOMB" publication signer livrable --compte alice > signer-a.log 2>&1
+"$APLOMB" publication signer livrable --compte bob > signer-b.log 2>&1
+verifier "livrable signé par deux membres : vérifié au seuil 2" '"$APLOMB" publication verifier livrable --seuil 2 | grep -q "alice, bob"'
+verifier "seuil 3 : refusé" '! "$APLOMB" publication verifier livrable --seuil 3 > /dev/null 2>&1'
+verifier "clé publique étrangère : refusée" '! "$APLOMB" publication verifier livrable --cle-publique 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29 > /dev/null 2>&1'
+printf x >> livrable
+verifier "livrable modifié : refusé" '"$APLOMB" publication verifier livrable 2>&1 | grep -q "fichier modifié"'
 echo "--- Déverrouillage"
 SOCKET="$HOME/.config/aplomb/agent.sock"
 "$APLOMB" deverrouiller --duree 2m > deverrouiller.log 2>&1

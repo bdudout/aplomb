@@ -157,7 +157,7 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
     let requete_json = serde_json::from_slice::<Value>(&corps).ok();
     let modele = requete_json.as_ref().and_then(|v| v.get("model").and_then(Value::as_str).map(String::from)).unwrap_or_default();
     // Prompt de l'utilisateur, secrets déjà masqués ; seuls les appels de conversation comptent.
-    let prompt = requete_json.as_ref().filter(|_| chemin == "/v1/messages").and_then(prompt);
+    let prompt = requete_json.as_ref().filter(|_| aplomb_core::modele::conversation(chemin)).and_then(prompt);
     // Journalisé avant tout envoi : sans journal, rien ne part.
     let mut envoi = json!({"modele": modele, "envoye": corps.len()});
     if !masques.is_empty() {
@@ -175,7 +175,7 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
             return refus(StatusCode::BAD_GATEWAY, &format!("modèle injoignable : {e}"));
         }
     };
-    let releve = (chemin == "/v1/messages").then(|| Releve {
+    let releve = aplomb_core::modele::conversation(chemin).then(|| Releve {
         horodatage: 0,
         compte: imputation.compte,
         utilisateur: imputation.utilisateur,
@@ -191,7 +191,7 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
     let annonce = Annonce { echange, session_agent: session_agent.clone(), ..Default::default() };
 
     // Protocole : la réponse est retenue et examinée avant que l'agent la reçoive (EF-E2).
-    if let Some(p) = r.protocole.protocole.as_ref().filter(|_| chemin == "/v1/messages" && reponse.status().is_success()) {
+    if let Some(p) = r.protocole.protocole.as_ref().filter(|_| aplomb_core::modele::conversation(chemin) && reponse.status().is_success()) {
         let session = session_agent.clone().unwrap_or_else(|| SESSION.into());
         let debut = std::time::Instant::now();
         let Some(mut retenue) = lire(reponse).await else { return refus(StatusCode::BAD_GATEWAY, "réponse du modèle interrompue") };
@@ -328,7 +328,7 @@ async fn relayer(State((etat, r)): State<Partage>, methode: Method, uri: Uri, en
             // Annonce au fil de l'eau : l'agent peut exécuter l'outil dès la fin du flux,
             // avant même que le bilan soit écrit. Le raisonnement précède l'appel dans le
             // flux : il est déjà là (EF-E3).
-            if m.windows(8).any(|f| f == b"tool_use") {
+            if m.windows(8).any(|f| f == b"tool_use") || m.windows(10).any(|f| f == b"tool_calls") {
                 let (raisonnement, avis_r) = protocole.protocole.lire_raisonnement(&b.lu);
                 for o in analyser_reponse(&b.lu).outils {
                     let a = Annonce { raisonnement: raisonnement.clone(), avis: avis_r.clone().into_iter().collect(), ..annonce.clone() };
@@ -355,7 +355,8 @@ async fn envoyer(
     corps: Bytes,
 ) -> Result<reqwest::Response, reqwest::Error> {
     let mut requete = client().request(methode.clone(), format!("{amont}{cible}"));
-    for (n, v) in entetes_amont(entrants, jeton) {
+    let entetes = if aplomb_core::modele::openai(cible) { aplomb_core::modele::entetes_amont_openai(entrants, jeton) } else { entetes_amont(entrants, jeton) };
+    for (n, v) in entetes {
         requete = requete.header(n, v);
     }
     requete.body(corps).send().await

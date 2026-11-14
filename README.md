@@ -69,6 +69,7 @@ par hook (niveau d'assurance 1, coopératif).
 - **Hook Claude Code** (`aplomb hook`, niveau 1) : soumet chaque action avant exécution.
   - Il n'accepte que des réponses signées sur son nonce : un faux superviseur ou un rejeu est refusé.
   - En Review, il fait confirmer l'action dans Claude Code.
+  - **Codex CLI et Cursor** (J12) : `aplomb hook --agent codex|cursor` lit leur format d'événement et répond dans le leur ; `apply_patch` est jugé fichier par fichier. Ces agents n'ont pas de « demander » fiable : une revue y devient un refus motivé. Voir [`docs/AGENTS.md`](docs/AGENTS.md).
 
 ### Aplomb Gate, les passerelles
 
@@ -77,7 +78,8 @@ par hook (niveau d'assurance 1, coopératif).
   - les adresses internes sont refusées après résolution ;
   - l'envoi est plafonné par connexion ;
   - le volume échangé est journalisé.
-- **Proxy LLM** (`127.0.0.1:7703`, `ANTHROPIC_BASE_URL`, niveau 2) :
+- **Proxy LLM** (`127.0.0.1:7703`, `ANTHROPIC_BASE_URL`, ou `OPENAI_BASE_URL=http://127.0.0.1:7703/v1`, niveau 2) :
+  - deux API : Messages (`/v1/messages`) et compatible OpenAI (`/v1/chat/completions`, Ollama, vLLM, llama.cpp, fournisseurs compatibles), réponses entières ou en flux ; raisonnement, appels d'outils et jetons lus dans les deux ;
   - il relaie seulement les appels de conversation vers le modèle du mandat ;
   - il retire la clé de l'agent et injecte le jeton d'Aplomb ;
   - il journalise les appels, les jetons et les outils demandés par le modèle ;
@@ -85,7 +87,8 @@ par hook (niveau d'assurance 1, coopératif).
 - **Passerelle MCP** (`127.0.0.1:7704/mcp/<nom>`, niveau 2) :
   - Aplomb lance lui-même les serveurs MCP du mandat ;
   - chaque appel d'outil est jugé ;
-  - les définitions d'outils sont épinglées : si une description change, l'outil est refusé.
+  - les définitions d'outils sont épinglées : si une description change, l'outil est refusé ;
+  - deux générations du protocole : sessions (jusqu'à 2025-11-25) et **2026-07-28 sans état** (version dans chaque requête, `server/discover`, en-têtes `Mcp-Method` et `Mcp-Name` contrôlés contre le corps, origine vérifiée). Les serveurs stdio d'aujourd'hui restent utilisables : la passerelle les initialise elle-même.
 - **Confinement** (`conteneur/`, niveau 3) : Claude Code tourne dans un réseau Docker sans route vers l'extérieur.
   - Ses seules sorties sont les passerelles et la décision.
   - Le hook et ses paramètres appartiennent à root.
@@ -330,6 +333,9 @@ Dans le dépôt supervisé, `.claude/settings.json` (chemins absolus) :
   ```
 
   `aplomb modules --tout` montre ce qui est actif et ce qui est disponible, étape par étape.
+- **Un métier sans recompiler** (J12) : `profil_declaratif: {fichier: profil-rh/profil.yaml}` décrit outils, verbes et attributs en YAML, lié au mandat par empreinte ; les décisions restent en Cedar. Voir [`docs/PROFILS-DECLARATIFS.md`](docs/PROFILS-DECLARATIFS.md) et l'exemple RH.
+- **Codex CLI, Cursor** : voir [`docs/AGENTS.md`](docs/AGENTS.md).
+- **Publier une version** : `scripts/publier.sh --compte alice --compte bob` construit de façon reproductible, produit la nomenclature CycloneDX (`aplomb publication sbom`) et fait signer le binaire par les membres ; `aplomb publication verifier` pour l'utilisateur. Dossier CRA : [`docs/CRA.md`](docs/CRA.md), signalement : [`SECURITY.md`](SECURITY.md).
 - **Sous-agents** :
   - un mandat enfant porte `agent: claude-code/<type de sous-agent>` et `parent: <id du mandat parent>` ;
   - il doit être inclus dans le parent ;
@@ -512,7 +518,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 209 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, profil M métier et sonde, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 225 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, profil M métier et sonde, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -544,6 +550,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Socle modulaire (J8) | 11 étapes, catalogue des modules (`aplomb modules`, onglet Modules, `GET /admin/modules`), modules actifs et empreintes dans l'en-tête de chaque session ; le socle ne lit plus aucun verbe de profil (signaux fournis par le profil) ; filtres de contenu intégrés et en fichier (empreinte cosignée) ; moniteurs externes, contrat v1, en parallèle, plafonnés, plancher en panne, contenus seulement s'ils sont déclarés ; agrégation par escalade ; plancher du juge réglable. Audit et feuille de route : [`docs/AUDIT-2026-11.md`](docs/AUDIT-2026-11.md) |
 | Diffusion SIEM et conservation (J9) | Schéma pivot versionné `aplomb/1` ; ECS (`_bulk`, dédoublonné par `_id`), Splunk HEC, syslog RFC 5424 sur TLS ou TCP local, CEF, LEEF, OTLP/HTTP JSON, webhook HMAC-SHA256, fichier ; RFC 3339 avec fuseau IANA et UTC joint ; journal utilisé comme file persistante (curseurs par destination, reprise après coupure et redémarrage, testée au banc sans perte ni doublon) ; jetons par variables d'environnement ; alertes au journal (échec prolongé, dérive d'horloge) ; `aplomb diffusion exemple / verifier / apercu / tester`, `GET /admin/diffusion`. Archivage des sessions scellées avec registre de rétention scellé (EF-I5). Désactivé par défaut (EF-N6) |
 | Identité (J10) | Options cosignées avec les comptes (une signature existante reste valable sans elles) ; TOTP RFC 6238 sans dépendance nouvelle, secret enveloppé, sans rejeu, exigé pour ouvrir la vue, dégeler et réactiver, jamais pour geler ; SSO OpenID Connect (PKCE S256, état et nonce à usage unique, émetteur, audience, dates), rôles par groupes, `amr` exigé avec la MFA ; suspension des comptes inactifs au démarrage et toutes les heures, réactivation à quatre yeux hors du compte visé ; `aplomb compte revue`, campagnes cosignées dans le dossier de preuves. Testé au banc avec un faux fournisseur d'identité ; pas encore WebAuthn, SAML, SCIM |
+| Industrialisation (J12) | Hooks Codex CLI et Cursor (`aplomb hook --agent`), revue rendue en refus motivé ; proxy LLM compatible OpenAI (`/v1/chat/completions`, flux SSE, appels d'outils, jetons de cache) ; profils déclaratifs en YAML liés par empreinte (exemple RH) ; passerelle MCP 2026-07-28 sans état (découverte, en-têtes contrôlés, origine, processus partagé et identifiants renumérotés) à côté des sessions ; `aplomb publication sbom / signer / verifier`, construction reproductible, dossier CRA indicatif et SECURITY.md. **Pas encore** : état partagé entre instances (SQLite, PostgreSQL) et plusieurs systèmes par instance, voir [`docs/AUDIT-2026-11.md`](docs/AUDIT-2026-11.md) |
 | Fail-closed | Superviseur injoignable ⇒ refus vérifié |
 | Journal | Altération d'une décision détectée à la ligne exacte |
 | Latence | ≈ 10 ms par action, lancement du processus hook compris |

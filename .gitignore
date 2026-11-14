@@ -16,3 +16,4 @@ conteneur/.env
 /agents.yaml
 /cles/
 /reporting.yaml
+publication/

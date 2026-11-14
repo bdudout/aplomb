@@ -42,6 +42,7 @@ mod passerelle;
 mod preuves;
 mod rapport;
 mod protocole;
+mod publication;
 mod reporting;
 mod serveur;
 mod sonde;
@@ -57,6 +58,37 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     commande: Commande,
+}
+
+#[derive(Subcommand)]
+enum CommandePublication {
+    /// Nomenclature CycloneDX 1.6 de ce binaire (tirée du Cargo.lock compilé dedans).
+    Sbom {
+        #[arg(long)]
+        sortie: Option<PathBuf>,
+    },
+    /// Signe l'empreinte SHA-256 d'un livrable avec la clé d'un membre (<fichier>.sig.json).
+    Signer {
+        fichier: PathBuf,
+        #[arg(long)]
+        compte: String,
+        #[arg(long)]
+        cle: Option<PathBuf>,
+    },
+    /// Vérifie un livrable contre une clé publique ou les membres du fichier de confiance.
+    Verifier {
+        fichier: PathBuf,
+        #[arg(long)]
+        signature: Option<PathBuf>,
+        /// Clé publique ed25519 (hex, ou fichier qui la contient).
+        #[arg(long)]
+        cle_publique: Option<String>,
+        #[arg(long, default_value = gouverner::CONFIANCE)]
+        confiance: PathBuf,
+        /// Signataires de confiance distincts exigés.
+        #[arg(long, default_value_t = 1)]
+        seuil: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -76,8 +108,13 @@ enum Commande {
         cle_serveur: Option<PathBuf>,
         /// Mode de branchement déclaré au journal : `hook-claude-code` (niveau 1, défaut) ou
         /// `conteneur-isole` (niveau 3, hook installé par l'image du conteneur de l'agent).
-        #[arg(long, default_value = "hook-claude-code", value_parser = ["hook-claude-code", "conteneur-isole"])]
-        branchement: String,
+        /// Défaut : `hook-<agent>`.
+        #[arg(long, value_parser = ["hook-claude-code", "hook-codex", "hook-cursor", "conteneur-isole"])]
+        branchement: Option<String>,
+        /// Agent qui appelle le hook : claude-code (défaut), codex, cursor. Son format
+        /// d'événement et de réponse ; le mandat doit le nommer (`agent:`).
+        #[arg(long, default_value = "claude-code", value_parser = ["claude-code", "codex", "cursor"])]
+        agent: String,
     },
     /// Prépare tout en une commande : deux comptes, la confiance, les cosignatures.
     Init {
@@ -277,6 +314,11 @@ enum Commande {
     /// Rapport réglementaire : DORA, ISO/IEC 42001 ou NIS 2, exigence par exigence, d'après
     /// l'état mesuré de l'instance. `--pousser` l'envoie, signé, à un outil GRC (ACRA…).
     Rapport(rapport::Options),
+    /// Publication (CRA) : nomenclature CycloneDX, signature et vérification des livrables.
+    Publication {
+        #[command(subcommand)]
+        commande: CommandePublication,
+    },
     /// Reporting MCP en lecture seule : donner à un outil de gouvernance (ACRA, GRC…) l'accès
     /// à l'état de conformité et aux indicateurs.
     Reporting {
@@ -596,8 +638,8 @@ fn main() -> ExitCode {
             Some(m) => modules::afficher(&m, &reporting, &diffusion, &comptes, &approbation, &panneaux, tout),
             None => Err("aucun mandat dans mandats/ : aplomb modules --mandat <fichier>".into()),
         },
-        Commande::Hook { perimetre, cle_serveur, branchement } => {
-            return hook::executer(&perimetre, cle_serveur.as_deref(), &branchement)
+        Commande::Hook { perimetre, cle_serveur, branchement, agent } => {
+            return hook::executer(&perimetre, cle_serveur.as_deref(), branchement.as_deref(), &agent)
         }
         Commande::Init { membres, mandats, comptes, confiance } => {
             let mandats = if mandats.is_empty() { mandats_par_defaut() } else { mandats };
@@ -646,6 +688,13 @@ fn main() -> ExitCode {
         Commande::Preuves { commande: CommandePreuves::Exporter { mandat, sortie, journal, heures, confiance, comptes, cle } } => {
             preuves::exporter(preuves::OptionsExport { mandat, sortie, journal, heures, confiance, comptes, cle })
         }
+        Commande::Publication { commande } => match commande {
+            CommandePublication::Sbom { sortie } => publication::ecrire_sbom(sortie.as_deref()),
+            CommandePublication::Signer { fichier, compte, cle } => publication::signer(&fichier, &compte, cle.as_deref()),
+            CommandePublication::Verifier { fichier, signature, cle_publique, confiance, seuil } => {
+                publication::verifier(&fichier, signature.as_deref(), cle_publique.as_deref(), &confiance, seuil)
+            }
+        },
         Commande::Rapport(mut o) => {
             o.mandat = o.mandat.or_else(|| mandats_par_defaut().into_iter().next());
             rapport::executer(o)

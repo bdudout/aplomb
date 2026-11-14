@@ -332,7 +332,7 @@ fn maintenant() -> u64 {
 /// Niveau d'assurance déclaré par mode de branchement (§11).
 fn niveau_assurance(mode: &str) -> u8 {
     match mode {
-        "hook-claude-code" => 1,
+        "hook-claude-code" | "hook-codex" | "hook-cursor" => 1,
         "proxy-llm" | "passerelle-mcp" => 2,
         "conteneur-isole" => 3,
         _ => 1,

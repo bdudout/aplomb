@@ -11,6 +11,13 @@
 //!    la définition change ensuite est refusé (`aplomb_core::mcp::Epingles`).
 //! 4. Gel : plus aucun appel ne passe.
 //!
+//! **Deux générations du protocole.** Jusqu'à 2025-11-25 : `initialize`, puis une session
+//! (`Mcp-Session-Id`) et un processus par session. Version 2026-07-28, sans état : chaque
+//! requête porte sa version (`_meta` et en-tête `MCP-Protocol-Version`) ; la passerelle
+//! répond à `server/discover`, refuse un en-tête `Mcp-Method` ou `Mcp-Name` qui ne
+//! correspond pas au corps, et sert ces requêtes par un processus partagé par serveur,
+//! qu'elle initialise elle-même dans l'ancienne version (les serveurs stdio d'aujourd'hui).
+//!
 //! Les requêtes envoyées par le serveur au client (échantillonnage, élicitation) ne sont
 //! pas relayées : la passerelle y répond par une erreur.
 use std::collections::HashMap;
@@ -60,6 +67,8 @@ struct Partage {
     etat: Etat,
     reglages: Reglages,
     sessions: Mutex<HashMap<String, (String, Arc<Processus>)>>,
+    /// Version sans état : un processus par serveur, et ses capacités.
+    sans_etat: Mutex<HashMap<String, (Arc<Processus>, Value)>>,
     epingles: Mutex<Epingles>,
 }
 
@@ -68,6 +77,7 @@ pub fn routeur(etat: Etat, reglages: Reglages) -> Router {
         etat,
         reglages,
         sessions: Mutex::new(HashMap::new()),
+        sans_etat: Mutex::new(HashMap::new()),
         epingles: Mutex::new(Epingles::default()),
     });
     Router::new()
@@ -160,31 +170,103 @@ async fn ecrire(p: &Processus, m: &Value) -> Result<(), String> {
     e.flush().await.map_err(|e| e.to_string())
 }
 
-/// Transmet une requête et attend sa réponse.
+/// Transmet une requête et attend sa réponse. L'identifiant est renuméroté par la
+/// passerelle : des clients différents qui partagent un processus (version sans état) ne
+/// peuvent pas se répondre l'un à l'autre.
 async fn transmettre(p: &Processus, m: &Value, id: &Value) -> Value {
+    static SUIVANT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let interne = json!(format!("aplomb-{}", SUIVANT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let mut envoi = m.clone();
+    envoi["id"] = interne.clone();
     let (tx, rx) = oneshot::channel();
-    p.en_attente.lock().expect("verrou").insert(cle_id(id), tx);
-    if let Err(e) = ecrire(p, m).await {
+    p.en_attente.lock().expect("verrou").insert(cle_id(&interne), tx);
+    if let Err(e) = ecrire(p, &envoi).await {
+        p.en_attente.lock().expect("verrou").remove(&cle_id(&interne));
         return erreur(id, -32603, &format!("serveur MCP injoignable : {e}"));
     }
     match tokio::time::timeout(DELAI_REPONSE, rx).await {
-        Ok(Ok(r)) => r,
+        Ok(Ok(mut r)) => {
+            r["id"] = id.clone();
+            r
+        }
         _ => {
-            p.en_attente.lock().expect("verrou").remove(&cle_id(id));
+            p.en_attente.lock().expect("verrou").remove(&cle_id(&interne));
             erreur(id, -32603, "pas de réponse du serveur MCP")
         }
     }
+}
+
+/// Processus partagé d'un serveur pour la version sans état, initialisé par la passerelle.
+async fn processus_partage(p: &Partage, serveur: &ServeurMcp) -> Result<(Arc<Processus>, Value), String> {
+    if let Some(x) = p.sans_etat.lock().expect("verrou").get(&serveur.nom) {
+        return Ok(x.clone());
+    }
+    let proc_ = lancer(serveur, &p.reglages.racine)?;
+    let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "aplomb-passerelle", "version": env!("CARGO_PKG_VERSION")}}});
+    let r = transmettre(&proc_, &init, &json!(0)).await;
+    let capacites = r.pointer("/result/capabilities").cloned().ok_or_else(|| format!("serveur MCP « {} » : initialisation refusée", serveur.nom))?;
+    ecrire(&proc_, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).await?;
+    let mut s = p.sans_etat.lock().expect("verrou");
+    Ok(s.entry(serveur.nom.clone()).or_insert((proc_, capacites)).clone())
+}
+
+fn entete(e: &HeaderMap, nom: &str) -> Option<String> {
+    e.get(nom).and_then(|v| v.to_str().ok()).map(String::from)
 }
 
 async fn recevoir(State(p): State<Arc<Partage>>, Path(nom): Path<String>, entetes: HeaderMap, Json(corps): Json<Value>) -> Response {
     let Some(serveur) = p.reglages.serveurs.iter().find(|s| s.nom == nom && !s.commande.is_empty()) else {
         return (StatusCode::NOT_FOUND, format!("Aplomb : serveur MCP « {nom} » absent du mandat")).into_response();
     };
+    if !aplomb_core::mcp::origine_admise(entete(&entetes, "origin").as_deref()) {
+        return (StatusCode::FORBIDDEN, "Aplomb : origine refusée (seules les pages de cette machine)").into_response();
+    }
     let lot = corps.is_array();
     let messages = match corps {
         Value::Array(v) => v,
         m => vec![m],
     };
+    // Génération du protocole et cohérence des en-têtes.
+    let ent = aplomb_core::mcp::Entetes {
+        version: entete(&entetes, "mcp-protocol-version"),
+        methode: entete(&entetes, "mcp-method"),
+        nom: entete(&entetes, "mcp-name"),
+    };
+    let mut sans_etat = false;
+    for m in &messages {
+        match aplomb_core::mcp::ere(&ent, m) {
+            Ok(aplomb_core::mcp::Ere::SansEtat) => sans_etat = true,
+            Ok(_) => {}
+            Err(e) => return (StatusCode::BAD_REQUEST, Json(e)).into_response(),
+        }
+    }
+    if sans_etat {
+        let (processus, capacites) = match processus_partage(&p, serveur).await {
+            Ok(x) => x,
+            Err(e) => return (StatusCode::BAD_GATEWAY, format!("Aplomb : {e}")).into_response(),
+        };
+        let mut reponses = Vec::new();
+        for m in messages {
+            let Some(id) = m.get("id").cloned().filter(|_| m.get("method").is_some()) else {
+                let _ = ecrire(&processus, &m).await;
+                continue;
+            };
+            let r = match m.get("method").and_then(Value::as_str) {
+                Some("server/discover") => aplomb_core::mcp::decouverte(&id, &nom, &capacites),
+                Some("subscriptions/listen") => erreur(&id, -32601, "abonnements non relayés par la passerelle"),
+                _ => aplomb_core::mcp::completer_sans_etat(traiter(&p, serveur, &processus, m, id).await, &nom),
+            };
+            reponses.push(r);
+        }
+        return if reponses.is_empty() {
+            StatusCode::ACCEPTED.into_response()
+        } else if lot {
+            Json(Value::Array(reponses)).into_response()
+        } else {
+            Json(reponses.remove(0)).into_response()
+        };
+    }
     // Session MCP : ouverte par `initialize`, un processus par session.
     let mut nouvelle = None;
     let processus = match session_de(&entetes) {

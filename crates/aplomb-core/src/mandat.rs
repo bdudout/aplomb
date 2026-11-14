@@ -22,6 +22,8 @@ pub enum ErreurMandat {
     Cle(String),
     #[error("empreinte du fichier de règles {0} différente de celle signée")]
     EmpreinteRegles(PathBuf),
+    #[error("{0}")]
+    Profil(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -108,6 +110,9 @@ pub struct Mandat {
     /// Approbation (étape 6) : délai de revue. Absente : 120 s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approbation: Option<crate::approbation::ConfigApprobation>,
+    /// Profil déclaratif (ENF-8) : fichier YAML qui décrit le domaine, lié par empreinte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profil_declaratif: Option<crate::profils::declaratif::RefProfil>,
     /// Signature ed25519 (hex) du mandat sans ce champ (ancien format, un seul signataire).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
@@ -182,6 +187,7 @@ pub fn charger(chemin: &Path, cle: &VerifyingKey) -> Result<MandatCharge, Erreur
     if sha256_hex(revue.as_bytes()) != mandat.politique.revue_sha256 {
         return Err(ErreurMandat::EmpreinteRegles(chemin_revue));
     }
+    crate::profils::declaratif::enregistrer(&mandat, dossier, true).map_err(ErreurMandat::Profil)?;
     let empreinte = sha256_hex(&mandat.octets_signes());
     Ok(MandatCharge { mandat, regles, revue, empreinte })
 }
@@ -194,6 +200,7 @@ pub fn charger_candidat(chemin: &Path) -> Result<MandatCharge, ErreurMandat> {
     let dossier = chemin.parent().unwrap_or(Path::new("."));
     let regles = lire(&dossier.join(&mandat.politique.regles))?;
     let revue = lire(&dossier.join(&mandat.politique.revue))?;
+    crate::profils::declaratif::enregistrer(&mandat, dossier, false).map_err(ErreurMandat::Profil)?;
     let empreinte = sha256_hex(&mandat.octets_signes());
     Ok(MandatCharge { mandat, regles, revue, empreinte })
 }
@@ -215,6 +222,7 @@ pub fn charger_cosigne(
     {
         return Err("les règles Cedar ont changé depuis la signature : faire recosigner le mandat".into());
     }
+    crate::profils::declaratif::enregistrer(&mandat, dossier, true)?;
     let empreinte = sha256_hex(&mandat.octets_signes());
     Ok((MandatCharge { mandat, regles, revue, empreinte }, signataires))
 }
@@ -246,6 +254,13 @@ pub fn actualiser_empreintes(mandat: &mut Mandat, dossier: &Path) -> Result<bool
                 *sha256 = e;
             }
         }
+    }
+    // Profil déclaratif (ENF-8) : lié au mandat comme les règles.
+    if let Some(r) = mandat.profil_declaratif.as_mut() {
+        let chemin = dossier.join(&r.fichier);
+        let e = crate::preuves::sha256_hex(&std::fs::read(&chemin).map_err(|e| format!("profil déclaratif {} : {e}", chemin.display()))?);
+        change |= e != r.sha256;
+        r.sha256 = e;
     }
     if change {
         mandat.signatures.clear();
@@ -304,6 +319,7 @@ mod tests {
             bornes: None,
             moniteurs: None,
             approbation: None,
+            profil_declaratif: None,
             signature: None,
             signatures: Vec::new(),
         }

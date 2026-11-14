@@ -16,6 +16,7 @@ use crate::decision::{Avis, Verdict};
 use crate::mandat::Mandat;
 
 pub mod code;
+pub mod declaratif;
 pub mod metier;
 pub mod pentest;
 
@@ -111,12 +112,12 @@ pub static PROFILS: &[&dyn Profil] = &[&code::ProfilCode, &pentest::ProfilPentes
 
 /// Profil déclaré par son nom, s'il existe.
 pub fn trouver(nom: &str) -> Option<&'static dyn Profil> {
-    PROFILS.iter().copied().find(|p| p.nom() == nom)
+    PROFILS.iter().copied().find(|p| p.nom() == nom).or_else(|| declaratif::trouver(nom))
 }
 
 /// Noms des profils connus, pour les messages d'erreur et l'aide.
 pub fn noms() -> Vec<&'static str> {
-    PROFILS.iter().map(|p| p.nom()).collect()
+    PROFILS.iter().map(|p| p.nom()).chain(declaratif::noms()).collect()
 }
 
 /// Profil d'un mandat. Un profil inconnu donne [`Inconnu`], qui refuse tout (fail-closed) ;

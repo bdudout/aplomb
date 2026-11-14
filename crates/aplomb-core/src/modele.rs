@@ -6,12 +6,25 @@
 //! - retire toute clé fournie par l'agent et injecte la sienne : une clé apportée par un
 //!   script de l'agent ne sert à rien, ce qui ferme l'exfiltration par le canal modèle ;
 //! - relève dans la réponse les outils que le modèle demande, pour le journal.
+//!
+//! Deux API sont relayées : Messages d'Anthropic (`/v1/messages`) et Chat Completions,
+//! compatible OpenAI (`/v1/chat/completions` : vLLM, llama.cpp, Ollama, LiteLLM…).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
 /// Chemins permis (la requête peut porter une chaîne de requête, ex. `?beta=true`).
-const CHEMINS: &[&str] = &["/v1/messages", "/v1/messages/count_tokens"];
+const CHEMINS: &[&str] = &["/v1/messages", "/v1/messages/count_tokens", "/v1/chat/completions"];
+
+/// Appel de conversation (comptés, examinés) : Messages ou Chat Completions.
+pub fn conversation(chemin: &str) -> bool {
+    chemin == "/v1/messages" || chemin == "/v1/chat/completions"
+}
+
+/// API compatible OpenAI (jeton en Bearer, réponses `choices`).
+pub fn openai(chemin: &str) -> bool {
+    chemin.starts_with("/v1/chat/")
+}
 
 /// En-têtes jamais transmis à l'amont : authentification de l'agent, saut à saut, et
 /// compression (Aplomb lit la réponse pour le journal).
@@ -44,6 +57,21 @@ pub fn amont(entree: &str) -> Result<String, String> {
 
 pub fn chemin_permis(methode: &str, chemin: &str) -> bool {
     methode.eq_ignore_ascii_case("POST") && CHEMINS.contains(&chemin)
+}
+
+/// En-têtes pour l'API compatible OpenAI : ceux de l'agent, moins les retirés, jeton
+/// d'Aplomb en Bearer.
+pub fn entetes_amont_openai(entrants: &[(String, String)], jeton: &str) -> Vec<(String, String)> {
+    let mut sortie: Vec<(String, String)> = entrants
+        .iter()
+        .filter(|(n, _)| {
+            let n = n.to_ascii_lowercase();
+            !RETIRES.contains(&n.as_str()) && !n.starts_with("proxy-")
+        })
+        .cloned()
+        .collect();
+    sortie.push(("authorization".into(), format!("Bearer {jeton}")));
+    sortie
 }
 
 /// En-têtes à envoyer à l'amont : ceux de l'agent, moins les retirés, plus le jeton d'Aplomb.
@@ -135,6 +163,21 @@ pub fn analyser_reponse(corps: &[u8]) -> Bilan {
             }
             Some("content_block_start") => b.outils.extend(v.get("content_block").and_then(outil_demande)),
             Some("message_delta") => b.jetons_sortie = sortie(v).or(b.jetons_sortie),
+            // Chat Completions (compatible OpenAI), réponse complète ou morceau de flux.
+            _ if v.get("choices").is_some() || v.get("usage").is_some_and(|u| u.get("prompt_tokens").is_some()) => {
+                for c in v["choices"].as_array().into_iter().flatten() {
+                    for o in c["message"]["tool_calls"].as_array().into_iter().chain(c["delta"]["tool_calls"].as_array()).flatten() {
+                        if let (Some(nom), Some(id)) = (o["function"]["name"].as_str(), o["id"].as_str()) {
+                            b.outils.push(OutilDemande { nom: nom.into(), id: id.into() });
+                        }
+                    }
+                }
+                if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
+                    b.jetons_entree = u["prompt_tokens"].as_u64().or(b.jetons_entree);
+                    b.jetons_sortie = u["completion_tokens"].as_u64().or(b.jetons_sortie);
+                    b.cache_lu = u["prompt_tokens_details"]["cached_tokens"].as_u64().or(b.cache_lu);
+                }
+            }
             _ => {}
         }
     };
@@ -184,6 +227,9 @@ pub fn reconstituer(corps: &[u8]) -> Contenu {
         json: String::new(),
     };
     let texte = String::from_utf8_lossy(corps);
+    if let Some(c) = reconstituer_openai(&texte) {
+        return c;
+    }
     if let Ok(v) = serde_json::from_str::<Value>(&texte) {
         blocs.extend(v["content"].as_array().into_iter().flatten().map(depuis_bloc));
     } else {
@@ -231,6 +277,54 @@ pub fn reconstituer(corps: &[u8]) -> Contenu {
     c
 }
 
+/// Chat Completions (compatible OpenAI) : `None` si la réponse n'en est pas une. Les
+/// paramètres d'un outil arrivent en chaîne JSON, par morceaux dans un flux ; le
+/// raisonnement, quand le serveur l'expose, est dans `reasoning_content` ou `reasoning`.
+fn reconstituer_openai(texte: &str) -> Option<Contenu> {
+    use serde_json::Value;
+    let morceaux: Vec<Value> = match serde_json::from_str::<Value>(texte) {
+        Ok(v) => vec![v],
+        Err(_) => texte
+            .lines()
+            .filter_map(|l| l.strip_prefix("data:"))
+            .map(str::trim)
+            .filter(|d| *d != "[DONE]")
+            .filter_map(|d| serde_json::from_str(d).ok())
+            .collect(),
+    };
+    if !morceaux.iter().any(|m| m.get("choices").is_some()) {
+        return None;
+    }
+    let mut c = Contenu::default();
+    // index → (id, nom, arguments)
+    let mut outils: Vec<(String, String, String)> = Vec::new();
+    for m in &morceaux {
+        for ch in m["choices"].as_array().into_iter().flatten() {
+            let d = if ch.get("message").is_some() { &ch["message"] } else { &ch["delta"] };
+            c.texte.push_str(d["content"].as_str().unwrap_or_default());
+            c.raisonnement.push_str(d["reasoning_content"].as_str().or(d["reasoning"].as_str()).unwrap_or_default());
+            for (k, o) in d["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                let i = o["index"].as_u64().map_or(k, |i| i as usize);
+                while outils.len() <= i {
+                    outils.push(Default::default());
+                }
+                let x = &mut outils[i];
+                if let Some(id) = o["id"].as_str() {
+                    x.0 = id.into();
+                }
+                x.1.push_str(o["function"]["name"].as_str().unwrap_or_default());
+                x.2.push_str(o["function"]["arguments"].as_str().unwrap_or_default());
+            }
+        }
+    }
+    c.outils = outils
+        .into_iter()
+        .filter(|o| !o.1.is_empty())
+        .map(|(id, nom, args)| (id, nom, serde_json::from_str(&args).unwrap_or_else(|_| serde_json::json!({}))))
+        .collect();
+    Some(c)
+}
+
 /// Appel d'outil annoncé par le modèle : dans quel échange, et pour quelle session d'agent
 /// si l'agent l'a dite au proxy. Le proxy y joint ce qu'il a vu de la réponse : le
 /// raisonnement qui précède l'appel, et les avis déjà rendus (raisonnement, juge du
@@ -272,6 +366,31 @@ impl Annonces {
 
     pub fn trouver(&self, id: &str) -> Option<&Annonce> {
         self.ids.get(id)
+    }
+}
+
+#[cfg(test)]
+mod tests_openai {
+    use super::*;
+
+    #[test]
+    fn chat_completions_complete_et_flux() {
+        let r = br#"{"choices":[{"message":{"content":"ok","tool_calls":[{"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"ls\"}"}}]}}],"usage":{"prompt_tokens":12,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":4}}}"#;
+        let b = analyser_reponse(r);
+        assert_eq!((b.outils[0].nom.as_str(), b.jetons_entree, b.jetons_sortie, b.cache_lu), ("Bash", Some(12), Some(3), Some(4)));
+        let c = reconstituer(r);
+        assert_eq!((c.texte.as_str(), c.outils[0].2["command"].as_str()), ("ok", Some("ls")));
+        let flux = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"je \"}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_9\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_\"}}]}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"path\\\":\\\"a\\\"}\"}}]}}]}\n\n\
+data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2}}\n\ndata: [DONE]\n";
+        let c = reconstituer(flux.as_bytes());
+        assert_eq!((c.raisonnement.as_str(), c.outils[0].0.as_str(), c.outils[0].2["file_path"].as_str()), ("je ", "call_9", Some("a")));
+        let b = analyser_reponse(flux.as_bytes());
+        assert_eq!((b.outils.len(), b.jetons_entree), (1, Some(7)));
+        assert!(chemin_permis("POST", "/v1/chat/completions") && !chemin_permis("POST", "/v1/completions"));
+        let e = entetes_amont_openai(&[("authorization".into(), "Bearer cle-agent".into())], "jeton");
+        assert_eq!(e, vec![("authorization".to_string(), "Bearer jeton".to_string())]);
     }
 }
 

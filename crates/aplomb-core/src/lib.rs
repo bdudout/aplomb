@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod action;
+pub mod adaptateurs;
 pub mod autorite;
 pub mod bornes;
 pub mod chaine;

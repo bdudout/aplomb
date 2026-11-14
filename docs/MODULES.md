@@ -131,6 +131,10 @@ banc d'essai.
 | Intégré | un module livré avec Aplomb, activé au mandat | `pack: bancaire`, juge, sonde |
 | Externe | un service à vous, dans votre langage | moniteur externe (contrat v1) |
 
-Un nouveau profil (normalisation) s'ajoute par le registre de profils de `aplomb-core`
+Un nouveau métier peut aussi se déclarer **sans code** : un profil YAML (outils, verbes,
+attributs) lié au mandat par empreinte, et ses règles Cedar. Voir
+[PROFILS-DECLARATIFS.md](PROFILS-DECLARATIFS.md).
+
+Un profil qui a besoin de moniteurs propres s'ajoute par le registre de profils de `aplomb-core`
 (`profils/mod.rs`). Il fournit ses **signaux** : ce qui mérite le juge, ce qui sort de la
 machine, ce qui lit une donnée sensible. Le socle ne lit aucun verbe propre à un profil.

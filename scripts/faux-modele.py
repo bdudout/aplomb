@@ -86,6 +86,8 @@ class Modele(BaseHTTPRequestHandler):
         demande = derniere_demande(corps)
         if any(m in demande for m in ("SABOTE", "RAISONNE")) or modele(corps) == "modele-fiable":
             return self.protocole(corps, demande)
+        if self.path.startswith("/v1/chat/completions"):
+            return self.openai(corps)
         appels += 1
         with open(TRACE, "a") as f:
             f.write(json.dumps({"chemin": self.path, "corps": corps, "x-api-key": self.headers.get("x-api-key"),
@@ -103,6 +105,30 @@ class Modele(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(corps)))
         self.end_headers()
         self.wfile.write(corps)
+
+
+    def openai(self, corps):
+        """Chat Completions (compatible OpenAI) en flux : un appel d'outil, puis l'usage."""
+        global appels
+        appels += 1
+        with open(TRACE, "a") as f:
+            f.write(json.dumps({"chemin": self.path, "corps": corps, "authorization": self.headers.get("authorization"),
+                                "x-api-key": self.headers.get("x-api-key")}) + "\n")
+        morceaux = [
+            {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": f"call_banc_{appels}", "type": "function",
+                                                               "function": {"name": "Bash", "arguments": "{\"command\""}}]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": ": \"ls\"}"}}]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            {"choices": [], "usage": {"prompt_tokens": 50, "completion_tokens": 9}},
+        ]
+        sortie = "".join(f"data: {json.dumps(m)}\n\n" for m in morceaux) + "data: [DONE]\n\n"
+        octets = sortie.encode()
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("content-length", str(len(octets)))
+        self.end_headers()
+        self.wfile.write(octets)
 
 
 ThreadingHTTPServer(("127.0.0.1", PORT), Modele).serve_forever()

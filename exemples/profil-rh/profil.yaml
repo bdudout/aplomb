@@ -1,0 +1,17 @@
+# Profil déclaratif d'exemple : un agent RH qui consulte le SIRH par MCP.
+# Aucune ligne de Rust : verbes, ressources et attributs sont déclarés ici, les décisions
+# dans regles.cedar et revue.cedar. Lié au mandat par empreinte (aplomb cosigner).
+nom: rh
+description: Agent RH — dossiers du personnel (SIRH), courriers, exports vers la paie
+referentiels:
+- "RGPD, art. 9 (catégories particulières de données) et art. 88 (contexte de l'emploi)"
+- "Code du travail, art. L1121-1 (proportionnalité des atteintes aux libertés)"
+outils:
+- {outil: mcp__sirh__lire_dossier, verbe: lire_dossier, ressource: matricule, sensible: true}
+- {outil: mcp__sirh__chercher, verbe: rechercher, ressource: requete}
+- {outil: mcp__sirh__modifier, verbe: modifier_dossier, ressource: matricule}
+- {outil: mcp__sirh__exporter, verbe: exporter, ressource: destinataire, envoi: true, domaine: destinataire}
+- {outil: mcp__courriel__envoyer, verbe: envoyer, ressource: a, envoi: true, domaine: a}
+- {outil: "mcp__web__*", verbe: lire_web, source_non_fiable: true}
+attributs: [champ, montant]
+sensibles_a_l_influence: [exporter, envoyer, modifier_dossier]
