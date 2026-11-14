@@ -14,6 +14,8 @@ pub struct Instance<'a> {
     pub identite: aplomb_core::identite::ConfigIdentite,
     pub canaux: Option<&'a aplomb_core::approbation::ConfigCanaux>,
     pub panneaux: usize,
+    /// Fichier d'état partagé entre instances (`serve --etat-partage`), si actif.
+    pub etat_partage: Option<String>,
 }
 
 pub fn modules_instance(i: &Instance) -> Vec<Module> {
@@ -61,6 +63,15 @@ pub fn modules_instance(i: &Instance) -> Vec<Module> {
         m("watch-gouvernance", Etape::Visualisation, Facon::Integre, "onglets Flux, Vue chaînée, Consommation, Gouvernance, Modules", true, "toujours actif"),
         m("comptes-quatre-yeux", Etape::Identite, Facon::Integre, "comptes cosignés, rôles, quatre yeux, Touch ID pour la clé", true, "aplomb compte …"),
     ];
+    // État partagé (étape 5) : gels communs à plusieurs instances ; dégel toujours à quatre yeux.
+    v.push(m(
+        "etat-partage",
+        Etape::Decision,
+        Facon::Integre,
+        &i.etat_partage.as_ref().map(|f| format!("gels, dégels et nonces communs aux instances du mandat ({f})")).unwrap_or_else(|| "gels, dégels et nonces communs à plusieurs instances du mandat (SQLite)".into()),
+        i.etat_partage.is_some(),
+        "aplomb serve --etat-partage etat.sqlite (docs/ETAT-PARTAGE.md)",
+    ));
     // Identité (étape 11) : options cosignées dans comptes.yaml.
     v.push(m("mfa-totp", Etape::Identite, Facon::Integre, "second facteur TOTP : connexion à la vue, dégel, réactivation", identite.mfa_exigee(), "identite: {mfa: {}} dans comptes.yaml, puis aplomb compte mfa --compte <id>"));
     v.push(m(
@@ -138,7 +149,7 @@ pub fn afficher(mandat: &Path, reporting: &Path, diffusion: &Path, comptes: &Pat
         .unwrap_or_default();
     let canaux = crate::canaux::charger_sans_secrets(approbation)?;
     let panneaux = crate::panneaux::charger(panneaux)?.map_or(0, |p| p.panneaux.len());
-    let v = tous(&m, &Instance { clients_reporting: clients, diffusion: diffusion.as_ref(), identite, canaux: canaux.as_ref(), panneaux });
+    let v = tous(&m, &Instance { clients_reporting: clients, diffusion: diffusion.as_ref(), identite, canaux: canaux.as_ref(), panneaux, etat_partage: None });
     println!("Modules — mandat {} v{} (profil {}), déploiement {}", m.id, m.version, m.profil, aplomb_core::moniteurs::profil_deploiement(m.moniteurs.as_ref()));
     println!("● actif  ○ disponible — sur le chemin de décision (étapes 1 à 6), un module ne peut que durcir.");
     for (i, e) in Etape::TOUTES.iter().enumerate() {

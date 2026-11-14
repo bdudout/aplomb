@@ -408,6 +408,27 @@ impl Superviseur {
         }
     }
 
+    /// Aligne les gels sur ceux d'un stockage partagé entre instances. Le stockage fait
+    /// foi : une session gelée ici mais absente du stockage a été dégelée ailleurs, à
+    /// quatre yeux ; elle est dégelée ici aussi, compteurs remis à zéro. Rend les dégels
+    /// ainsi propagés (`None` : le gel global).
+    pub fn aligner_gel(&mut self, global: bool, sessions: &HashSet<String>) -> Vec<Option<String>> {
+        let mut degeles = Vec::new();
+        if self.gel_global && !global {
+            self.degeler(None);
+            degeles.push(None);
+        }
+        let mut locales: Vec<String> = self.sessions_gelees.difference(sessions).cloned().collect();
+        locales.sort();
+        for s in locales {
+            self.degeler(Some(&s));
+            degeles.push(Some(s));
+        }
+        self.gel_global |= global;
+        self.sessions_gelees.extend(sessions.iter().cloned());
+        degeles
+    }
+
     pub fn etat_gel(&self) -> (bool, Vec<String>) {
         let mut s: Vec<String> = self.sessions_gelees.iter().cloned().collect();
         s.sort();

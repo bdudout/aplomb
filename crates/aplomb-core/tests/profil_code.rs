@@ -254,6 +254,24 @@ fn gel_global_par_l_operateur() {
     assert_eq!(s.decider(&evt("s", "Read", json!({"file_path": "/depot/a"}))).1.verdict, Verdict::Allow);
 }
 
+/// État partagé (ENF-10) : un gel posé ailleurs s'applique ici à la décision suivante ; un
+/// dégel fait ailleurs est propagé, compteurs remis à zéro.
+#[test]
+fn gels_alignes_sur_l_etat_partage() {
+    use std::collections::HashSet;
+    let mut s = superviseur();
+    let lire = || evt("s", "Read", json!({"file_path": "/depot/a"}));
+    let partage: HashSet<String> = ["s".to_string()].into();
+    assert!(s.aligner_gel(false, &partage).is_empty());
+    assert_eq!(s.decider(&lire()).1.verdict, Verdict::Gel);
+    assert_eq!(s.aligner_gel(false, &HashSet::new()), vec![Some("s".to_string())]);
+    assert_eq!(s.decider(&lire()).1.verdict, Verdict::Allow);
+    s.aligner_gel(true, &HashSet::new());
+    assert_eq!(s.decider(&evt("t", "Read", json!({"file_path": "/depot/a"}))).1.verdict, Verdict::Gel);
+    assert_eq!(s.aligner_gel(false, &HashSet::new()), vec![None]);
+    assert_eq!(s.etat_gel(), (false, vec![]));
+}
+
 /// Un mandat cosigné reste valide quand le format du mandat gagne un champ facultatif :
 /// un champ vide n'entre pas dans le texte signé. Mandat figé dans `tests/donnees/`, avec
 /// sa confiance : seules les signatures sont vérifiées (pas les empreintes des règles, qui

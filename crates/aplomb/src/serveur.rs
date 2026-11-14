@@ -119,6 +119,10 @@ pub struct Options {
     /// (`aplomb diffusion exemple > diffusion.yaml`).
     #[arg(long, default_value = "diffusion.yaml")]
     diffusion: PathBuf,
+    /// État partagé entre instances du même mandat (option, ENF-10) : fichier SQLite qui
+    /// porte les gels, les demandes de dégel et les nonces. Absent : état en mémoire.
+    #[arg(long)]
+    etat_partage: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1:7700")]
     ecoute_decision: SocketAddr,
     #[arg(long, default_value = "127.0.0.1:7701")]
@@ -154,6 +158,8 @@ struct Interne {
     activite: crate::identite::Activite,
     /// Connexions SSO en cours.
     sso_attente: crate::identite::AttentesSso,
+    /// État partagé entre instances (option `--etat-partage`).
+    partage: Option<crate::etat_partage::Partage>,
 }
 
 /// Compte auquel imputer un appel au modèle.
@@ -245,9 +251,10 @@ impl Etat {
     /// État courant de la supervision, sans rien de nominatif (reporting).
     /// Modules actifs et disponibles (onglet Modules, outil MCP `modules`).
     pub(crate) fn modules_json(&self) -> Value {
-        let (mandat, identite) = {
+        let (mandat, identite, etat_partage) = {
             let interne = self.interne.lock().expect("verrou");
-            (interne.superviseur.mandat.mandat.clone(), interne.autorite.identite().clone())
+            let partage = interne.partage.as_ref().map(|p| p.chemin().display().to_string());
+            (interne.superviseur.mandat.mandat.clone(), interne.autorite.identite().clone(), partage)
         };
         let clients = crate::reporting::charger(&self.reporting).map(|c| c.clients.len()).unwrap_or(0);
         let diffusion = crate::diffusion::charger(&self.fichier_diffusion).ok().flatten();
@@ -257,6 +264,7 @@ impl Etat {
             identite,
             canaux: self.canaux.as_deref(),
             panneaux: self.panneaux.as_ref().map_or(0, |p| p.panneaux.len()),
+            etat_partage,
         };
         let etapes: Vec<Value> = aplomb_core::modules::Etape::TOUTES.iter().map(|e| json!({"etape": e, "libelle": e.libelle(), "decision": e.decision()})).collect();
         json!({
@@ -283,7 +291,8 @@ impl Etat {
     }
 
     pub(crate) fn etat_supervision(&self) -> Value {
-        let interne = self.interne.lock().expect("verrou");
+        let mut interne = self.interne.lock().expect("verrou");
+        let _ = self.rafraichir(&mut interne);
         let (gel_global, sessions_gelees) = interne.superviseur.etat_gel();
         let c = interne.compteurs;
         let s = &interne.stats_juge;
@@ -376,7 +385,42 @@ impl Etat {
     }
 
     pub(crate) fn ecarter(&self, evt: &EvenementOutil) -> bool {
-        self.interne.lock().expect("verrou").superviseur.ecarter(evt)
+        let mut interne = self.interne.lock().expect("verrou");
+        if self.synchroniser(&mut interne).is_err() {
+            return true;
+        }
+        let avant = interne.superviseur.etat_gel();
+        let gel = interne.superviseur.ecarter(evt);
+        apres_decision(&mut interne, &avant);
+        gel
+    }
+
+    /// État partagé (option) : écrit un gel resté en attente, aligne les gels sur le
+    /// stockage et journalise les dégels faits sur une autre instance. Une erreur impose
+    /// le refus.
+    fn synchroniser(&self, interne: &mut Interne) -> Result<(), String> {
+        let t = maintenant();
+        let Interne { partage, superviseur, .. } = interne;
+        let Some(p) = partage.as_mut() else { return Ok(()) };
+        let degeles = p.synchroniser(superviseur, t)?;
+        for session in degeles {
+            let detail = json!({"action": "degel-propage", "session": session, "origine": "état partagé"});
+            if interne.journal.ajouter(session.as_deref().unwrap_or(SESSION_ADMIN), "administration", detail.clone(), t).is_ok() {
+                self.publier(interne, json!({"type": "administration", "horodatage": t, "session": session, "detail": detail}));
+            }
+        }
+        Ok(())
+    }
+
+    /// Pour l'affichage : gels et demandes relus dans l'état partagé (option).
+    fn rafraichir(&self, interne: &mut Interne) -> Result<(), String> {
+        self.synchroniser(interne)?;
+        let t = maintenant();
+        if let Some(p) = interne.partage.as_ref() {
+            let d = p.demandes(t)?;
+            interne.autorite.remplacer_demandes(d);
+        }
+        Ok(())
     }
 
     pub(crate) fn noter_protocole(&self, f: impl FnOnce(&mut StatsProtocole)) {
@@ -389,7 +433,12 @@ impl Etat {
 
     /// Gel global, ou gel de cette session.
     pub(crate) fn gele(&self, session: &str) -> bool {
-        let (global, sessions) = self.interne.lock().expect("verrou").superviseur.etat_gel();
+        let mut interne = self.interne.lock().expect("verrou");
+        // État partagé illisible : on tient la session pour gelée.
+        if self.synchroniser(&mut interne).is_err() {
+            return true;
+        }
+        let (global, sessions) = interne.superviseur.etat_gel();
         global || sessions.iter().any(|s| s == session)
     }
 
@@ -544,7 +593,14 @@ pub(crate) async fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_c
     let t = maintenant();
     let mut interne = etat.interne.lock().expect("verrou");
     etat.ouvrir_session(&mut interne, evt, t).map_err(|e| format!("journal indisponible : {e}"))?;
+    // État partagé (option) : un gel posé sur une autre instance s'applique dès cette
+    // décision ; stockage illisible : pas de décision, donc un refus.
+    etat.synchroniser(&mut interne).map_err(|e| format!("{e} : refus"))?;
+    let avant = interne.partage.is_some().then(|| interne.superviseur.etat_gel());
     let (action, d) = interne.superviseur.decider_avec(evt, externes);
+    if let Some(avant) = &avant {
+        apres_decision(&mut interne, avant);
+    }
     let mut contenu = json!({
         "outil": evt.outil, "verbe": action.verbe, "ressource": action.ressource,
         "contexte": action.contexte, "verdict": d.verdict, "regle": d.politique.regle,
@@ -739,6 +795,10 @@ async fn page() -> Html<&'static str> {
 async fn etat_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
     let mut interne = etat.interne.lock().expect("verrou");
     let Some(compte) = compte_web(&mut interne, &entetes) else { return non_connecte() };
+    let partage = interne.partage.is_some().then(|| match etat.rafraichir(&mut interne) {
+        Ok(()) => description_partage(&interne),
+        Err(e) => json!({"erreur": e}),
+    });
     let roles = interne.autorite.roles(&compte);
     let demandes: Vec<Value> = interne
         .autorite
@@ -766,6 +826,7 @@ async fn etat_admin(State(etat): State<Etat>, entetes: HeaderMap) -> Response {
         "gel_global": gel_global, "sessions_gelees": sessions_gelees,
         "compteurs": {"allow": c[0], "review": c[1], "deny": c[2], "gel": c[3]},
         "compte": compte, "roles": roles, "degels_en_attente": demandes,
+        "etat_partage": partage,
     }))
     .into_response()
 }
@@ -1034,13 +1095,99 @@ fn appliquer(etat: &Etat, interne: &mut Interne, issue: &Issue, compte: &str, se
     json!({"issue": issue, "detail": detail})
 }
 
+/// Après une décision : écrit dans l'état partagé (option) les gels qu'elle a posés.
+fn apres_decision(interne: &mut Interne, avant: &(bool, Vec<String>)) {
+    let t = maintenant();
+    let Interne { partage, superviseur, .. } = interne;
+    if let Some(p) = partage.as_mut() {
+        p.apres(avant, superviseur, t);
+    }
+}
+
+/// Opération d'administration sous l'état partagé (option) : transaction exclusive entre
+/// instances, nonce consommé pour toutes, demandes relues puis réécrites, gel ou dégel
+/// écrit dans le stockage avant d'être appliqué ici. Erreur du stockage : l'opération
+/// n'a pas lieu.
+fn sous_partage(
+    etat: &Etat,
+    interne: &mut Interne,
+    nonce: Option<&str>,
+    session: Option<&str>,
+    t: u64,
+    op: impl FnOnce(&mut Interne) -> Result<Issue, aplomb_core::autorite::Refus>,
+) -> Result<Result<Issue, aplomb_core::autorite::Refus>, String> {
+    let Some(p) = interne.partage.as_mut() else { return Ok(op(interne)) };
+    p.debut()?;
+    let issue = (|| {
+        let p = interne.partage.as_mut().expect("état partagé");
+        if let Some(n) = nonce {
+            if !p.consommer_nonce(n, t)? {
+                return Ok(Err(aplomb_core::autorite::Refus::Rejeu));
+            }
+        }
+        let demandes = p.demandes(t)?;
+        interne.autorite.remplacer_demandes(demandes);
+        etat.synchroniser(interne)?;
+        let issue = op(interne);
+        if let Ok(i) = &issue {
+            let demandes = interne.autorite.demandes_partagees();
+            let p = interne.partage.as_mut().expect("état partagé");
+            p.ecrire_demandes(&demandes)?;
+            match i {
+                Issue::Gel => p.geler(session, t)?,
+                Issue::Degel { .. } => p.degeler(session)?,
+                _ => {}
+            }
+        }
+        Ok(issue)
+    })();
+    let p = interne.partage.as_mut().expect("état partagé");
+    match issue {
+        Ok(Ok(i)) => p.fin().map(|_| Ok(i)),
+        Ok(Err(e)) => {
+            p.annuler();
+            Ok(Err(e))
+        }
+        Err(e) => {
+            p.annuler();
+            Err(e)
+        }
+    }
+}
+
+fn indisponible(e: String) -> Response {
+    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"erreur": format!("{e} : opération refusée")}))).into_response()
+}
+
+/// Ce que la vue montre de l'état partagé : fichier, instance, autres instances actives.
+fn description_partage(interne: &Interne) -> Value {
+    let Some(p) = interne.partage.as_ref() else { return Value::Null };
+    json!({"fichier": p.chemin().display().to_string(), "instance": p.instance,
+           "autres_instances": p.instances_actives(maintenant()).unwrap_or_default()})
+}
+
+fn annonce_partage(etat: &Etat) -> String {
+    let interne = etat.interne.lock().expect("verrou");
+    match interne.partage.as_ref() {
+        None => "aucun : état en mémoire (option --etat-partage etat.sqlite)".into(),
+        Some(p) => {
+            let n = p.instances_actives(maintenant()).map(|v| v.len()).unwrap_or(0);
+            format!("{} ; gels, dégels et nonces communs ; {n} autre(s) instance(s) active(s)", p.chemin().display())
+        }
+    }
+}
+
 /// Requête signée par la clé d'un compte (`aplomb admin`).
 async fn requete_signee(State(etat): State<Etat>, Json(r): Json<RequeteSignee>) -> Response {
     let mut interne = etat.interne.lock().expect("verrou");
     let t = maintenant();
-    let issue = {
-        let Interne { autorite, mfa, .. } = &mut *interne;
+    let issue = sous_partage(&etat, &mut interne, Some(&r.corps.nonce), r.corps.session.as_deref(), t, |i| {
+        let Interne { autorite, mfa, .. } = i;
         autorite.traiter_avec(&r, t, &mut |c, code| mfa.verifier(c, code))
+    });
+    let issue = match issue {
+        Ok(i) => i,
+        Err(e) => return indisponible(e),
     };
     if issue.is_ok() {
         interne.activite.noter(&r.corps.compte, t);
@@ -1064,9 +1211,11 @@ async fn action_web(etat: Etat, entetes: HeaderMap, demande: DemandeGel, operati
     let Some(compte) = compte_web(&mut interne, &entetes) else { return non_connecte() };
     interne.activite.noter(&compte, maintenant());
     let session = demande.session;
-    match interne.autorite.agir(&compte, operation, session.clone(), maintenant()) {
-        Ok(issue) => Json(appliquer(&etat, &mut interne, &issue, &compte, session.as_deref())).into_response(),
-        Err(e) => (StatusCode::FORBIDDEN, Json(json!({"erreur": e.to_string()}))).into_response(),
+    let t = maintenant();
+    match sous_partage(&etat, &mut interne, None, session.as_deref(), t, |i| i.autorite.agir(&compte, operation, session.clone(), t)) {
+        Ok(Ok(issue)) => Json(appliquer(&etat, &mut interne, &issue, &compte, session.as_deref())).into_response(),
+        Ok(Err(e)) => (StatusCode::FORBIDDEN, Json(json!({"erreur": e.to_string()}))).into_response(),
+        Err(e) => indisponible(e),
     }
 }
 
@@ -1332,6 +1481,13 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     if let Some(c) = &config_diffusion {
         crate::diffusion::jetons_presents(c)?;
     }
+    let partage = opts
+        .etat_partage
+        .as_ref()
+        .map(|f| {
+            crate::etat_partage::Partage::ouvrir(f, &superviseur.mandat.mandat.id, &superviseur.mandat.empreinte, &opts.ecoute_decision.to_string(), maintenant())
+        })
+        .transpose()?;
     let consommation = relire_consommation(&journal, &coffre);
     let dossier_journal = opts.journal.clone();
     let cle_scelles = signataire.clone();
@@ -1356,6 +1512,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             mfa,
             activite,
             sso_attente: Default::default(),
+            partage,
         })),
         diffusion,
         signataire: Arc::new(signataire),
@@ -1511,6 +1668,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             crate::canaux::annonce(config_canaux.as_ref())
         );
         eprintln!("  diffusion (SIEM)   : {}", crate::diffusion::annonce(config_diffusion.as_ref()));
+        eprintln!("  état partagé       : {}", annonce_partage(&etat_scellement));
         eprintln!(
             "  panneaux           : {}",
             config_panneaux.as_ref().map_or("aucun (option : panneaux.yaml)".to_string(), |p| format!("{} panneau(x) dans l'onglet Tableaux", p.panneaux.len()))

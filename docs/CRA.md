@@ -83,7 +83,7 @@ signalement.
 | Configuration sûre par défaut | Défauts : refus en cas de doute (*fail-closed*), options lourdes désactivées, HTTP en clair seulement vers la boucle locale, secrets lus dans l'environnement | Fait |
 | Nomenclature logicielle | `aplomb publication sbom` | Fait |
 | Gestion des vulnérabilités | SECURITY.md, § L2 | Fait, exercice à blanc à faire |
-| Résultats d'essais | `cargo test`, banc `scripts/banc.sh` (345 vérifications) | Fait |
+| Résultats d'essais | `cargo test`, banc `scripts/banc.sh` (362 vérifications) | Fait |
 | Normes appliquées | Aucune norme harmonisée CRA publiée à ce jour. Suivre les travaux du CEN-CENELEC (JTC 13) | À suivre |
 | Déclaration UE de conformité, marquage CE | — | Seulement en cas de mise sur le marché |
 

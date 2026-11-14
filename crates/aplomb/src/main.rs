@@ -33,6 +33,7 @@ mod juge;
 #[allow(unsafe_code)]
 mod deverrouillage;
 mod diffusion;
+mod etat_partage;
 mod mcp;
 #[allow(unsafe_code)]
 mod presence;

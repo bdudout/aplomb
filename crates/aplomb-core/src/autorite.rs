@@ -459,6 +459,21 @@ impl Autorite {
         self.sessions_web.remove(jeton);
     }
 
+    /// Demandes en attente, pour un stockage partagé entre instances : (clé, demandeur,
+    /// expiration). La clé est la session visée (`None` : gel global) ou
+    /// `reactiver:<compte>`.
+    pub fn demandes_partagees(&self) -> Vec<(Option<String>, String, u64)> {
+        let mut v: Vec<_> = self.demandes.iter().map(|(s, d)| (s.clone(), d.compte.clone(), d.expire)).collect();
+        v.sort();
+        v
+    }
+
+    /// Remplace les demandes en attente par celles du stockage partagé : une demande
+    /// ouverte sur une autre instance peut être approuvée ici (quatre yeux).
+    pub fn remplacer_demandes(&mut self, demandes: Vec<(Option<String>, String, u64)>) {
+        self.demandes = demandes.into_iter().map(|(s, compte, expire)| (s, Demande { compte, expire })).collect();
+    }
+
     /// Demandes de dégel en attente : (session visée, demandeur).
     pub fn demandes_en_attente(&self) -> Vec<(Option<String>, String)> {
         let mut v: Vec<_> = self.demandes.iter().map(|(s, d)| (s.clone(), d.compte.clone())).collect();
@@ -534,6 +549,24 @@ mod tests {
         assert_eq!(a.traiter(&r, T), Ok(Issue::Gel));
         assert_eq!(a.traiter(&r, T), Err(Refus::Rejeu));
         assert_eq!(a.traiter(&req("zoe", 1, Operation::Gel), T), Err(Refus::CompteInconnu));
+    }
+
+    /// Deux instances, une demande : ouverte sur l'une, approuvée sur l'autre par un second
+    /// compte, après passage par le stockage partagé.
+    #[test]
+    fn demande_partagee_entre_instances() {
+        let (mut a, mut b) = (autorite(), autorite());
+        assert_eq!(a.traiter(&req("alice", 1, Operation::Degel), T), Ok(Issue::DegelEnAttente));
+        let partage = a.demandes_partagees();
+        assert_eq!(partage, vec![(Some("s".into()), "alice".into(), T + DEMANDE_MS)]);
+        b.remplacer_demandes(partage.clone());
+        assert_eq!(b.traiter(&req("alice", 1, Operation::Degel), T), Err(Refus::QuatreYeux));
+        b.remplacer_demandes(partage);
+        assert_eq!(
+            b.traiter(&req("bob", 2, Operation::Degel), T),
+            Ok(Issue::Degel { demandeur: "alice".into(), approbateur: "bob".into() })
+        );
+        assert!(b.demandes_partagees().is_empty());
     }
 
     #[test]
