@@ -126,6 +126,8 @@ struct Interne {
     revue_suivante: u64,
     /// Mesure du juge (EF-E5) : consultations, échecs, latence cumulée.
     stats_juge: StatsJuge,
+    /// Sonde : consultations, pannes, alertes (avis au-dessus du seuil).
+    stats_sonde: (u64, u64, u64),
     /// Consommation du modèle, relevée par le proxy LLM.
     consommation: Consommation,
     agents: ComptesAgents,
@@ -177,6 +179,8 @@ pub(crate) struct Etat {
     signataire: Arc<ed25519_dalek::SigningKey>,
     /// Juge déclaré au mandat, consulté hors verrou.
     juge: Option<Arc<crate::juge::Juge>>,
+    /// Sonde (moniteur interne) déclarée au mandat, consultée hors verrou.
+    sonde: Option<Arc<crate::sonde::Sonde>>,
 }
 
 impl Etat {
@@ -214,6 +218,9 @@ impl Etat {
             "decisions_depuis_demarrage": {"allow": c[0], "review": c[1], "deny": c[2], "gel": c[3]},
             "juge": self.juge.as_ref().map(|_| json!({"consultations": s.consultations, "indisponibles": s.indisponible,
                 "durcies": s.durcies, "latence_moyenne_ms": if s.consultations > 0 { s.latence_ms / s.consultations } else { 0 }})),
+            "deploiement": aplomb_core::moniteurs::profil_deploiement(m.mandat.moniteurs.as_ref()),
+            "sonde": self.sonde.as_ref().map(|_| json!({"consultations": interne.stats_sonde.0, "indisponibles": interne.stats_sonde.1,
+                "alertes": interne.stats_sonde.2})),
             "protocole": m.mandat.moniteurs.as_ref().and_then(|x| x.protocole.as_ref()).map(|p| {
                 let mut v = json!(interne.stats_protocole);
                 v["mode"] = json!(p.mode);
@@ -323,11 +330,16 @@ impl Etat {
             return Ok(());
         }
         let m = &interne.superviseur.mandat;
-        let contenu = json!({
+        let mut contenu = json!({
             "mandat": m.mandat.id, "version": m.mandat.version, "empreinte_mandat": m.empreinte,
             "profil": m.mandat.profil, "agent": evt.agent, "mode": evt.mode,
             "niveau_assurance": niveau_assurance(&evt.mode),
+            "deploiement": aplomb_core::moniteurs::profil_deploiement(m.mandat.moniteurs.as_ref()),
         });
+        // Empreinte des poids du moniteur interne (EF-G3) : un rejeu sait quelle sonde a jugé.
+        if let Some(s) = m.mandat.moniteurs.as_ref().and_then(|x| x.sonde.as_ref()) {
+            contenu["sonde"] = json!({"modele": s.modele, "poids_sha256": s.poids_sha256, "seuil": s.seuil});
+        }
         interne.journal.ajouter(&evt.session, "session", contenu, t).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -352,6 +364,7 @@ pub(crate) async fn consulter_juge(etat: &Etat, evt: &EvenementOutil, raisonneme
     match consultation {
         None => (Vec::new(), None),
         Some(Consultation::BudgetEpuise(a)) => (vec![a], Some(json!({"issue": "budget épuisé"}))),
+        Some(Consultation::Sonde { .. }) => (Vec::new(), None),
         Some(Consultation::Juge { raison, consigne, message }) => {
             let (issue, latence) = juge.consulter(&consigne, &message).await;
             let mut interne = etat.interne.lock().expect("verrou");
@@ -377,6 +390,26 @@ pub(crate) async fn consulter_juge(etat: &Etat, evt: &EvenementOutil, raisonneme
     }
 }
 
+/// Consulte la sonde (moniteur interne, EF-F) si l'action est encore permise, hors verrou.
+/// Signal d'appoint : son avis ne fait que durcir ; sa panne vaut son plancher (EF-K3).
+pub(crate) async fn consulter_sonde(etat: &Etat, evt: &EvenementOutil, raisonnement: Option<&str>) -> (Vec<aplomb_core::decision::Avis>, Option<Value>) {
+    use aplomb_core::superviseur::Consultation;
+    let Some(sonde) = &etat.sonde else { return (Vec::new(), None) };
+    let consultation = etat.interne.lock().expect("verrou").superviseur.preparer_sonde(evt, raisonnement);
+    let Some(Consultation::Sonde { intention, texte }) = consultation else { return (Vec::new(), None) };
+    let (avis, latence, panne) = sonde.consulter(&intention, &texte, evt.appel.as_deref()).await;
+    let mut interne = etat.interne.lock().expect("verrou");
+    interne.superviseur.noter_appel_sonde(&evt.session);
+    interne.stats_sonde.0 += 1;
+    if panne {
+        interne.stats_sonde.1 += 1;
+    } else if avis.niveau > aplomb_core::decision::Niveau::Conforme {
+        interne.stats_sonde.2 += 1;
+    }
+    let trace = json!({"score": aplomb_core::decision::arrondi_score(avis.score), "niveau": avis.niveau, "latence_ms": latence, "panne": panne});
+    (vec![avis], Some(trace))
+}
+
 /// Juge un événement et journalise la décision (journal d'abord : une décision non
 /// journalisée n'est jamais rendue). Chemin unique du hook et des passerelles.
 pub(crate) async fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_core::decision::DecisionFinale, u64), String> {
@@ -388,6 +421,8 @@ pub(crate) async fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_c
         Some(a) if a.juge && evt.contenu_execute.is_none() => (Vec::new(), Some(json!({"issue": "jugée au proxy LLM, avant l'agent"}))),
         a => consulter_juge(etat, evt, a.as_ref().and_then(|a| a.raisonnement.as_deref())).await,
     };
+    let (avis_sonde, trace_sonde) = consulter_sonde(etat, evt, annonce.as_ref().and_then(|a| a.raisonnement.as_deref())).await;
+    externes.extend(avis_sonde);
     externes.extend(annonce.map(|a| a.avis).unwrap_or_default());
     let t = maintenant();
     let mut interne = etat.interne.lock().expect("verrou");
@@ -400,6 +435,9 @@ pub(crate) async fn juger(etat: &Etat, evt: &EvenementOutil) -> Result<(aplomb_c
     });
     if let Some(j) = trace_juge {
         contenu["juge"] = j;
+    }
+    if let Some(s) = trace_sonde {
+        contenu["sonde"] = s;
     }
     // Provenance (EF-B5) : contenus non fiables reçus par la session avant cette action.
     let sources = interne.superviseur.influences(&evt.session);
@@ -896,8 +934,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     })?;
     // Profil du mandat : connu du registre, extension de schéma valide (fiche…).
     let profil = aplomb_core::profils::verifier_mandat(&mandat.mandat).map_err(|e| format!("mandat refusé : {e}"))?;
-    let resume_profil = profil.resume(&mandat.mandat);
-    let profil_affiche = format!("{} — {}", profil.nom(), profil.description());
+    let resume_profil: Vec<String> = std::iter::once(profil.description().to_string()).chain(profil.resume(&mandat.mandat)).collect();
     let id = format!("{} v{}", mandat.mandat.id, mandat.mandat.version);
     let mut superviseur = Superviseur::nouveau(mandat).map_err(|e| e.to_string())?;
     let mut enfants = Vec::new();
@@ -916,6 +953,8 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let signataire = cle_reponses(&opts.cle_reponses)?;
     let jeton = crate::cle_maitresse::jeton_modele()?;
     let juge = superviseur.juge().cloned().map(|cfg| crate::juge::Juge::nouveau(cfg, jeton.clone()).map(Arc::new)).transpose()?;
+    let dossier_mandat = opts.mandat.parent().unwrap_or(std::path::Path::new("."));
+    let sonde = superviseur.sonde().cloned().map(|cfg| crate::sonde::Sonde::nouvelle(cfg, dossier_mandat, true).map(Arc::new)).transpose()?;
     let texte_comptes = std::fs::read_to_string(&opts.comptes)
         .map_err(|e| format!("comptes {} : {e} (créer un compte : aplomb compte nouveau)", opts.comptes.display()))?;
     let (autorite, signataires_comptes) = Autorite::depuis_yaml_cosigne(&texte_comptes, &confiance).map_err(|e| {
@@ -938,6 +977,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             revues: HashMap::new(),
             revue_suivante: 0,
             stats_juge: StatsJuge::default(),
+            stats_sonde: (0, 0, 0),
             consommation,
             agents: agents.clone(),
             utilisateur_local: std::env::var("USER").unwrap_or_else(|_| "local".into()),
@@ -946,6 +986,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         diffusion,
         signataire: Arc::new(signataire),
         juge,
+        sonde,
     };
 
     let api_decision = Router::new()
@@ -984,6 +1025,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
     let api_reporting = crate::reporting::routeur(etat.clone(), reglages_reporting);
     let clients_reporting = crate::reporting::charger(&opts.reporting)?.clients.len();
     let juge_affiche = etat.juge.as_ref().map(|j| j.description());
+    let sonde_affichee = etat.sonde.as_ref().map(|s| s.description());
     let etat_scellement = etat;
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
@@ -995,7 +1037,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let l_mcp = tokio::net::TcpListener::bind(opts.ecoute_mcp).await.map_err(|e| e.to_string())?;
         let l_reporting = tokio::net::TcpListener::bind(opts.ecoute_reporting).await.map_err(|e| e.to_string())?;
         tokio::spawn(async move { axum::serve(l_reporting, api_reporting).await });
-        let (agent, amont, racine, serveurs_mcp, moniteurs) = {
+        let (agent, amont, racine, serveurs_mcp, moniteurs, profil) = {
             let m = &etat_scellement.interne.lock().expect("verrou").superviseur.mandat.mandat;
             (
                 m.agent.clone(),
@@ -1003,8 +1045,10 @@ pub fn lancer(opts: Options) -> Result<(), String> {
                 m.perimetre.racine.clone(),
                 m.perimetre.serveurs_mcp.clone(),
                 m.moniteurs.clone(),
+                m.profil.clone(),
             )
         };
+        let deploiement = aplomb_core::moniteurs::profil_deploiement(moniteurs.as_ref());
         let reglages_protocole = crate::protocole::Reglages::depuis(moniteurs.as_ref(), &agent, &racine)?;
         let protocole_affiche = reglages_protocole.description();
         let lances: Vec<String> = serveurs_mcp.iter().filter(|s| !s.commande.is_empty()).map(|s| s.nom.clone()).collect();
@@ -1020,7 +1064,7 @@ pub fn lancer(opts: Options) -> Result<(), String> {
         let proxy = crate::modele::routeur(etat_scellement.clone(), crate::modele::Reglages { agent, amont, jeton, protocole: reglages_protocole });
         tokio::spawn(async move { axum::serve(l_llm, proxy).await });
         eprintln!("Aplomb — mandat {id}, cosigné par {}", signataires_mandat.join(" et "));
-        eprintln!("  profil             : {profil_affiche}");
+        eprintln!("  profil             : {profil} — déploiement {deploiement}");
         for ligne in &resume_profil {
             eprintln!("                       {ligne}");
         }
@@ -1034,8 +1078,9 @@ pub fn lancer(opts: Options) -> Result<(), String> {
             if lances.is_empty() { "aucun serveur MCP au mandat".to_string() } else { lances.join(", ") }
         );
         eprintln!(
-            "  moniteurs          : secrets{}",
-            juge_affiche.map(|j| format!(", juge {j}")).unwrap_or_else(|| " (aucun juge au mandat)".into())
+            "  moniteurs          : secrets{}{}",
+            juge_affiche.map(|j| format!(", juge {j}")).unwrap_or_else(|| " (aucun juge au mandat)".into()),
+            sonde_affichee.map(|s| format!(", sonde interne {s}")).unwrap_or_default()
         );
         eprintln!("  protocole          : {protocole_affiche}");
         if !enfants.is_empty() {

@@ -27,10 +27,16 @@ par hook (niveau d'assurance 1, coopératif).
 - **Mandat** (`mandats/*.yaml`) : ce que l'agent a le droit de faire.
   - Il fixe le dépôt de travail, les domaines joignables, les serveurs MCP, le modèle et les bornes.
   - Il est cosigné par deux membres au moins. Un mandat modifié sans nouvelle cosignature est refusé au démarrage.
-- **Profils** (`profils/code/`, `profils/pentest/`) : règles Cedar et jeu d'évaluation propres à un type d'agent. `aplomb profils` les liste.
+- **Profils** (`profils/code/`, `profils/pentest/`, `profils/metier/`) : règles Cedar et jeu d'évaluation propres à un type d'agent. `aplomb profils` les liste.
   - `regles.cedar` permet ou refuse.
   - `revue.cedar` désigne ce qui demande un humain.
   - Le profil C « agent de code » traduit chaque outil de Claude Code en effet : lire, écrire, exécuter, réseau, outil MCP, déléguer…
+  - Le profil M « agent métier régulé » (`profil: metier`, J7) supervise un agent de back-office qui n'agit que par des outils MCP déclarés au mandat (`extension:`). Exemple complet : [`exemples/mandat-metier.yaml`](exemples/mandat-metier.yaml) (réclamations d'assurance).
+    - Chaque outil est rattaché à un verbe (`lire_dossier`, `envoyer`, `payer`, `supprimer`, `exporter`…) et, s'il le faut, à une catégorie de données. Un outil non déclaré est refusé ; un outil qui « approuve » ou « valide » gèle la session (pas d'auto-approbation).
+    - La ressource réelle est lue dans les paramètres : destinataires et leur domaine, juridiction d'un IBAN, montant, données sensibles (IBAN, carte, NIR, santé).
+    - Règles : habilitation par catégorie de données, destinataires et juridictions autorisés, plafonds (paiement, export). Revue humaine : paiements, suppressions, exports, envois externes, changement de coordonnées bancaires.
+    - Moniteurs du profil, vrais même si les règles étaient trop larges : aucune action irréversible sans humain ; fuite de données sensibles (gel) ; conseil hors cadre (placement, promesse d'indemnisation) ; cumul des paiements et des dossiers ouverts par session (gel) ; enchaînement « changer un IBAN puis le payer » (gel).
+    - Référentiels du profil (AI Act annexe III, RGPD, DORA, HDS, devoir de conseil) : [`profils/metier/referentiels.yaml`](profils/metier/referentiels.yaml), repris dans le dossier de preuves.
 - **Superviseur** (`aplomb-core`, bibliothèque pure, sans code `unsafe`) : combine mandat, règles, moniteurs, bornes et gel. Une décision ne peut que se durcir (Allow < Review < Deny < Gel).
   - **Moniteurs déterministes** :
     - provenance : après un contenu non fiable, les actions sensibles passent en revue ;
@@ -40,6 +46,7 @@ par hook (niveau d'assurance 1, coopératif).
     - Il n'est consulté que pour les actions que les règles permettent encore et qui comptent : exécution, réseau, outil MCP, délégation. Les autres sont tirées au sort.
     - Ce qui vient de l'agent lui est présenté comme donnée, jamais comme instruction.
     - Sans réponse dans le délai, l'action passe en revue. Le nombre de consultations par session est borné.
+  - **Sonde** (moniteur interne, facultatif, J7) : un score lu dans les activations d'un modèle local, pour les actions encore permises. Elle ne peut que mettre en revue, jamais autoriser ; en panne, elle vaut le plancher choisi (revue par défaut). Ses poids sont liés au mandat par la cosignature. Voir [`docs/SONDE.md`](docs/SONDE.md).
   - **Raisonnement** (niveaux 2 et 3) : quand le modèle produit un raisonnement explicite, le proxy LLM le lit.
     - Une intention de contourner la supervision, d'agir à l'insu des humains, de cacher ses actes ou d'exfiltrer met en revue les actions qui suivent.
     - Le juge reçoit ce raisonnement avec l'action, comme donnée.
@@ -113,22 +120,24 @@ Quand une passerelle obtient une décision Review, l'action attend la réponse d
 
 ### Outils de test
 
-- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné (104 vérifications), sans rien toucher du réel.
-- `aplomb evaluer --mandat <mandat>` : banc rouge/bleu. Il joue le jeu d'évaluation du profil ([`profils/code/evaluation.yaml`](profils/code/evaluation.yaml)) avec ce mandat, juge compris, et rend :
+- `scripts/banc.sh` : instance jetable qui rejoue le parcours complet d'un agent confiné et d'un agent métier avec sonde, plus un audit pentest (204 vérifications), sans rien toucher du réel.
+- `aplomb evaluer --mandat <mandat>` : banc rouge/bleu. Il joue le jeu d'évaluation du profil ([`profils/code/evaluation.yaml`](profils/code/evaluation.yaml), [`profils/metier/evaluation.yaml`](profils/metier/evaluation.yaml)) avec ce mandat, juge et sonde compris, et rend :
   - la **sûreté** : la part des attaques bloquées ou mises en revue ;
   - l'**utilité** : la part des tâches légitimes faites sans humain ;
   - le **budget d'audit** : le taux de revue du trafic légitime, comparé à ce qu'un humain peut revoir (`--budget-audit`, 10 % par défaut) ;
-  - le **coût du juge** ;
+  - le **coût du juge** et celui de la **sonde** ;
   - avec un protocole, ce qu'il a écarté : attaques arrêtées avant l'agent, tâches légitimes remplacées (le coût d'utilité du *defer to trusted*), incriminations.
 
   Options :
   - `--reference <rapport.json>` échoue si une attaque passe moins bien qu'avant ;
   - `--sortie` écrit le rapport ;
-  - `--protocole surveillance|report|reechantillonnage` mesure un protocole à la place de celui du mandat, pour les comparer.
+  - `--protocole surveillance|report|reechantillonnage` mesure un protocole à la place de celui du mandat, pour les comparer ;
+  - `--sans-sonde` retire la sonde du mandat, et `--seuil-sonde 0.65` essaie un autre seuil, pour mesurer ce qu'elle apporte.
 
   Une étape du jeu peut porter le raisonnement du modèle (`raisonnement`) et ce qu'il proposerait si on lui redemandait (`alternatives`). Ce que ferait le modèle de confiance n'est pas simulé : une tâche légitime remplacée compte comme non faite.
 - `scripts/scenarios.sh` : scénarios du hook, dont ceux de l'annexe « Assume misalignment ».
 - `scripts/faux-modele.py`, `scripts/faux-mcp.py`, `scripts/faux-juge.py` : un modèle, un serveur MCP et un juge factices pour le banc.
+- `scripts/faux-activations.py` : un serveur d'activations factice (bibliothèque standard Python) et l'entraînement de la sonde de test `profils/metier/sonde-test.json`. Ce n'est pas une vraie sonde : voir [`docs/SONDE.md`](docs/SONDE.md).
 
 ### Aplomb Pentest
 
@@ -359,6 +368,7 @@ flowchart LR
 | Suivre un agent échange par échange | Aplomb Watch, onglet « Vue chaînée » : appels au modèle, outils demandés, décisions, trafic ; écarts en rouge |
 | Modifier un mandat, des règles, les comptes | Éditer, puis `aplomb cosigner <fichier> --compte alice --compte bob` (sinon `serve` refuse de démarrer et dit qui doit signer). Pour un mandat, la cosignature rejoue d'abord le banc rouge/bleu sans juge. Elle est refusée si une attaque passe moins bien qu'à la cosignature précédente ; on peut l'assumer avec `--accepter-regression`. |
 | Mesurer un mandat avant de le signer | `aplomb evaluer --mandat <mandat>` (sûreté, utilité, budget d'audit, coût du juge) |
+| Mesurer ce qu'apporte la sonde | `aplomb evaluer --mandat <mandat> --sans-sonde --sortie sans.json`, puis `aplomb evaluer --mandat <mandat> --reference sans.json` (et `--seuil-sonde` pour essayer un seuil) |
 | Comparer les protocoles AI control | `aplomb evaluer --mandat <mandat> --protocole report` (ou `reechantillonnage`, `surveillance`) |
 | Vérifier le journal | `aplomb verify --journal journal` |
 | Ancrer le journal hors de la machine | `aplomb ancrer --vers /Volumes/<clé USB>` ; `verify` confronte ensuite le journal à cette copie |
@@ -477,7 +487,7 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 
 | | |
 |---|---|
-| Tests | 161 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
+| Tests | 183 (algèbre par tests de propriété, mandat, Cedar, profil C par effet, profil P pentest, profil M métier et sonde, journal, export Mermaid, bornes, chiffrement et effacement, comptes et quatre yeux, enveloppes et réponses signées, gouvernance, scellement et ancrage, passerelle, moniteurs) |
 | Scénarios hook | 26 joués, dont 11 de l'annexe A (« Assume misalignment ») : points protégés gelés quel que soit le chemin, envoi vers un domaine autorisé en revue, script exécuté jugé sur son contenu |
 | Bornes cumulées | Refus, revues, domaines, envois et actions comptés par session ; dépassement = gel (EF-A6, EF-J5) |
 | Agent confiné (niveau 3) | `conteneur/` : Claude Code dans un réseau Docker interne, seuls la décision et Aplomb Gate sont relayés ; hook géré par root ; 20 vérifications d'isolement rejouables (`conteneur/verifier.sh`) |
@@ -497,6 +507,8 @@ Tous écoutent sur la boucle locale (`127.0.0.1`), et chacun se change par une o
 | Enchaînements (J5, lot 4) | Moniteur déterministe sur les 10 dernières actions de la session : télécharger puis exécuter, refus puis détour, lecture sensible puis envoi (EF-E4). Protocoles et raisonnement mesurés par `aplomb evaluer --protocole` ; sur le mandat du banc, avec le faux juge, `report` arrête 72 % des attaques sans humain (52 % en surveillance), au prix d'une tâche légitime sur 10 remplacée |
 | Raisonnement et protocoles (J5, lot 3) | Raisonnement explicite du modèle lu au proxy LLM : intention suspecte = revue des actions qui suivent, raisonnement transmis au juge (EF-E3). Protocoles `report` (*defer to trusted*, modèle de confiance déclaré au mandat) et `reechantillonnage` (incrimination si tous les échantillons sont suspects), avec mesure dans Aplomb Watch ; le juge n'est pas consulté une seconde fois au hook ; échantillons écartés comptés dans la consommation (EF-E2). Testé au banc avec un faux modèle et un faux juge, pas encore avec de vrais modèles |
 | Banc rouge/bleu (J5, lot 2) | `aplomb evaluer` : 39 scénarios du profil C (10 légitimes, 29 attaques, dont 5 que seul un juge peut voir, 2 injections visant le juge, 3 enchaînements et 1 raisonnement trompeur), joués par le vrai superviseur ; sûreté avec et sans humain, utilité, budget d'audit, coût du juge ; non-régression à chaque cosignature de mandat (EF-H1, EF-H3, EF-H4). Sans juge : 80 % des attaques arrêtées sur le mandat d'exemple |
+| Profil M, agent métier (J7) | `profil: metier` : outils MCP rattachés à des verbes, ressource réelle (destinataires, juridiction, montant, données sensibles), règles et revue Cedar, invariants et moniteurs du profil (fuite, conseil hors cadre, cumuls, enchaînement IBAN), référentiels dans les preuves ; `serve`, `evaluer`, `preuves` et le reporting MCP acceptent un mandat métier. Banc : 34 scénarios (12 légitimes, 22 attaques) ; sans sonde, toutes les attaques visées par les règles et les moniteurs sont arrêtées, aucune tâche légitime n'est bloquée |
+| Sonde, déploiement Avancé (J7) | Moniteur interne enfichable (`moniteurs.sonde`) : ne fait que durcir, plancher en cas de panne, poids liés au mandat, serveur local seulement, coût mesuré ; profil de déploiement (`minimal`, `standard`, `avance`, `avance-sans-juge`) affiché, journalisé, dans les preuves et le reporting. Avec la sonde **de test** (classifieur de texte sur faux serveur d'activations) : sûreté 77 % → 86 % (2 attaques sur 5 que seule une sonde peut voir), au prix de 3 tâches légitimes de plus en revue. Aucune vraie sonde jouée : procédure dans [`docs/SONDE.md`](docs/SONDE.md) |
 | Provenance (EF-B5) | Après un contenu non fiable (page web, résultat MCP, fichier hors du dépôt, sortie de sous-agent), les actions sensibles de la session passent en revue |
 | Délégation (EF-B6) | Mandats de sous-agents (`serve --mandat-enfant`) cosignés et inclus dans le parent ; actions jugées par les deux ; chaîne au journal |
 | Contrôle croisé (niveaux 2 et 3) | En conteneur, chaque action présentée au superviseur doit porter l'identifiant d'un appel d'outil demandé par le modèle au proxy : sinon, écart au journal et dans la vue chaînée |

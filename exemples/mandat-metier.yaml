@@ -1,0 +1,67 @@
+# Modèle de mandat du profil « metier » : un agent de back-office qui traite les réclamations
+# des clients d'un assureur. Le copier dans mandats/ de votre instance, l'adapter, puis le
+# faire cosigner (`aplomb init` la première fois, `aplomb cosigner` ensuite).
+#
+# L'agent agit par ses outils métier (CRM, messagerie, paiement, GED), branchés par la
+# passerelle MCP d'Aplomb : chaque appel est décidé avant d'atteindre l'outil. Ce qui est
+# irréversible (paiement, envoi à l'extérieur, suppression, export) attend toujours un humain
+# dans Aplomb Watch ; ce qui sort du mandat est refusé.
+id: reclamations
+version: 1
+profil: metier
+agent: agent-reclamations
+intention: >
+  Traiter les réclamations des clients particuliers sur leurs contrats d'assurance habitation :
+  lire la réclamation et le dossier, vérifier les garanties au barème, consigner l'analyse dans le
+  dossier, répondre au client, proposer un remboursement dans la limite du plafond. Ne jamais
+  donner de conseil financier, médical ou juridique, ni promettre une indemnisation.
+perimetre:
+  # Dossier de travail de l'agent (les serveurs MCP y sont lancés).
+  racine: /srv/reclamations/agent
+  # Serveurs MCP des outils métier, lancés par Aplomb (passerelle MCP).
+  serveurs_mcp:
+  - {nom: crm, commande: [/srv/outils/crm-mcp], outils: ["*"]}
+  - {nom: messagerie, commande: [/srv/outils/messagerie-mcp], outils: ["*"]}
+  - {nom: paiement, commande: [/srv/outils/paiement-mcp], outils: ["*"]}
+  - {nom: ged, commande: [/srv/outils/ged-mcp], outils: ["*"]}
+  - {nom: bareme, commande: [/srv/outils/bareme-mcp], outils: ["*"], fiable: true}
+  # Modèle de l'agent, joint par le proxy LLM. Modèle local : ["http://127.0.0.1:11434"].
+  domaines_modele: ["http://127.0.0.1:11434"]
+politique:
+  regles: ../profils/metier/regles.cedar
+  revue: ../profils/metier/revue.cedar
+# Habilitation de l'agent (extension du profil métier, couverte par la cosignature).
+extension:
+  processus: traitement-des-reclamations
+  # Chaque outil de l'agent et son verbe ; un outil absent est refusé.
+  outils:
+  - {outil: mcp__crm__lire_dossier, verbe: lire_dossier, categorie: contrat}
+  - {outil: mcp__crm__chercher, verbe: rechercher, categorie: contrat}
+  - {outil: mcp__crm__lire_dossier_sante, verbe: lire_dossier, categorie: sante}
+  - {outil: mcp__crm__ajouter_note, verbe: ecrire_dossier, categorie: contrat}
+  - {outil: mcp__crm__modifier, verbe: ecrire_dossier, categorie: contrat}
+  - {outil: mcp__messagerie__lire, verbe: lire_message}
+  - {outil: mcp__messagerie__envoyer, verbe: envoyer}
+  - {outil: mcp__paiement__rembourser, verbe: payer}
+  - {outil: mcp__ged__supprimer_piece, verbe: supprimer}
+  - {outil: mcp__crm__exporter, verbe: exporter}
+  - {outil: mcp__bareme__consulter, verbe: consulter_reference}
+  # Données accessibles. « sante » n'y est pas : le dossier santé est refusé.
+  donnees: [identite, contact, contrat, reclamation]
+  # Messagerie de l'entreprise : envoi à un collègue sans approbation.
+  domaines_internes: [assurances-exemple.fr]
+  # Destinataires externes. « * » : les clients, à qui rien de sensible ne part en clair.
+  destinataires:
+  - {domaine: expertises-exemple.fr, juridiction: FR, donnees: [bancaire]}
+  - {domaine: "*", juridiction: FR}
+  # Où des données et des paiements peuvent aller : codes pays ou UE.
+  juridictions: [UE]
+  plafonds: {paiement: 500, paiements_session: 1500, dossiers_session: 10, export_lignes: 200}
+# Au-delà, la session est gelée.
+bornes: {refus: 5, revues: 40, domaines: 10, envois: 20, actions: 2000}
+# Déploiement Avancé (facultatif) : une sonde lit l'intérieur du modèle de l'agent.
+# Voir docs/SONDE.md pour l'entraîner sur votre modèle ; l'empreinte des poids est posée
+# par la cosignature.
+# moniteurs:
+#   sonde: {url: "http://127.0.0.1:11435", modele: "qwen2.5:3b", poids: ../profils/metier/sonde-test.json,
+#           seuil: 0.5, delai_ms: 1500, plancher: suspect}

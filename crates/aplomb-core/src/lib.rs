@@ -4,7 +4,7 @@
 //! d'autorisation (ENF-1). Le binaire `aplomb` l'expose en service réseau.
 //!
 //! Chaîne de traitement d'une action :
-//! `profils::code::normaliser` → `politique::Politique::evaluer` →
+//! `profils::normaliser` (profil du mandat) → `politique::Politique::evaluer` →
 //! `decision::combiner` → `journal::Journal::ajouter`.
 #![forbid(unsafe_code)]
 
@@ -32,4 +32,5 @@ pub mod profils;
 pub mod reporting;
 pub mod reponse;
 pub mod scellement;
+pub mod sonde;
 pub mod superviseur;

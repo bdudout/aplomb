@@ -54,8 +54,21 @@ pub struct Avis {
     pub moniteur: String,
     pub niveau: Niveau,
     /// Score de désalignement dans `[0, 1]`.
+    #[serde(serialize_with = "score_journal")]
     pub score: f32,
     pub motif: String,
+}
+
+/// Score arrondi à 1e-4 pour le journal : un `f32` élargi en `f64` s'écrit sur 17 chiffres,
+/// que `serde_json` ne relit pas toujours au bit près ; l'empreinte recalculée par
+/// `aplomb verify` différerait alors (chaîne « rompue » à tort). Quatre décimales se
+/// relisent exactement.
+pub fn arrondi_score(s: f32) -> f64 {
+    (f64::from(s) * 1e4).round() / 1e4
+}
+
+fn score_journal<S: serde::Serializer>(s: &f32, ser: S) -> Result<S::Ok, S::Error> {
+    ser.serialize_f64(arrondi_score(*s))
 }
 
 /// Décision finale, avec la décision de politique d'origine pour la traçabilité.

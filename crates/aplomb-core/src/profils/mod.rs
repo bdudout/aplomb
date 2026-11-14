@@ -12,10 +12,11 @@
 use serde_json::{json, Map};
 
 use crate::action::{Action, EvenementOutil};
-use crate::decision::Avis;
+use crate::decision::{Avis, Verdict};
 use crate::mandat::Mandat;
 
 pub mod code;
+pub mod metier;
 pub mod pentest;
 
 /// Contrat de profil (§8), vu du socle.
@@ -48,12 +49,27 @@ pub trait Profil: Sync {
     fn resume(&self, _mandat: &Mandat) -> Vec<String> {
         Vec::new()
     }
+    /// Moniteurs à état de session (cumuls de paiements, dossiers lus…). Chaque superviseur
+    /// en reçoit un neuf ; aucun par défaut.
+    fn suivi(&self) -> Option<Box<dyn Suivi>> {
+        None
+    }
     /// Référentiels sectoriels du profil (§9).
     fn referentiels(&self) -> &'static [&'static str];
 }
 
+/// État des moniteurs d'un profil, propre à un superviseur. Ses avis ne peuvent que durcir.
+pub trait Suivi: Send + Sync + std::fmt::Debug {
+    /// Avis sur l'action, sans changer l'état.
+    fn avis(&self, mandat: &Mandat, evt: &EvenementOutil, action: &Action) -> Vec<Avis>;
+    /// Après la décision finale.
+    fn noter(&mut self, evt: &EvenementOutil, action: &Action, verdict: Verdict);
+    /// Au dégel d'une session (ou de toutes).
+    fn reinitialiser(&mut self, session: Option<&str>);
+}
+
 /// Profils connus d'Aplomb. Ajouter un profil : une ligne ici.
-pub static PROFILS: &[&dyn Profil] = &[&code::ProfilCode, &pentest::ProfilPentest];
+pub static PROFILS: &[&dyn Profil] = &[&code::ProfilCode, &pentest::ProfilPentest, &metier::ProfilMetier];
 
 /// Profil déclaré par son nom, s'il existe.
 pub fn trouver(nom: &str) -> Option<&'static dyn Profil> {
@@ -118,7 +134,8 @@ mod tests {
 
     #[test]
     fn registre() {
-        assert_eq!(noms(), vec!["code", "pentest"]);
+        assert_eq!(noms(), vec!["code", "pentest", "metier"]);
+        assert_eq!(pour("metier").nom(), "metier");
         assert_eq!(pour("code").nom(), "code");
         assert_eq!(pour("pentest").nom(), "pentest");
         assert_eq!(pour("nimporte").nom(), "inconnu");

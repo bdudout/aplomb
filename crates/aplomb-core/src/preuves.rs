@@ -102,6 +102,11 @@ pub struct Constats {
     pub juge: bool,
     /// Protocole AI control du mandat (surveillance, report, reechantillonnage).
     pub protocole: String,
+    /// Moniteur interne (sonde) déclaré, et profil de déploiement atteint (§11).
+    #[serde(default)]
+    pub sonde: bool,
+    #[serde(default)]
+    pub deploiement: String,
     /// Journal : sessions intactes, rompues ; scellés signés et chaînés ; ancre vérifiée.
     pub sessions_intactes: u64,
     pub sessions_rompues: u64,
@@ -229,7 +234,8 @@ pub fn articles(c: &Constats) -> Vec<Article> {
         a("Art. 15", "Exactitude, robustesse et cybersécurité",
           if c.evaluation.is_some_and(|(s, _)| s >= 0.8) { Statut::Couvert } else { Statut::Partiel },
           "Confinement et passerelles (réseau, modèle, MCP), résistance à l'injection (provenance), réponses signées, superviseur dans un autre domaine de confiance ; robustesse mesurée par le banc rouge/bleu.",
-          format!("{eval} ; juge {} ; protocole {} ; branchements {}", if c.juge { "déclaré" } else { "absent" }, c.protocole,
+          format!("{eval} ; juge {} ; sonde interne {} ; protocole {} ; déploiement {} ; branchements {}", if c.juge { "déclaré" } else { "absent" },
+                  if c.sonde { "déclarée" } else { "absente" }, c.protocole, if c.deploiement.is_empty() { "minimal" } else { &c.deploiement },
                   if c.branchements.is_empty() { "aucun vu".into() } else { c.branchements.join(", ") }),
           "Niveau d'exactitude déclaré du système lui-même ; tests de robustesse du modèle.",
           &["evaluation.json", "mandat/", "indicateurs.json"], "EF-C, EF-D, EF-E, EF-H, EF-S"),

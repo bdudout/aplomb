@@ -207,6 +207,18 @@ mod tests {
         assert_eq!(r.iter().map(|(_, n)| *n).sum::<u64>(), 4);
     }
 
+    /// Scores de moniteurs (f32) : la chaîne reste vérifiable après relecture.
+    #[test]
+    fn scores_relus_exactement() {
+        let d = dossier("scores");
+        let mut j = Journal::ouvrir(&d).unwrap();
+        for i in 0..2000u32 {
+            let avis = crate::decision::Avis { moniteur: "sonde".into(), niveau: crate::decision::Niveau::Conforme, score: i as f32 / 1999.0 * 0.987_654_3, motif: String::new() };
+            j.ajouter("s", "decision", json!({ "avis": [avis] }), u64::from(i)).unwrap();
+        }
+        j.verifier_tout().unwrap();
+    }
+
     #[test]
     fn alteration_detectee() {
         let d = dossier("alt");

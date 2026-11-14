@@ -37,6 +37,7 @@ mod preuves;
 mod protocole;
 mod reporting;
 mod serveur;
+mod sonde;
 mod vue_gouvernance;
 
 use std::path::PathBuf;
@@ -137,6 +138,12 @@ enum Commande {
         /// reechantillonnage (EF-E2).
         #[arg(long, value_parser = protocole)]
         protocole: Option<aplomb_core::moniteurs::ModeProtocole>,
+        /// Ne pas consulter la sonde du mandat : comparer avec et sans mesure son apport.
+        #[arg(long)]
+        sans_sonde: bool,
+        /// Seuil de la sonde (0 à 1) à la place de celui du mandat.
+        #[arg(long)]
+        seuil_sonde: Option<f32>,
     },
     /// Profils de domaine connus (code, pentest…) : à quoi ils servent, leurs référentiels,
     /// le modèle de mandat à copier.
@@ -469,8 +476,8 @@ fn main() -> ExitCode {
                 comptes.iter().try_for_each(|c| gouverner::cosigner(&fichier, c, cle.as_deref(), &confiance, accepter_regression))
             }
         }
-        Commande::Evaluer { mandat, jeu, sans_juge, budget_audit, reference, sortie, protocole } => {
-            evaluer::lancer(evaluer::Options { mandat, jeu, sans_juge, budget_audit, reference, sortie, protocole })
+        Commande::Evaluer { mandat, jeu, sans_juge, budget_audit, reference, sortie, protocole, sans_sonde, seuil_sonde } => {
+            evaluer::lancer(evaluer::Options { mandat, jeu, sans_juge, budget_audit, reference, sortie, protocole, sans_sonde, seuil_sonde })
         }
         Commande::Verify { journal, ancre, cle_serveur } => verifier(&journal, ancre.as_deref(), &cle_serveur),
         Commande::Ancrer { vers, journal } => ancrer(&journal, &vers),

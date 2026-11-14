@@ -221,9 +221,18 @@ pub fn charger_cosigne(
 pub fn actualiser_empreintes(mandat: &mut Mandat, dossier: &Path) -> Result<bool, String> {
     let r = sha256_hex(lire(&dossier.join(&mandat.politique.regles)).map_err(|e| e.to_string())?.as_bytes());
     let v = sha256_hex(lire(&dossier.join(&mandat.politique.revue)).map_err(|e| e.to_string())?.as_bytes());
-    let change = r != mandat.politique.regles_sha256 || v != mandat.politique.revue_sha256;
+    let mut change = r != mandat.politique.regles_sha256 || v != mandat.politique.revue_sha256;
     mandat.politique.regles_sha256 = r;
     mandat.politique.revue_sha256 = v;
+    // Poids de la sonde (moniteur interne) : liés au mandat comme les règles (EF-G1).
+    if let Some(s) = mandat.moniteurs.as_mut().and_then(|m| m.sonde.as_mut()) {
+        if let Some(f) = &s.poids {
+            let chemin = dossier.join(f);
+            let e = crate::sonde::empreinte(&std::fs::read(&chemin).map_err(|e| format!("poids de la sonde {} : {e}", chemin.display()))?);
+            change |= e != s.poids_sha256;
+            s.poids_sha256 = e;
+        }
+    }
     if change {
         mandat.signatures.clear();
     }

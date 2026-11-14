@@ -35,6 +35,10 @@ pub struct Superviseur {
     traces: HashMap<String, VecDeque<Trace>>,
     /// Consultations du juge par session (budget, EF-E5).
     appels_juge: HashMap<String, u32>,
+    /// Moniteurs propres au profil du mandat (cumuls de session…).
+    etat_profil: Option<Box<dyn profils::Suivi>>,
+    /// Consultations de la sonde par session (EF-F).
+    appels_sonde: HashMap<String, u32>,
 }
 
 /// Actions passées montrées au juge.
@@ -46,12 +50,16 @@ pub enum Consultation {
     Juge { raison: Raison, consigne: String, message: String },
     /// Action sensible, budget épuisé : avis de revue sans appel.
     BudgetEpuise(Avis),
+    /// Moniteur interne (EF-F) : texte produit par le modèle, à rejouer par le serveur
+    /// d'activations dans le contexte de l'intention.
+    Sonde { intention: String, texte: String },
 }
 
 impl Superviseur {
     pub fn nouveau(mandat: MandatCharge) -> Result<Self, ErreurPolitique> {
         let politique = Politique::nouvelle(&mandat.regles, &mandat.revue)?;
         let suivi = Suivi::nouveau(mandat.mandat.bornes.clone().unwrap_or_default());
+        let etat_profil = profils::pour(&mandat.mandat.profil).suivi();
         Ok(Self {
             mandat,
             politique,
@@ -62,6 +70,8 @@ impl Superviseur {
             enfants: HashMap::new(),
             traces: HashMap::new(),
             appels_juge: HashMap::new(),
+            etat_profil,
+            appels_sonde: HashMap::new(),
         })
     }
 
@@ -137,6 +147,9 @@ impl Superviseur {
         if self.avis_enchainement(evt, &action).is_some() {
             verdict = verdict.max(Verdict::Review);
         }
+        for a in self.etat_profil.iter().flat_map(|s| s.avis(&self.mandat.mandat, evt, &action)) {
+            verdict = verdict.max(a.niveau.plancher());
+        }
         (action, verdict)
     }
 
@@ -162,6 +175,28 @@ impl Superviseur {
                 Some(Consultation::Juge { raison, consigne, message })
             }
         }
+    }
+
+    /// Sonde déclarée au mandat (moniteur interne, EF-F).
+    pub fn sonde(&self) -> Option<&crate::sonde::ConfigSonde> {
+        self.mandat.mandat.moniteurs.as_ref().and_then(|m| m.sonde.as_ref())
+    }
+
+    /// Faut-il consulter la sonde ? Seulement pour une action encore permise (un refus ou une
+    /// revue n'ont rien à gagner d'un signal d'appoint), dans le budget de la session. Sans
+    /// effet sur l'état : l'appelant consulte hors verrou, puis [`Self::noter_appel_sonde`].
+    pub fn preparer_sonde(&self, evt: &EvenementOutil, raisonnement: Option<&str>) -> Option<Consultation> {
+        let cfg = self.sonde()?;
+        if self.appels_sonde.get(&evt.session).copied().unwrap_or(0) >= cfg.appels_max || self.examiner(evt).1 != Verdict::Allow {
+            return None;
+        }
+        Some(Consultation::Sonde { intention: self.mandat.mandat.intention.clone(), texte: crate::sonde::texte(evt, raisonnement) })
+    }
+
+    pub fn noter_appel_sonde(&mut self, session: &str) -> u32 {
+        let n = self.appels_sonde.entry(session.to_string()).or_default();
+        *n += 1;
+        *n
     }
 
     /// Compte une consultation du juge dans le budget de la session.
@@ -221,8 +256,13 @@ impl Superviseur {
         avis.extend(self.avis_enchainement(evt, &action));
         // Moniteurs spécialisés du profil : ils ne peuvent que durcir (§8).
         avis.extend(self.profil().avis(evt, &action, &self.mandat.mandat));
+        // Moniteurs à état de session du profil (cumuls…).
+        avis.extend(self.etat_profil.iter().flat_map(|s| s.avis(&self.mandat.mandat, evt, &action)));
         avis.extend(externes);
         let finale = combiner(politique, avis, gele);
+        if let Some(s) = self.etat_profil.as_mut() {
+            s.noter(evt, &action, finale.verdict);
+        }
         if finale.verdict == Verdict::Gel {
             self.sessions_gelees.insert(evt.session.clone());
         }
@@ -263,11 +303,18 @@ impl Superviseur {
 
     pub fn degeler(&mut self, session: Option<&str>) {
         self.suivi.reinitialiser(session);
+        if let Some(s) = self.etat_profil.as_mut() {
+            s.reinitialiser(session);
+        }
         match session {
             Some(s) => {
                 self.appels_juge.remove(s);
+                self.appels_sonde.remove(s);
             }
-            None => self.appels_juge.clear(),
+            None => {
+                self.appels_juge.clear();
+                self.appels_sonde.clear();
+            }
         }
         match session {
             Some(s) => {

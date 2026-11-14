@@ -97,6 +97,8 @@ pub fn collecter(src: &Sources, instance: &str, cle_scelles: &ed25519_dalek::Ver
     let mut c = Constats { signataires_mandat: signataires, seuil: confiance.seuil(), ..Default::default() };
     c.juge = mandat.moniteurs.as_ref().is_some_and(|mo| mo.juge.is_some());
     c.protocole = mandat.moniteurs.as_ref().and_then(|mo| mo.protocole.as_ref()).map_or("surveillance".into(), |p| format!("{:?}", p.mode).to_lowercase());
+    c.sonde = mandat.moniteurs.as_ref().is_some_and(|mo| mo.sonde.is_some());
+    c.deploiement = aplomb_core::moniteurs::profil_deploiement(mandat.moniteurs.as_ref()).into();
 
     // Gouvernance : comptes et rôles (sans clés).
     let comptes = match lire(src.comptes) {
@@ -168,6 +170,16 @@ pub fn exporter(o: OptionsExport) -> Result<(), String> {
     ecrire(&s.join("mandat").join(nom(&o.mandat)), &lire(&o.mandat)?)?;
     ecrire(&s.join("mandat").join(nom(Path::new(&mandat.politique.regles))), &m.regles)?;
     ecrire(&s.join("mandat").join(nom(Path::new(&mandat.politique.revue))), &m.revue)?;
+    // Référentiels sectoriels du profil et éléments de vie privée (§8, EF-P4), s'il en fournit.
+    let dossier_mandat = o.mandat.parent().unwrap_or(Path::new("."));
+    let referentiels = dossier_mandat.join(&mandat.politique.regles).with_file_name("referentiels.yaml");
+    let referentiels_profil = match std::fs::read_to_string(&referentiels) {
+        Ok(t) => {
+            ecrire(&s.join("mandat/referentiels.yaml"), &t)?;
+            serde_yaml::from_str::<Value>(&t).ok()
+        }
+        Err(_) => None,
+    };
     ecrire(&s.join("gouvernance/confiance.yaml"), &lire(&o.confiance)?)?;
     ecrire(&s.join("gouvernance/comptes.json"), &json_joli(&comptes)?)?;
     if let Some(r) = &evaluation {
@@ -182,7 +194,7 @@ pub fn exporter(o: OptionsExport) -> Result<(), String> {
     let arts = articles(&c);
     let correspondance = json!({"avertissement": preuves::AVERTISSEMENT, "systeme": mandat.id, "version_mandat": mandat.version,
         "periode": p, "constats": c, "ai_act": arts, "familles": familles(),
-        "referentiels_profil": aplomb_core::profils::pour(&mandat.profil).referentiels()});
+        "referentiels_profil": aplomb_core::profils::pour(&mandat.profil).referentiels(), "referentiels_detail": referentiels_profil});
     ecrire(&s.join("correspondance.json"), &json_joli(&correspondance)?)?;
     ecrire(&s.join("LISEZMOI.md"), &lisezmoi(&m, &instance, &c, &arts, &p))?;
 
@@ -270,7 +282,7 @@ fn lisezmoi(m: &aplomb_core::mandat::MandatCharge, instance: &str, c: &Constats,
         }
     }
     t += "\n## Pièces\n\n\
-          - `mandat/` : le mandat tel que cosigné, et ses règles.\n\
+          - `mandat/` : le mandat tel que cosigné, ses règles, et les référentiels sectoriels du profil avec ses éléments de vie privée (`referentiels.yaml`, s'il en fournit).\n\
           - `gouvernance/` : clés publiques et seuil de la gouvernance ; comptes d'administration et leurs rôles (sans clé).\n\
           - `evaluation.json` : banc rouge/bleu rejoué sans juge à l'export (sûreté, utilité, scénarios).\n\
           - `indicateurs.json` : indicateurs agrégés du système, signés, sans rien de nominatif.\n\

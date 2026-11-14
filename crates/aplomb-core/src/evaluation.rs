@@ -128,6 +128,8 @@ pub struct ResultatScenario {
 pub struct MesureJuge {
     pub latence_ms: u64,
     pub indisponible: bool,
+    /// Mesure d'une consultation de la sonde (moniteur interne), pas du juge.
+    pub sonde: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -168,9 +170,26 @@ pub struct Rapport {
     pub budget_audit: f64,
     pub budget_respecte: bool,
     pub cout_juge: CoutJuge,
+    /// Sonde interne (EF-F) : nom, et coût de ses consultations.
+    #[serde(default)]
+    pub sonde: Option<String>,
+    #[serde(default)]
+    pub cout_sonde: CoutJuge,
     #[serde(default)]
     pub protocole: MesureProtocole,
     pub scenarios: Vec<ResultatScenario>,
+}
+
+/// Outil d'une étape. `@verbe` (ou `@verbe/categorie`) désigne l'outil que le mandat déclare
+/// pour ce verbe (profil métier) : le jeu ne dépend pas des noms d'outils d'une organisation.
+fn resoudre_outil(outil: &str, mandat: &crate::mandat::Mandat) -> Option<String> {
+    let Some(spec) = outil.strip_prefix('@') else { return Some(outil.to_string()) };
+    let (verbe, categorie) = spec.split_once('/').map_or((spec, None), |(v, c)| (v, Some(c)));
+    let outils = crate::profils::metier::perimetre(mandat).ok()?.outils;
+    outils
+        .iter()
+        .find(|o| o.verbe == verbe && categorie.is_none_or(|c| o.categorie.as_deref() == Some(c)))
+        .map(|o| o.outil.clone())
 }
 
 fn substituer(v: &Value, l: &Lieux) -> Value {
@@ -201,6 +220,10 @@ pub fn jouer(
     if sc.exige_domaine && lieux.domaine.is_none() {
         return (resultat(Issue::NonApplicable, Vec::new(), "aucun domaine autorisé au mandat".into()), 0, 0);
     }
+    let outils: Option<Vec<String>> = sc.etapes.iter().map(|e| resoudre_outil(&e.outil, &sup.mandat.mandat)).collect();
+    let Some(outils) = outils else {
+        return (resultat(Issue::NonApplicable, Vec::new(), "un outil du scénario n'a pas d'équivalent dans le mandat".into()), 0, 0);
+    };
     let session = format!("evaluation-{}", sc.id);
     let (mut verdicts, mut actions, mut revues) = (Vec::new(), 0u64, 0u64);
     let (mut pire_malveillante, mut motif_malveillante) = (Verdict::Allow, String::new());
@@ -215,7 +238,7 @@ pub fn jouer(
             agent: sup.mandat.mandat.agent.clone(),
             mode: "evaluation".into(),
             cwd: lieux.racine.clone(),
-            outil: e.outil.clone(),
+            outil: outils[i].clone(),
             entree: substituer(&e.entree, lieux),
             phase: if e.apres { Phase::Apres } else { Phase::Avant },
             chemin_reel: None,
@@ -236,6 +259,13 @@ pub fn jouer(
                 if matches!(c, Consultation::Juge { .. }) {
                     sup.noter_appel_juge(&session);
                 }
+                cout.extend(m);
+                externes.extend(avis);
+            }
+            // Moniteur interne (EF-F) : signal d'appoint, combiné comme les autres avis.
+            if let Some(c) = sup.preparer_sonde(evt, raisonnement.as_deref()) {
+                let (avis, m) = consulter(&c);
+                sup.noter_appel_sonde(&session);
                 cout.extend(m);
                 externes.extend(avis);
             }
@@ -371,7 +401,12 @@ pub fn evaluer(
     let attaques = compte(Nature::Attaque, &[Issue::Bloquee, Issue::Remplacee, Issue::Detectee, Issue::Manquee]);
     let legitimes = compte(Nature::Legitime, &[Issue::Fluide, Issue::AvecRevue, Issue::Bloque, Issue::Remplace]);
     let taux_revue = if actions == 0 { 0.0 } else { revues as f64 / actions as f64 };
-    let latence: u64 = cout.iter().map(|m| m.latence_ms).sum();
+    let (sonde, cout): (Vec<MesureJuge>, Vec<MesureJuge>) = cout.into_iter().partition(|m| m.sonde);
+    let resume = |c: &[MesureJuge]| CoutJuge {
+        consultations: c.len() as u64,
+        indisponible: c.iter().filter(|m| m.indisponible).count() as u64,
+        latence_moyenne_ms: if c.is_empty() { 0 } else { c.iter().map(|m| m.latence_ms).sum::<u64>() / c.len() as u64 },
+    };
     let m = &sup.mandat;
     Rapport {
         mandat: format!("{} v{}", m.mandat.id, m.mandat.version),
@@ -386,11 +421,9 @@ pub fn evaluer(
         taux_revue,
         budget_audit,
         budget_respecte: taux_revue <= budget_audit,
-        cout_juge: CoutJuge {
-            consultations: cout.len() as u64,
-            indisponible: cout.iter().filter(|m| m.indisponible).count() as u64,
-            latence_moyenne_ms: if cout.is_empty() { 0 } else { latence / cout.len() as u64 },
-        },
+        cout_juge: resume(&cout),
+        sonde: sup.sonde().map(|s| s.modele.clone()),
+        cout_sonde: resume(&sonde),
         protocole: mesure,
         scenarios,
     }

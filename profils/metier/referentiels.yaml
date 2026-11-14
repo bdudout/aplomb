@@ -1,0 +1,47 @@
+# Référentiels sectoriels du profil M « agent métier régulé » (contrat de profil, §8) et
+# éléments de vie privée exigés de chaque profil (EF-P4). Joints au dossier de preuves
+# (`aplomb preuves exporter`). Correspondances indicatives : à faire valider par le
+# juriste et le DPO de l'organisation avant usage réglementaire.
+profil: metier
+referentiels:
+- nom: AI Act — systèmes à haut risque
+  reference: Règlement (UE) 2024/1689, annexe III point 5 (b) et (c) ; art. 9 à 15, 26
+  apport: >
+    Mandat cosigné, autorisation action par action, approbation humaine de tout acte
+    irréversible (art. 14), journal chaîné et scellé (art. 12, 19), banc rouge/bleu (art. 9, 15),
+    dossier de preuves par système (art. 26).
+- nom: RGPD
+  reference: Règlement (UE) 2016/679, art. 5 (minimisation), 9 (catégories particulières), 22 (décision automatisée), 25, 32, 44 à 49 (transferts)
+  apport: >
+    Catégories de données habilitées au mandat ; données de santé refusées sauf habilitation ;
+    aucune donnée sensible vers un destinataire non autorisé ; juridictions déclarées (transferts
+    hors UE refusés par défaut) ; aucune décision à effet juridique (paiement, refus notifié)
+    sans humain ; journal minimisé et effaçable par personne (EF-P1, EF-P2).
+- nom: DORA
+  reference: Règlement (UE) 2022/2554, art. 6, 9 (protection et prévention), 12 (journalisation), 28 (tiers)
+  apport: >
+    Contrôle d'accès et moindre privilège sur les outils de l'agent, refus par défaut, plafonds de
+    montants et de volumes, gel immédiat, journal probatoire ; destinataires et prestataires tiers
+    déclarés au mandat.
+- nom: HDS (hébergement de données de santé)
+  reference: Code de la santé publique, art. L.1111-8 ; référentiel de certification HDS
+  apport: >
+    Catégorie « sante » hors habilitation par défaut ; une habilitation explicite, cosignée, est
+    requise pour qu'un agent lise un dossier de santé. Aplomb ne certifie pas l'hébergeur.
+- nom: Devoir de conseil et pratiques commerciales
+  reference: Code des assurances, art. L.521-4 ; Code monétaire et financier, art. L.541-8-1
+  apport: >
+    Moniteur « conseil hors cadre » : conseil en investissement, avis médical, promesse
+    d'indemnisation ou conseil juridique dans un message externe → revue humaine.
+vie_privee:
+  base_legale: >
+    Exécution du contrat d'assurance (RGPD art. 6.1.b) pour le traitement des réclamations ;
+    intérêt légitime (art. 6.1.f) pour la supervision de l'agent et son journal.
+  conservation: >
+    Journal de supervision : six mois au moins (AI Act art. 19 et 26 § 6), douze mois conseillés ;
+    contenus chiffrés par session, effaçables par destruction de la clé (EF-P2) ; scellés conservés.
+  aipd: >
+    AIPD type à compléter : traitement à grande échelle de données de clients, décisions
+    automatisées encadrées par approbation humaine, transferts limités aux juridictions du mandat,
+    risques résiduels (erreur de l'agent sur une action permise, contournement par un outil
+    mal déclaré), mesures (mandat, plafonds, revue, journal, banc rouge/bleu).

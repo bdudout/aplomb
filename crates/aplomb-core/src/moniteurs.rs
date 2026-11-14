@@ -40,6 +40,9 @@ pub struct Moniteurs {
     /// Lecture du raisonnement explicite du modèle (EF-E3) ; activée par défaut.
     #[serde(default = "vrai", skip_serializing_if = "est_vrai")]
     pub raisonnement: bool,
+    /// Moniteur interne : sonde sur les activations du modèle (EF-F, déploiement Avancé).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sonde: Option<crate::sonde::ConfigSonde>,
 }
 
 fn vrai() -> bool {
@@ -153,6 +156,19 @@ fn defaut_appels() -> u32 {
 }
 fn defaut_niveau_max() -> Niveau {
     Niveau::Suspect
+}
+
+/// Profil de déploiement atteint par les moniteurs du mandat (§11) : Minimal (règles
+/// seules), Standard (+ juge), Avancé (+ moniteur interne). Inscrit en tête de session et
+/// affiché : les garanties déterministes sont les mêmes, seuls les signaux s'ajoutent.
+pub fn profil_deploiement(m: Option<&Moniteurs>) -> &'static str {
+    match (m.and_then(|m| m.juge.as_ref()).is_some(), m.and_then(|m| m.sonde.as_ref()).is_some()) {
+        (_, false) if m.and_then(|m| m.juge.as_ref()).is_none() => "minimal",
+        (true, false) => "standard",
+        (true, true) => "avance",
+        (false, true) => "avance-sans-juge",
+        _ => "minimal",
+    }
 }
 
 // ---------------------------------------------------------------------------------------

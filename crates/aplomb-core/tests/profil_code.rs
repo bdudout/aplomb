@@ -360,6 +360,7 @@ fn cascade_des_moniteurs() {
         }),
         protocole: None,
         raisonnement: true,
+        sonde: None,
     });
     let mut s = Superviseur::nouveau(charge(m)).unwrap();
     let bash = evt("s", "Bash", json!({"command": "cargo build"}));
