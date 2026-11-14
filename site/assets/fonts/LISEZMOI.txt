@@ -1,0 +1,5 @@
+Polices servies par le site, pour ne rien demander à un tiers.
+
+- Fraunces (Undercase Type), Inter (Rasmus Andersson), JetBrains Mono (JetBrains)
+- Licence : SIL Open Font License 1.1 — https://openfontlicense.org
+- Fichiers : sous-ensemble « latin » du paquet npm @fontsource (version 5.1.0)

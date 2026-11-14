@@ -1,8 +1,16 @@
 /* Aplomb — site de présentation. Dérivé de la maquette storytelling LLMiddler. */
+/* Polices servies par le site (OFL, via Fontsource) : aucune requête vers un tiers. */
+@font-face{font-family:"Fraunces";font-style:normal;font-weight:500;font-display:swap;src:url(fonts/fraunces-latin-500-normal.woff2) format("woff2")}
+@font-face{font-family:"Fraunces";font-style:normal;font-weight:700;font-display:swap;src:url(fonts/fraunces-latin-700-normal.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-style:normal;font-weight:400;font-display:swap;src:url(fonts/inter-latin-400-normal.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-style:normal;font-weight:500;font-display:swap;src:url(fonts/inter-latin-500-normal.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-style:normal;font-weight:600;font-display:swap;src:url(fonts/inter-latin-600-normal.woff2) format("woff2")}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url(fonts/jetbrains-mono-latin-400-normal.woff2) format("woff2")}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:500;font-display:swap;src:url(fonts/jetbrains-mono-latin-500-normal.woff2) format("woff2")}
 :root{
-  --bg:#f6f4ef; --bg-2:#ece8df; --ink:#16181d; --ink-2:#4a4f5a; --ink-3:#6f7480;
+  --bg:#f6f4ef; --bg-2:#ece8df; --ink:#16181d; --ink-2:#4a4f5a; --ink-3:#5d626d;
   --line:#d9d4c8; --card:#ffffff; --navy:#1f3a5f;
-  --dec:#2f5f9e; --mon:#b87400; --prv:#1f8a5b; --stop:#c8372d;
+  --dec:#2f5f9e; --mon:#915a00; --prv:#1a7550; --stop:#b02e25;
   --dec-bg:#e4ecf7; --mon-bg:#fbf0dc; --prv-bg:#e1f3ea; --stop-bg:#fbe5e3;
   --mono:"JetBrains Mono",ui-monospace,monospace;
   --serif:"Fraunces",Georgia,serif;
@@ -209,6 +217,17 @@ tr.reco td{background:var(--prv-bg);color:var(--ink)}
 .biz .dec-t{fill:var(--dec)} .biz .mon-t{fill:var(--mon)} .biz .prv-t{fill:var(--prv)} .biz .ink-t{fill:var(--ink)} .biz .stop-t{fill:var(--stop)}
 .biz .lb.st{text-anchor:start} .biz .lb.en{text-anchor:end}
 .biz .lg text{font-size:12px;fill:var(--ink-2)}
+/* schéma : version verticale sur téléphone */
+.biz-m{display:none;margin-top:32px;gap:10px}
+.biz-m .row{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:15px;color:var(--ink-2)}
+.biz-m .row b{color:var(--ink)}
+.biz-m .core-m{background:var(--ink);color:var(--bg);border-color:var(--ink);text-align:center}
+.biz-m .core-m b{color:var(--bg);font:700 22px var(--serif);display:block}
+.biz-m .down{text-align:center;font-family:var(--mono);font-size:13px;color:var(--ink-3)}
+.biz-m ul{margin:0;padding:0;list-style:none;display:grid;gap:8px}
+.biz-m li{display:flex;gap:10px;align-items:baseline}
+.biz-m li i{flex:none;width:18px;height:3px;border-radius:2px;transform:translateY(-4px)}
+@media(max-width:640px){.biz{display:none}.biz-m{display:grid}}
 .gains{display:grid;gap:14px;margin-top:22px}
 @media(min-width:760px){.gains{grid-template-columns:repeat(4,1fr)}}
 .gains div{border-left:3px solid var(--line);padding-left:14px;font-size:14px;color:var(--ink-2)}

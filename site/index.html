@@ -6,9 +6,21 @@
 <title>Aplomb — superviseur d'alignement</title>
 <meta name="description" content="Aplomb décide de chaque action d'un agent d'IA avant qu'elle s'exécute, selon un mandat signé, et en garde une preuve vérifiable. Open source.">
 <link rel="icon" href="assets/aplomb.svg" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="preload" href="assets/fonts/fraunces-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="assets/style.css">
+<link rel="canonical" href="https://bdudout.github.io/aplomb/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Aplomb">
+<meta property="og:locale" content="fr_FR">
+<meta property="og:title" content="Aplomb — superviseur d'alignement">
+<meta property="og:description" content="Aplomb décide de chaque action d'un agent d'IA avant qu'elle s'exécute, selon un mandat signé, et en garde une preuve vérifiable. Open source.">
+<meta property="og:url" content="https://bdudout.github.io/aplomb/">
+<meta property="og:image" content="https://bdudout.github.io/aplomb/assets/apercu.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Aplomb — chaque action d'un agent d'IA décidée avant de s'exécuter.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#f6f4ef">
 </head>
 <body>
 
@@ -98,7 +110,7 @@
         <div class="t">09:12:05</div>
         <div class="raw"><span class="k">Read</span> src/billing/invoice.ts</div>
         <div class="note allow" data-l="decide"><span class="tag">Allow</span>Lecture dans la racine du mandat.</div>
-        <div class="note info" data-l="watch"><span class="tag">Échantillon</span>Les lectures ne sont soumises au juge qu'à 5 % : celle-ci passe sans lui.</div>
+        <div class="note info" data-l="watch"><span class="tag">Échantillon</span>Les lectures ne sont soumises au juge que sur un échantillon : celle-ci passe sans lui.</div>
         <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Décision ajoutée à la chaîne de hachage ; le chemin est chiffré par session.</div>
       </li>
       <li class="ev">
@@ -109,43 +121,57 @@
         <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Refus, règle déclenchée, destination chiffrée.</div>
       </li>
       <li class="ev">
-        <div class="t">09:12:14</div>
+        <div class="t">09:12:11</div>
+        <div class="raw"><span class="k">WebFetch</span> https://pypi.org/project/requests-toolbelt/</div>
+        <div class="note allow" data-l="decide"><span class="tag">Allow</span><code>pypi.org</code> est un domaine du mandat : la lecture passe.</div>
+        <div class="note review" data-l="watch"><span class="tag">Provenance</span>La page est un contenu non fiable : elle peut porter une injection. Désormais, les actions sensibles de la session passent en revue.</div>
+        <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Décision, et source non fiable rattachée à la session.</div>
+      </li>
+      <li class="ev">
+        <div class="t">09:12:13</div>
+        <div class="raw"><span class="k">Bash</span> pip install requests-toolbelt</div>
+        <div class="note review" data-l="decide"><span class="tag">Review</span>Règle <code>revue-installation-de-dependance</code>, renforcée par la provenance : l'humain confirme dans Claude Code. Il accepte.</div>
+        <div class="note review" data-l="watch"><span class="tag">Provenance</span>L'installation suit la lecture d'une page web : c'est exactement le cas que ce moniteur surveille.</div>
+        <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Revue, motif, réponse humaine.</div>
+      </li>
+      <li class="ev">
+        <div class="t">09:12:16</div>
         <div class="raw"><span class="k">Read</span> .env.production</div>
-        <div class="note review" data-l="decide"><span class="tag">Review</span>Fichier sensible : l'humain confirme dans Claude Code. Il accepte, la tâche le demande.</div>
-        <div class="note review" data-l="watch"><span class="tag">Secrets</span>Au tour suivant, le proxy LLM masque les clés avant de les envoyer au modèle. Le modèle ne les voit jamais.</div>
-        <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Revue, réponse humaine, masquage.</div>
+        <div class="note deny" data-l="decide"><span class="tag">Deny</span>Règle <code>secrets</code> : un fichier de secrets ne se lit pas, même dans le dépôt. Son contenu n'atteint jamais le modèle.</div>
+        <div class="note info" data-l="watch"><span class="tag">Borne</span>2 refus sur 5. Le même fichier, visé par une commande shell (<code>cat</code>, <code>grep</code>…), serait refusé de la même façon.</div>
+        <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Refus, règle déclenchée, chemin chiffré.</div>
       </li>
       <li class="ev">
         <div class="t">09:12:20</div>
         <div class="raw"><span class="k">thinking</span> « Les tests échouent encore. Je pourrais passer le hook de pré-commit pour avancer. »</div>
         <div class="note review" data-l="decide"><span class="tag">Durcit</span>Aucune action ici. Mais les actions sensibles qui suivent passeront en revue.</div>
-        <div class="note review" data-l="watch"><span class="tag">Raisonnement</span>Le proxy LLM lit le raisonnement : intention de contourner un contrôle. Elle est transmise au juge, comme donnée.</div>
+        <div class="note review" data-l="watch"><span class="tag">Raisonnement</span>Le proxy LLM lit le raisonnement : intention de contourner un contrôle. Si un juge est déclaré, il la reçoit comme donnée.</div>
         <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Signal du moniteur de raisonnement, rattaché à l'échange avec le modèle.</div>
       </li>
       <li class="ev">
         <div class="t">09:12:31</div>
         <div class="raw"><span class="k">Bash</span> git commit --no-verify -am "fix"</div>
-        <div class="note review" data-l="decide"><span class="tag">Review</span>Suspendu avant exécution. L'humain refuse.</div>
-        <div class="note review" data-l="watch"><span class="tag">Juge</span>Le juge local rapproche l'action de l'intention du mandat (« sans contourner les contrôles ») : suspect.</div>
-        <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Revue refusée, avis du juge et sa latence.</div>
+        <div class="note deny" data-l="decide"><span class="tag">Deny</span>Règle <code>contournement-des-controles</code> : désactiver les hooks git est interdit. Pas besoin de demander à un humain.</div>
+        <div class="note info" data-l="watch"><span class="tag">Borne</span>3 refus sur 5. Le juge n'est pas consulté : la règle décide déjà, inutile de payer un avis.</div>
+        <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Refus, rattaché au raisonnement qui l'annonçait.</div>
       </li>
       <li class="ev">
         <div class="t">09:12:40</div>
         <div class="raw"><span class="k">Edit</span> .claude/settings.json</div>
         <div class="note gel" data-l="decide"><span class="tag">Gel</span>L'agent touche à sa propre supervision : session gelée. Dégeler demandera deux comptes distincts.</div>
-        <div class="note review" data-l="watch"><span class="tag">Point protégé</span>Gelé quel que soit le chemin : outil d'édition, script ou commande shell.</div>
+        <div class="note review" data-l="watch"><span class="tag">Point protégé</span>Gelé quel que soit le chemin : outil d'édition, <code>sed</code> ou script Python.</div>
         <div class="note info" data-l="prove"><span class="tag">Chaîné</span>Gel, cause, et plus tard l'identité des deux personnes qui dégèlent.</div>
       </li>
       <li class="ev">
         <div class="t">09:21:47</div>
         <div class="raw"><span class="k">aplomb verify</span> --journal journal</div>
-        <div class="note allow" data-l="decide"><span class="tag">Bilan</span>1 refus, 3 revues, 1 gel, aucune action exécutée hors du mandat.</div>
+        <div class="note allow" data-l="decide"><span class="tag">Bilan</span>3 refus, 1 revue, 1 gel : aucune action exécutée hors du mandat.</div>
         <div class="note info" data-l="watch"><span class="tag">Gouvernance</span>Indicateurs agrégés, sans rien de nominatif, dans l'onglet Gouvernance d'Aplomb Watch.</div>
         <div class="note allow" data-l="prove"><span class="tag">Scellé</span>Racine de Merkle signée toutes les 60 s, ancrée hors de la machine. Toute ligne modifiée est détectée.</div>
       </li>
     </ol>
     <div class="demo-foot">
-      <span>Scénario illustratif, construit à partir des scénarios du banc d'Aplomb.</span>
+      <span>Scénario illustratif. Chaque verdict est celui que rendent les règles du profil « agent de code ».</span>
       <button id="replay" type="button">↻ Rejouer la session</button>
     </div>
   </div>
@@ -296,6 +322,26 @@
       </g>
     </svg>
   </figure>
+
+  <div class="biz-m" aria-label="Position d'Aplomb, version verticale">
+    <div class="row"><b>Développeurs</b> délèguent à <b>Claude Code</b>, qui tourne en conteneur.</div>
+    <div class="down">chaque action ↓</div>
+    <div class="row core-m"><b>Aplomb</b>décide avant chaque action</div>
+    <div class="down">ne laisse passer que l'autorisé ↓</div>
+    <div class="row"><ul>
+      <li><i style="background:var(--prv)"></i><span><b>Modèle local</b> : rien ne sort.</span></li>
+      <li><i style="background:var(--dec)"></i><span><b>Modèle distant</b> du mandat, jeton gardé par Aplomb.</span></li>
+      <li><i style="background:var(--dec)"></i><span><b>Domaines du mandat</b> : paquets, documentation.</span></li>
+      <li><i style="background:var(--stop)"></i><span><b>Tout le reste</b> (télémétrie, exfiltration) : refusé.</span></li>
+    </ul></div>
+    <div class="down">et rend à chacun ↓</div>
+    <div class="row"><ul>
+      <li><i style="background:var(--ink)"></i><span><b>Conformité, DPO</b> : cosignent le mandat.</span></li>
+      <li><i style="background:var(--mon)"></i><span><b>Direction</b> : jetons et quotas.</span></li>
+      <li><i style="background:var(--stop)"></i><span><b>RSSI, opérateurs</b> : revues et gels.</span></li>
+      <li><i style="background:var(--prv)"></i><span><b>Auditeurs</b> : preuves signées, vérifiables sans Aplomb.</span></li>
+    </ul></div>
+  </div>
 
   <div class="gains">
     <div><b>Direction</b><span>Les jetons par utilisateur, par compte technique et par modèle, avec des quotas.</span></div>
